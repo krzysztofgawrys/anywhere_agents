@@ -4,6 +4,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import structlog
 from fastapi import FastAPI, WebSocket, status
@@ -60,9 +61,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         return
 
     connection_id = str(uuid.uuid4())
-    logger.info("ws_auth_ok", email=claims.get("email"), connection_id=connection_id)
+    device_label = _device_label_from_headers(websocket, claims)
+    logger.info(
+        "ws_auth_ok",
+        email=claims.get("email"),
+        connection_id=connection_id,
+        device=device_label,
+    )
 
-    await handle_websocket(websocket, connection_id)
+    await handle_websocket(websocket, connection_id, device_label=device_label)
+
+
+def _device_label_from_headers(websocket: WebSocket, claims: dict[str, Any]) -> str:
+    """Build a short human-readable device label for the lock manager."""
+    email = claims.get("email") or "anon"
+    user_agent = websocket.headers.get("user-agent", "")
+    ua = user_agent.lower()
+    if "iphone" in ua or "ipad" in ua:
+        device = "iOS"
+    elif "android" in ua:
+        device = "Android"
+    elif "mac os" in ua or "macintosh" in ua:
+        device = "Mac"
+    elif "linux" in ua:
+        device = "Linux"
+    elif "windows" in ua:
+        device = "Windows"
+    else:
+        device = "Browser"
+    return f"{email} @ {device}"
 
 
 # Serve static files (frontend build) — must be last

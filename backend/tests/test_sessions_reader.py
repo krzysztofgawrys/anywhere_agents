@@ -105,7 +105,9 @@ def test_get_session_messages_pairs_tool_result_with_tool_call(tmp_path: Path) -
         ],
     )
 
-    messages = get_session_messages(cwd, "sess", projects_root=projects_root)
+    result = get_session_messages(cwd, "sess", projects_root=projects_root)
+    messages = result["messages"]
+    assert result["has_more"] is False
     # We expect 3 messages: u1, a1 (with tool block paired), a2
     # The u2 contained only tool_result blocks which are merged into a1.
     assert len(messages) == 3
@@ -138,11 +140,34 @@ def test_get_session_messages_respects_limit(tmp_path: Path) -> None:
         })
 
     _write_session(project_dir / "sess.jsonl", entries)
-    messages = get_session_messages(cwd, "sess", limit=3, projects_root=projects_root)
+    result = get_session_messages(cwd, "sess", limit=3, projects_root=projects_root)
+    messages = result["messages"]
     assert len(messages) == 3
+    assert result["has_more"] is True
     # Should be the last 3
     assert messages[0]["blocks"][0]["text"] == "msg 7"
     assert messages[2]["blocks"][0]["text"] == "msg 9"
+    assert result["oldest_uuid"] == "u7"
+
+
+def test_get_session_messages_before_uuid_returns_older_page(tmp_path: Path) -> None:
+    projects_root = tmp_path / "projects"
+    cwd = "/home/me/code/proj"
+    project_dir = projects_root / "-home-me-code-proj"
+
+    entries = [
+        {"type": "user", "uuid": f"u{i}", "message": {"content": f"msg {i}"}}
+        for i in range(10)
+    ]
+    _write_session(project_dir / "sess.jsonl", entries)
+
+    # Page 2: before u7, limit 3 → should give u4, u5, u6
+    result = get_session_messages(
+        cwd, "sess", limit=3, before_uuid="u7", projects_root=projects_root
+    )
+    assert [m["id"] for m in result["messages"]] == ["u4", "u5", "u6"]
+    assert result["has_more"] is True
+    assert result["oldest_uuid"] == "u4"
 
 
 def test_list_sessions_missing_project_returns_empty(tmp_path: Path) -> None:

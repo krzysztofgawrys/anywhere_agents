@@ -139,6 +139,12 @@ function ProjectItem({
       >
         <span className="text-gray-500 text-xs shrink-0">{isExpanded ? "▾" : "▸"}</span>
         <span className="truncate flex-1">{project.name}</span>
+        {project.auto_approve && (
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-yellow-400 shrink-0"
+            title="Auto-approve enabled"
+          />
+        )}
       </button>
       {isExpanded && (
         <div className="pl-6 pr-1 mt-1 space-y-0.5">

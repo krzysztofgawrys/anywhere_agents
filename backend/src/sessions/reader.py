@@ -139,16 +139,17 @@ def get_session_messages(
     limit: int = 30,
     before_uuid: str | None = None,
     projects_root: Path = PROJECTS_ROOT,
-) -> list[dict[str, Any]]:
-    """Return ChatMessage-like records for the frontend.
+) -> dict[str, Any]:
+    """Return ChatMessage-like records for the frontend, with pagination.
 
-    For Phase 3 MVP we ignore `before_uuid` and return the last `limit` messages.
-    Pagination ground is laid; we plug it in for Phase 4.
+    Returns: {"messages": [...], "has_more": bool, "oldest_uuid": str|None}
+    - `before_uuid`: return only messages strictly *before* this uuid
+    - `limit`: return at most this many messages (the LATEST `limit`)
     """
     project_dir = project_dir_for_cwd(cwd, projects_root)
     jsonl = project_dir / f"{session_id}.jsonl"
     if not jsonl.is_file():
-        return []
+        return {"messages": [], "has_more": False, "oldest_uuid": None}
 
     entries = _safe_read_lines(jsonl)
 
@@ -203,8 +204,21 @@ def get_session_messages(
             "finished": True,
         })
 
-    # Apply limit — return last N
+    # Filter by before_uuid: only keep messages *before* that uuid
+    if before_uuid:
+        cutoff = None
+        for i, m in enumerate(messages):
+            if m["id"] == before_uuid:
+                cutoff = i
+                break
+        if cutoff is not None:
+            messages = messages[:cutoff]
+
+    # Apply limit — return last N (chronologically the latest of the eligible set)
+    has_more = False
     if limit > 0 and len(messages) > limit:
+        has_more = True
         messages = messages[-limit:]
 
-    return messages
+    oldest_uuid = messages[0]["id"] if messages else None
+    return {"messages": messages, "has_more": has_more, "oldest_uuid": oldest_uuid}

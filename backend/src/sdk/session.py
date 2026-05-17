@@ -1,7 +1,4 @@
-"""ClaudeSDKClient wrapper — one Session per active conversation.
-
-Phase 3 scope: project-bound sessions with new/resume support.
-"""
+"""ClaudeSDKClient wrapper — one Session per active conversation."""
 
 from __future__ import annotations
 
@@ -15,14 +12,19 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultMessage,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
+    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
 )
+
+from src.sdk.permissions import PermissionBroker
 
 logger = structlog.get_logger()
 
@@ -31,18 +33,7 @@ SendFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class Session:
-    """One Claude SDK session bound to a project cwd + optional resume id.
-
-    Lifecycle:
-        session = Session(send=..., cwd="/path/to/project", resume_session_id="abc")
-        await session.start()                  # connect + emit session_started
-        await session.send_prompt("hello")     # streams via send
-        await session.interrupt()              # cancel current stream
-        await session.stop()                   # disconnect
-
-    The `session_id` exposed to WS clients is the SDK session ID — for `new`
-    sessions it's generated up-front; for `resume` it's the existing id.
-    """
+    """One Claude SDK session bound to a project cwd + optional resume id."""
 
     def __init__(
         self,
@@ -51,15 +42,17 @@ class Session:
         cwd: str | None = None,
         session_id: str | None = None,
         resume_session_id: str | None = None,
+        auto_approve: bool = False,
     ) -> None:
         self._send = send
         self._cwd = cwd
-        # If resuming, the SDK uses the existing session_id; otherwise we mint one.
         self._session_id = resume_session_id or session_id or str(uuid.uuid4())
         self._resume = resume_session_id
         self._client: ClaudeSDKClient | None = None
         self._stream_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._permissions = PermissionBroker()
+        self._permissions.set_auto_approve(auto_approve)
 
     @property
     def session_id(self) -> str:
@@ -69,15 +62,21 @@ class Session:
     def cwd(self) -> str | None:
         return self._cwd
 
+    @property
+    def permissions(self) -> PermissionBroker:
+        return self._permissions
+
     async def start(self) -> None:
-        """Connect to the SDK. Idempotent."""
         if self._client is not None:
             return
 
+        # We always use 'default' permission mode and rely on can_use_tool to
+        # gate or auto-approve. This gives us per-prompt override capability.
         options = ClaudeAgentOptions(
             cwd=self._cwd,
             setting_sources=["user", "project"],
-            permission_mode="bypassPermissions",  # Phase 3: per-project toggle lands in Phase 5
+            permission_mode="default",
+            can_use_tool=self._can_use_tool,
             resume=self._resume,
         )
         self._client = ClaudeSDKClient(options=options)
@@ -87,6 +86,7 @@ class Session:
             session_id=self._session_id,
             cwd=self._cwd,
             resumed=bool(self._resume),
+            auto_approve=self._permissions.is_auto_approve,
         )
 
         await self._send({
@@ -95,17 +95,20 @@ class Session:
                 "session_id": self._session_id,
                 "cwd": self._cwd,
                 "resumed": bool(self._resume),
+                "auto_approve": self._permissions.is_auto_approve,
             },
         })
 
     async def stop(self) -> None:
-        """Disconnect from the SDK and cancel any in-flight stream."""
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
             try:
                 await self._stream_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Cancel any pending permission requests so the SDK loop unblocks
+        self._permissions.cancel_all("Session stopped")
 
         if self._client is not None:
             try:
@@ -115,8 +118,7 @@ class Session:
             self._client = None
         logger.info("sdk_session_stopped", session_id=self._session_id)
 
-    async def send_prompt(self, text: str) -> None:
-        """Send a prompt and stream the response. Non-blocking — runs in a task."""
+    async def send_prompt(self, text: str, *, auto_approve_once: bool = False) -> None:
         if self._client is None:
             await self._send({
                 "type": "error",
@@ -135,17 +137,33 @@ class Session:
                 })
                 return
 
+            if auto_approve_once:
+                self._permissions.arm_one_shot()
+
             await self._client.query(text, session_id=self._session_id)
             self._stream_task = asyncio.create_task(self._consume_stream())
 
     async def interrupt(self) -> None:
-        """Interrupt the current stream."""
         if self._client is None:
             return
         try:
             await self._client.interrupt()
         except Exception as e:
             logger.warning("sdk_interrupt_error", error=str(e))
+
+    def set_auto_approve(self, value: bool) -> None:
+        self._permissions.set_auto_approve(value)
+
+    async def _can_use_tool(
+        self,
+        tool_name: str,
+        tool_input: dict[str, Any],
+        ctx: ToolPermissionContext,
+    ) -> PermissionResultAllow | PermissionResultDeny:
+        """SDK callback — invoked for every tool call when permission_mode='default'."""
+        return await self._permissions.request(
+            self._send, self._session_id, tool_name, tool_input, ctx
+        )
 
     async def _consume_stream(self) -> None:
         assert self._client is not None
@@ -160,6 +178,9 @@ class Session:
                 "type": "error",
                 "payload": {"code": "sdk_stream_error", "message": str(e)},
             })
+        finally:
+            # One-shot auto-approve only lasts until the prompt's result arrives
+            self._permissions.disarm_one_shot()
 
     async def _dispatch(self, msg: Any) -> None:
         if isinstance(msg, AssistantMessage):

@@ -42,19 +42,26 @@ export type ClientMessage =
   | { type: "list_sessions"; payload: { project_id: number } }
   | {
       type: "session_history";
-      payload: { project_id: number; session_id: string; limit?: number };
+      payload: {
+        project_id: number;
+        session_id: string;
+        limit?: number;
+        before_uuid?: string | null;
+      };
     }
   | { type: "new_session"; payload: { project_id: number } }
   | {
       type: "resume_session";
-      payload: { project_id: number; session_id: string };
+      payload: { project_id: number; session_id: string; force?: boolean };
     }
   | {
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
   | { type: "prompt"; payload: { text: string; auto_approve?: boolean } }
-  | { type: "interrupt"; payload: Record<string, never> };
+  | { type: "interrupt"; payload: Record<string, never> }
+  | { type: "approve_tool"; payload: { tool_use_id: string } }
+  | { type: "deny_tool"; payload: { tool_use_id: string; reason?: string } };
 
 export type ServerMessage =
   | { type: "pong"; payload: Record<string, never> }
@@ -69,12 +76,35 @@ export type ServerMessage =
         project_id: number;
         session_id: string;
         messages: ChatMessage[];
+        has_more: boolean;
+        oldest_uuid: string | null;
+        before_uuid: string | null;
       };
     }
   | {
       type: "session_started";
-      payload: { session_id: string; cwd: string | null; resumed: boolean };
+      payload: {
+        session_id: string;
+        cwd: string | null;
+        resumed: boolean;
+        auto_approve: boolean;
+      };
     }
+  | {
+      type: "permission_request";
+      payload: {
+        session_id: string;
+        tool_use_id: string;
+        name: string;
+        input: Record<string, unknown>;
+        description: string | null;
+      };
+    }
+  | {
+      type: "session_locked";
+      payload: { session_id: string; locked_by: string; locked_at: number };
+    }
+  | { type: "lock_revoked"; payload: { session_id: string } }
   | {
       type: "project_updated";
       payload: { project_id: number; auto_approve: boolean };

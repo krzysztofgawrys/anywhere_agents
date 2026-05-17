@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DiffView } from "./DiffView";
 
 type Props = {
   name: string;
@@ -12,6 +13,7 @@ export function ToolBlock({ name, input, result, isError }: Props) {
   const hasResult = result !== undefined;
 
   const summary = summarizeInput(name, input);
+  const diff = extractDiff(name, input);
 
   return (
     <div
@@ -35,12 +37,19 @@ export function ToolBlock({ name, input, result, isError }: Props) {
       </button>
       {expanded && (
         <div className="border-t border-gray-700 px-3 py-2 space-y-2">
-          <div>
-            <div className="text-xs text-gray-500 mb-1">input</div>
-            <pre className="text-xs font-mono bg-black/40 p-2 rounded overflow-x-auto whitespace-pre-wrap break-words">
-              {JSON.stringify(input, null, 2)}
-            </pre>
-          </div>
+          {diff ? (
+            <div>
+              <div className="text-xs text-gray-500 mb-1">{diff.label}</div>
+              <DiffView before={diff.before} after={diff.after} />
+            </div>
+          ) : (
+            <div>
+              <div className="text-xs text-gray-500 mb-1">input</div>
+              <pre className="text-xs font-mono bg-black/40 p-2 rounded overflow-x-auto whitespace-pre-wrap break-words">
+                {JSON.stringify(input, null, 2)}
+              </pre>
+            </div>
+          )}
           {hasResult && (
             <div>
               <div className="text-xs text-gray-500 mb-1">result</div>
@@ -69,4 +78,27 @@ function summarizeInput(_name: string, input: Record<string, unknown>): string {
 function renderResult(result: unknown): string {
   if (typeof result === "string") return result;
   return JSON.stringify(result, null, 2);
+}
+
+/** Recognise tool calls that should render as a diff. */
+function extractDiff(
+  name: string,
+  input: Record<string, unknown>
+): { label: string; before: string; after: string } | null {
+  if (name === "Edit" || name === "MultiEdit") {
+    const oldStr = typeof input.old_string === "string" ? (input.old_string as string) : "";
+    const newStr = typeof input.new_string === "string" ? (input.new_string as string) : "";
+    if (oldStr || newStr) {
+      const file = typeof input.file_path === "string" ? (input.file_path as string) : "edit";
+      return { label: file, before: oldStr, after: newStr };
+    }
+  }
+  if (name === "Write") {
+    const content = typeof input.content === "string" ? (input.content as string) : "";
+    if (content) {
+      const file = typeof input.file_path === "string" ? (input.file_path as string) : "new file";
+      return { label: file, before: "", after: content };
+    }
+  }
+  return null;
 }

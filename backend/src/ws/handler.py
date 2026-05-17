@@ -57,14 +57,22 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def handle_websocket(websocket: WebSocket, connection_id: str) -> None:
+async def handle_websocket(
+    websocket: WebSocket,
+    connection_id: str,
+    device_label: str = "unknown",
+) -> None:
     """Main WS message loop with SessionManager attached."""
     await manager.accept(websocket, connection_id)
 
     async def send(msg: dict[str, Any]) -> None:
         await manager.send(connection_id, msg)
 
-    sessions = SessionManager(send=send)
+    sessions = SessionManager(
+        send=send,
+        connection_id=connection_id,
+        device_label=device_label,
+    )
 
     try:
         while True:
@@ -147,7 +155,7 @@ async def _route(
             return
         limit = payload.get("limit", 30)
         before = payload.get("before_uuid")
-        history = get_session_messages(
+        result = get_session_messages(
             project["path"], session_id, limit=limit, before_uuid=before
         )
         await send({
@@ -155,7 +163,10 @@ async def _route(
             "payload": {
                 "project_id": project_id,
                 "session_id": session_id,
-                "messages": history,
+                "messages": result["messages"],
+                "has_more": result["has_more"],
+                "oldest_uuid": result["oldest_uuid"],
+                "before_uuid": before,
             },
         })
         return
@@ -169,12 +180,15 @@ async def _route(
         if not project:
             await _send_error(send, "not_found", f"project {project_id} not found")
             return
-        await sessions.new_session(cwd=project["path"])
+        await sessions.new_session(
+            cwd=project["path"], auto_approve=project["auto_approve"]
+        )
         return
 
     if msg_type == "resume_session":
         project_id = payload.get("project_id")
         session_id = payload.get("session_id")
+        force = bool(payload.get("force"))
         if not isinstance(project_id, int) or not isinstance(session_id, str):
             await _send_error(send, "bad_request", "project_id and session_id required")
             return
@@ -182,7 +196,12 @@ async def _route(
         if not project:
             await _send_error(send, "not_found", f"project {project_id} not found")
             return
-        await sessions.resume_session(cwd=project["path"], session_id=session_id)
+        await sessions.resume_session(
+            cwd=project["path"],
+            session_id=session_id,
+            force=force,
+            auto_approve=project["auto_approve"],
+        )
         return
 
     if msg_type == "set_auto_approve":
@@ -192,6 +211,8 @@ async def _route(
             await _send_error(send, "bad_request", "project_id required")
             return
         await set_auto_approve(db, project_id, value)
+        # Reflect on the active session immediately
+        sessions.set_auto_approve(value)
         await send({
             "type": "project_updated",
             "payload": {"project_id": project_id, "auto_approve": value},
@@ -203,11 +224,33 @@ async def _route(
         if not text:
             await _send_error(send, "empty_prompt", "Prompt text is required")
             return
-        await sessions.send_prompt(text)
+        auto_once = bool(payload.get("auto_approve"))
+        await sessions.send_prompt(text, auto_approve_once=auto_once)
         return
 
     if msg_type == "interrupt":
         await sessions.interrupt()
+        return
+
+    if msg_type == "approve_tool":
+        tool_use_id = payload.get("tool_use_id")
+        if not isinstance(tool_use_id, str):
+            await _send_error(send, "bad_request", "tool_use_id required")
+            return
+        ok = sessions.resolve_permission(tool_use_id, allow=True)
+        if not ok:
+            await _send_error(send, "no_pending", "No pending request with that id")
+        return
+
+    if msg_type == "deny_tool":
+        tool_use_id = payload.get("tool_use_id")
+        reason = payload.get("reason", "")
+        if not isinstance(tool_use_id, str):
+            await _send_error(send, "bad_request", "tool_use_id required")
+            return
+        ok = sessions.resolve_permission(tool_use_id, allow=False, reason=reason)
+        if not ok:
+            await _send_error(send, "no_pending", "No pending request with that id")
         return
 
     await _send_error(
