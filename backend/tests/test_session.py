@@ -92,7 +92,7 @@ async def test_prompt_streams_text_delta_and_result(
     fake = _FakeClient(messages=messages)
 
     with patch("src.sdk.session.ClaudeSDKClient", return_value=fake):
-        session = Session(send=send_fn)
+        session = Session(send=send_fn, session_id="fixed-id")
         await session.start()
         await session.send_prompt("hi")
         # Wait for stream task to finish
@@ -107,7 +107,7 @@ async def test_prompt_streams_text_delta_and_result(
     text_msg = next(m for m in collected_messages if m["type"] == "text_delta")
     assert text_msg["payload"]["text"] == "Hello"
 
-    assert fake.queries == [("hi", "default")]
+    assert fake.queries == [("hi", "fixed-id")]
 
 
 async def test_prompt_streams_tool_call_and_result(

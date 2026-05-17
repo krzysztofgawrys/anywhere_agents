@@ -8,12 +8,15 @@ type ChatState = {
   status: Status;
   lastError: string | null;
   cost: number;
-  // Internal: ID of the assistant message currently being built (if any)
   currentAssistantId: string | null;
+  activeSessionId: string | null;
+  activeCwd: string | null;
 
   appendUserPrompt: (text: string) => void;
   handleServerMessage: (msg: ServerMessage) => void;
   reset: () => void;
+  /** Load history into the message list (e.g. on resume). */
+  loadHistory: (messages: ChatMessage[]) => void;
 };
 
 function newId(): string {
@@ -26,6 +29,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   lastError: null,
   cost: 0,
   currentAssistantId: null,
+  activeSessionId: null,
+  activeCwd: null,
 
   reset: () =>
     set({
@@ -34,6 +39,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       lastError: null,
       cost: 0,
       currentAssistantId: null,
+      activeSessionId: null,
+      activeCwd: null,
+    }),
+
+  loadHistory: (messages) =>
+    set({
+      messages,
+      status: "idle",
+      currentAssistantId: null,
+      lastError: null,
     }),
 
   appendUserPrompt: (text) => {
@@ -53,7 +68,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   handleServerMessage: (msg) => {
     switch (msg.type) {
       case "session_started":
-        // No-op for Phase 2 (single session). Surface when multi-session lands.
+        set({
+          activeSessionId: msg.payload.session_id,
+          activeCwd: msg.payload.cwd,
+        });
         return;
 
       case "text_delta": {
@@ -80,7 +98,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       case "tool_result": {
-        // Find any message with a tool block matching the tool_use_id and patch it
         set((s) => ({
           messages: s.messages.map((m) => ({
             ...m,
@@ -114,6 +131,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
+      case "projects":
+      case "sessions":
+      case "session_history":
+      case "project_updated":
       case "system":
       case "pong":
         return;
@@ -141,7 +162,6 @@ function appendBlock(
   set((s) => ({
     messages: s.messages.map((m) => {
       if (m.id !== messageId) return m;
-      // Merge consecutive text blocks
       if (block.kind === "text" && m.blocks.length > 0) {
         const last = m.blocks[m.blocks.length - 1];
         if (last && last.kind === "text") {

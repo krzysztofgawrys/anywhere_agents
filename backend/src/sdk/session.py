@@ -1,12 +1,12 @@
-"""ClaudeSDKClient wrapper — one session per WebSocket connection (Phase 2).
+"""ClaudeSDKClient wrapper — one Session per active conversation.
 
-Phase 2 scope: single hardcoded session per connection, prompt → stream messages back.
-Multi-session, project routing, locks etc. come later (Phases 3-4).
+Phase 3 scope: project-bound sessions with new/resume support.
 """
 
 from __future__ import annotations
 
 import asyncio
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -27,19 +27,21 @@ from claude_agent_sdk import (
 logger = structlog.get_logger()
 
 
-# Callback signature: receives a dict to send over WS
 SendFn = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class Session:
-    """One Claude SDK session bound to one WS connection.
+    """One Claude SDK session bound to a project cwd + optional resume id.
 
     Lifecycle:
-        session = Session(send_fn=...)
-        await session.start()
-        await session.send_prompt("hello")    # streams via send_fn
-        await session.interrupt()             # cancel current stream
-        await session.stop()
+        session = Session(send=..., cwd="/path/to/project", resume_session_id="abc")
+        await session.start()                  # connect + emit session_started
+        await session.send_prompt("hello")     # streams via send
+        await session.interrupt()              # cancel current stream
+        await session.stop()                   # disconnect
+
+    The `session_id` exposed to WS clients is the SDK session ID — for `new`
+    sessions it's generated up-front; for `resume` it's the existing id.
     """
 
     def __init__(
@@ -47,11 +49,14 @@ class Session:
         send: SendFn,
         *,
         cwd: str | None = None,
-        session_id: str = "default",
+        session_id: str | None = None,
+        resume_session_id: str | None = None,
     ) -> None:
         self._send = send
         self._cwd = cwd
-        self._session_id = session_id
+        # If resuming, the SDK uses the existing session_id; otherwise we mint one.
+        self._session_id = resume_session_id or session_id or str(uuid.uuid4())
+        self._resume = resume_session_id
         self._client: ClaudeSDKClient | None = None
         self._stream_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
@@ -59,6 +64,10 @@ class Session:
     @property
     def session_id(self) -> str:
         return self._session_id
+
+    @property
+    def cwd(self) -> str | None:
+        return self._cwd
 
     async def start(self) -> None:
         """Connect to the SDK. Idempotent."""
@@ -68,15 +77,25 @@ class Session:
         options = ClaudeAgentOptions(
             cwd=self._cwd,
             setting_sources=["user", "project"],
-            permission_mode="bypassPermissions",  # Phase 2: no approval flow yet
+            permission_mode="bypassPermissions",  # Phase 3: per-project toggle lands in Phase 5
+            resume=self._resume,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
-        logger.info("sdk_session_started", session_id=self._session_id, cwd=self._cwd)
+        logger.info(
+            "sdk_session_started",
+            session_id=self._session_id,
+            cwd=self._cwd,
+            resumed=bool(self._resume),
+        )
 
         await self._send({
             "type": "session_started",
-            "payload": {"session_id": self._session_id, "history": []},
+            "payload": {
+                "session_id": self._session_id,
+                "cwd": self._cwd,
+                "resumed": bool(self._resume),
+            },
         })
 
     async def stop(self) -> None:
@@ -105,7 +124,6 @@ class Session:
             })
             return
 
-        # Serialize prompts — one at a time per session
         async with self._lock:
             if self._stream_task and not self._stream_task.done():
                 await self._send({
@@ -130,7 +148,6 @@ class Session:
             logger.warning("sdk_interrupt_error", error=str(e))
 
     async def _consume_stream(self) -> None:
-        """Read SDK messages and forward them to the WS client."""
         assert self._client is not None
         try:
             async for msg in self._client.receive_response():
@@ -145,24 +162,17 @@ class Session:
             })
 
     async def _dispatch(self, msg: Any) -> None:
-        """Convert SDK message → WS protocol message."""
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, TextBlock):
                     await self._send({
                         "type": "text_delta",
-                        "payload": {
-                            "session_id": self._session_id,
-                            "text": block.text,
-                        },
+                        "payload": {"session_id": self._session_id, "text": block.text},
                     })
                 elif isinstance(block, ThinkingBlock):
                     await self._send({
                         "type": "thinking",
-                        "payload": {
-                            "session_id": self._session_id,
-                            "text": block.thinking,
-                        },
+                        "payload": {"session_id": self._session_id, "text": block.thinking},
                     })
                 elif isinstance(block, ToolUseBlock):
                     await self._send({
@@ -176,7 +186,6 @@ class Session:
                     })
 
         elif isinstance(msg, UserMessage):
-            # UserMessage in stream = tool result echoed back
             for block in _iter_blocks(msg.content):
                 if isinstance(block, ToolResultBlock):
                     await self._send({
@@ -190,7 +199,6 @@ class Session:
                     })
 
         elif isinstance(msg, SystemMessage):
-            # System messages (init, model info) — surface subtype for debugging
             await self._send({
                 "type": "system",
                 "payload": {
@@ -215,15 +223,12 @@ class Session:
 
 
 def _iter_blocks(content: Any) -> AsyncIterator[Any] | list[Any]:
-    """UserMessage.content may be a string or a list of blocks."""
     if isinstance(content, list):
         return content
     return []
 
 
 def _serialize_tool_content(content: Any) -> Any:
-    """Tool result content can be string or list of content blocks. Pass through
-    primitives, dataclass-like blocks become dicts."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):

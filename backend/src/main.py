@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
@@ -9,6 +11,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.auth.cf_access import verify_cf_access_token
+from src.db import db
+from src.projects.scanner import scan_and_register
 from src.ws.handler import handle_websocket, manager
 
 structlog.configure(
@@ -23,7 +27,17 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-app = FastAPI(title="Claude Web", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Init DB + scan ~/.claude/projects/ on startup."""
+    await db.init()
+    count = await scan_and_register(db)
+    logger.info("startup_complete", projects_registered=count)
+    yield
+
+
+app = FastAPI(title="Claude Web", version="0.1.0", lifespan=lifespan)
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -37,7 +51,6 @@ async def health() -> JSONResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """WebSocket endpoint with CF Access JWT verification on handshake."""
-    # Verify CF Access token from headers
     token = websocket.headers.get("cf-access-jwt-assertion")
     claims = await verify_cf_access_token(token)
 
