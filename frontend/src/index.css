@@ -1,0 +1,14 @@
+@import "highlight.js/styles/github-dark.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Prevent body scroll — app fills viewport */
+html, body, #root {
+  height: 100%;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+}

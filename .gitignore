@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Build output (frontend → backend static)
+backend/src/static/
+
+# Environment
+.env
+docker/.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Test artifacts
+.test/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# TS build info
+frontend/tsconfig.tsbuildinfo

@@ -1,0 +1,14 @@
+# NOTE: cloudflared temporarily disabled — running externally, routing traffic
+# directly to localhost:8001. Re-enable when consolidating to Docker.
+#
+# services:
+#   cloudflared:
+#     image: cloudflare/cloudflared:latest
+#     container_name: claude-web-tunnel
+#     restart: unless-stopped
+#     command: tunnel run
+#     environment:
+#       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+#     network_mode: host
+
+services: {}
