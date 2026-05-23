@@ -1,7 +1,13 @@
 import { create } from "zustand";
-import type { ChatBlock, ChatMessage, ServerMessage } from "../types";
+import type { ChatBlock, ChatMessage, PromptImage, ServerMessage } from "../types";
 
 type Status = "idle" | "streaming" | "error";
+
+export type StreamingActivity =
+  | { kind: "waiting" }
+  | { kind: "thinking" }
+  | { kind: "tool"; name: string; detail: string }
+  | { kind: "text" };
 
 export type LockInfo = {
   sessionId: string;
@@ -17,14 +23,21 @@ export type PendingPermission = {
   description: string | null;
 };
 
+export type PendingUserInput = {
+  toolUseId: string;
+  question: string;
+  options: string[];
+};
+
 type ChatState = {
   messages: ChatMessage[];
   status: Status;
   lastError: string | null;
-  cost: number;
   currentAssistantId: string | null;
   activeSessionId: string | null;
   activeCwd: string | null;
+  /** What the backend is currently doing — updated on each streamed event. */
+  streamingActivity: StreamingActivity | null;
   /** True when this client lost the lock — UI drops to read-only. */
   readOnly: boolean;
   /** Set when server rejected a resume_session due to existing lock. */
@@ -37,8 +50,10 @@ type ChatState = {
   autoApprove: boolean;
   /** Outstanding permission requests, oldest first. */
   pendingPermissions: PendingPermission[];
+  /** AskUserQuestion requests waiting for the user to answer. */
+  pendingUserInputs: PendingUserInput[];
 
-  appendUserPrompt: (text: string) => void;
+  appendUserPrompt: (text: string, images?: PromptImage[]) => void;
   handleServerMessage: (msg: ServerMessage) => void;
   reset: () => void;
   /** Replace history with a freshly loaded page (most recent N). */
@@ -48,6 +63,7 @@ type ChatState = {
   setLoadingOlder: (loading: boolean) => void;
   setPendingLock: (info: LockInfo | null) => void;
   removePendingPermission: (toolUseId: string) => void;
+  removeUserInput: (toolUseId: string) => void;
   setAutoApprove: (value: boolean) => void;
 };
 
@@ -59,10 +75,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
   status: "idle",
   lastError: null,
-  cost: 0,
   currentAssistantId: null,
   activeSessionId: null,
   activeCwd: null,
+  streamingActivity: null,
   readOnly: false,
   pendingLock: null,
   hasMore: false,
@@ -70,16 +86,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadingOlder: false,
   autoApprove: false,
   pendingPermissions: [],
+  pendingUserInputs: [],
 
   reset: () =>
     set({
       messages: [],
       status: "idle",
       lastError: null,
-      cost: 0,
       currentAssistantId: null,
       activeSessionId: null,
       activeCwd: null,
+      streamingActivity: null,
       readOnly: false,
       pendingLock: null,
       hasMore: false,
@@ -87,18 +104,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
       loadingOlder: false,
       autoApprove: false,
       pendingPermissions: [],
+      pendingUserInputs: [],
     }),
 
   setHistory: (messages, hasMore, oldestUuid) =>
-    set({
+    set((s) => ({
       messages,
-      status: "idle",
-      currentAssistantId: null,
+      // Don't downgrade from "streaming" — if session_started just told us the
+      // backend is mid-turn, preserve that state. Otherwise clear to "idle".
+      status: s.status === "streaming" ? ("streaming" as const) : ("idle" as const),
+      currentAssistantId: s.status === "streaming" ? s.currentAssistantId : null,
       lastError: null,
       hasMore,
       oldestUuid,
       loadingOlder: false,
-    }),
+    })),
 
   prependHistory: (older, hasMore, oldestUuid) =>
     set((s) => ({
@@ -116,18 +136,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingPermissions: s.pendingPermissions.filter((p) => p.toolUseId !== toolUseId),
     })),
 
+  removeUserInput: (toolUseId) =>
+    set((s) => ({
+      pendingUserInputs: s.pendingUserInputs.filter((p) => p.toolUseId !== toolUseId),
+    })),
+
   setAutoApprove: (value) => set({ autoApprove: value }),
 
-  appendUserPrompt: (text) => {
+  appendUserPrompt: (text, images) => {
+    const blocks: ChatBlock[] = [];
+    if (text) blocks.push({ kind: "text", text });
+    for (const img of images ?? []) {
+      blocks.push({ kind: "image", media_type: img.media_type, data_b64: img.data_b64 });
+    }
     const msg: ChatMessage = {
       id: newId(),
       role: "user",
-      blocks: [{ kind: "text", text }],
+      blocks,
       finished: true,
     };
     set((s) => ({
       messages: [...s.messages, msg],
       status: "streaming",
+      streamingActivity: { kind: "waiting" },
       lastError: null,
     }));
   },
@@ -135,14 +166,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
   handleServerMessage: (msg) => {
     switch (msg.type) {
       case "session_started":
-        set({
+        set((s) => ({
           activeSessionId: msg.payload.session_id,
           activeCwd: msg.payload.cwd,
           readOnly: false,
           pendingLock: null,
           autoApprove: msg.payload.auto_approve,
           pendingPermissions: [],
-        });
+          pendingUserInputs: [],
+          // Backend tells us the session is mid-turn on reconnect — restore streaming
+          // so the user sees the correct state before the history payload arrives.
+          ...(msg.payload.is_busy && s.status !== "streaming"
+            ? { status: "streaming" as const }
+            : {}),
+        }));
         return;
 
       case "permission_request":
@@ -154,6 +191,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
               name: msg.payload.name,
               input: msg.payload.input,
               description: msg.payload.description,
+            },
+          ],
+        }));
+        return;
+
+      case "user_input_request":
+        set((s) => ({
+          pendingUserInputs: [
+            ...s.pendingUserInputs,
+            {
+              toolUseId: msg.payload.tool_use_id,
+              question: msg.payload.question,
+              options: msg.payload.options,
             },
           ],
         }));
@@ -179,18 +229,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
 
       case "text_delta": {
+        set({ streamingActivity: { kind: "text" } });
         const assistantId = ensureAssistantMessage(get, set);
         appendBlock(set, assistantId, { kind: "text", text: msg.payload.text });
         return;
       }
 
       case "thinking": {
+        set({ streamingActivity: { kind: "thinking" } });
         const assistantId = ensureAssistantMessage(get, set);
         appendBlock(set, assistantId, { kind: "thinking", text: msg.payload.text });
         return;
       }
 
       case "tool_call": {
+        const detail = toolDetail(msg.payload.name, msg.payload.input);
+        set({ streamingActivity: { kind: "tool", name: msg.payload.name, detail } });
         const assistantId = ensureAssistantMessage(get, set);
         appendBlock(set, assistantId, {
           kind: "tool",
@@ -201,8 +255,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
+      case "task_event": {
+        // Monitor / TaskCreate emits task_started/progress/notification
+        // between the tool_call and tool_result. Attach to the current
+        // assistant message so the user sees progress instead of a frozen
+        // "running…" tool block.
+        const assistantId = ensureAssistantMessage(get, set);
+        appendBlock(set, assistantId, {
+          kind: "task",
+          event_type: msg.payload.event_type,
+          task_id: msg.payload.task_id,
+          summary: msg.payload.summary,
+          description: msg.payload.description,
+          status: msg.payload.status,
+          tool_use_id: msg.payload.tool_use_id,
+        });
+        return;
+      }
+
       case "tool_result": {
+        // Tool finished — back to thinking/generating until next event.
         set((s) => ({
+          streamingActivity: { kind: "thinking" },
           messages: s.messages.map((m) => ({
             ...m,
             blocks: m.blocks.map((b) =>
@@ -224,14 +298,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
             messages,
             status: "idle",
             currentAssistantId: null,
-            cost: s.cost + (msg.payload.total_cost_usd ?? 0),
+            streamingActivity: null,
           };
         });
         return;
       }
 
       case "error": {
-        set({ status: "error", lastError: `${msg.payload.code}: ${msg.payload.message}` });
+        if (msg.payload.code === "busy") {
+          set({ streamingActivity: null });
+          // Backend is still processing the previous prompt. Roll back the
+          // optimistically-appended user message (if any) and stay in streaming
+          // state — the result will arrive shortly and re-enable the composer.
+          set((s) => ({
+            messages:
+              s.messages.length > 0 &&
+              s.messages[s.messages.length - 1]!.role === "user"
+                ? s.messages.slice(0, -1)
+                : s.messages,
+            status: "streaming" as const,
+          }));
+        } else {
+          set({ status: "error", lastError: `${msg.payload.code}: ${msg.payload.message}`, streamingActivity: null });
+        }
         return;
       }
 
@@ -249,6 +338,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 }));
+
+/** Produce a short human-readable detail string from a tool call's input. */
+function toolDetail(name: string, input: Record<string, unknown>): string {
+  // Priority: command > file_path > path > pattern > query > description
+  const pick = ["command", "file_path", "path", "pattern", "query", "description"];
+  for (const k of pick) {
+    if (typeof input[k] === "string") {
+      const s = input[k] as string;
+      return s.length > 60 ? s.slice(0, 60) + "…" : s;
+    }
+  }
+  // Fallback: first string value in the object
+  for (const v of Object.values(input)) {
+    if (typeof v === "string" && v.length > 0) {
+      return v.length > 60 ? v.slice(0, 60) + "…" : v;
+    }
+  }
+  return name;
+}
 
 function ensureAssistantMessage(
   get: () => ChatState,
@@ -270,12 +378,20 @@ function appendBlock(
   set((s) => ({
     messages: s.messages.map((m) => {
       if (m.id !== messageId) return m;
-      if (block.kind === "text" && m.blocks.length > 0) {
+      // Merge consecutive text/thinking deltas into one growing block so the
+      // bubble doesn't fragment into hundreds of tiny pieces during streaming.
+      if (
+        (block.kind === "text" || block.kind === "thinking") &&
+        m.blocks.length > 0
+      ) {
         const last = m.blocks[m.blocks.length - 1];
-        if (last && last.kind === "text") {
+        if (last && last.kind === block.kind) {
           return {
             ...m,
-            blocks: [...m.blocks.slice(0, -1), { kind: "text", text: last.text + block.text }],
+            blocks: [
+              ...m.blocks.slice(0, -1),
+              { kind: block.kind, text: last.text + block.text },
+            ],
           };
         }
       }

@@ -10,7 +10,7 @@ export function PermissionPrompt({ request, onAllow, onDeny }: Props) {
   const summary = summarize(request.name, request.input);
   return (
     <div className="border-t border-yellow-600/40 bg-yellow-950/30 px-3 md:px-4 py-3">
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-3xl lg:max-w-5xl mx-auto">
         <div className="flex items-start justify-between gap-3 mb-2">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-wide text-yellow-300/80 font-semibold">

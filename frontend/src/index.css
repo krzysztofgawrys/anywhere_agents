@@ -4,11 +4,72 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Prevent body scroll — app fills viewport */
 html, body, #root {
   height: 100%;
-}
-body {
   margin: 0;
-  overflow: hidden;
 }
+
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* The app fills the visual viewport bulletproof: position:fixed decouples
+   from the html/body height chain (which on iOS Safari can be taller than
+   the visible area due to URL bar). env(safe-area-inset-*) handles notches. */
+.app-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Honour iOS safe areas (notch / home indicator) */
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Markdown tables: don't squish columns on mobile — render at natural width
+   and let the wrapper (.overflow-x-auto in Message.tsx) scroll horizontally. */
+.prose table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+}
+.prose th,
+.prose td {
+  border: 1px solid rgb(75 85 99);   /* gray-600 */
+  padding: 0.375rem 0.625rem;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+.prose thead th {
+  background: rgb(31 41 55);          /* gray-800 */
+}
+/* Long unbroken tokens (URLs, paths) must not blow out the bubble width. */
+.prose :where(p, li, a, code) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* Inline code shouldn't force horizontal growth either. */
+.prose :not(pre) > code {
+  white-space: pre-wrap;
+}
+
+/* Typing indicator — 3 staggered bouncing dots. */
+@keyframes typing-bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
+  40% { transform: translateY(-4px); opacity: 1; }
+}
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: currentColor;
+  display: inline-block;
+  animation: typing-bounce 1.2s infinite ease-in-out;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }

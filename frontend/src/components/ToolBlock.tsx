@@ -31,8 +31,30 @@ export function ToolBlock({ name, input, result, isError }: Props) {
           <span className="text-yellow-400 shrink-0">{name}</span>
           <span className="text-gray-400 truncate">{summary}</span>
         </span>
-        <span className="text-xs text-gray-500 shrink-0">
-          {hasResult ? (isError ? "error" : "done") : "running…"}
+        <span className="text-xs shrink-0 flex items-center gap-1.5">
+          {hasResult ? (
+            isError ? (
+              <span className="text-red-400">error</span>
+            ) : (
+              <span className="text-green-500">done</span>
+            )
+          ) : (
+            <>
+              <svg
+                className="animate-spin text-amber-400"
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="3"
+                strokeLinecap="round"
+              >
+                <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              </svg>
+              <span className="text-amber-400">running</span>
+            </>
+          )}
         </span>
       </button>
       {expanded && (

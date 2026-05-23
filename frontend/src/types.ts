@@ -7,6 +7,10 @@ export type Project = {
   auto_approve: boolean;
   created_at: string;
   last_seen_at: string;
+  last_session_mtime: number | null;
+  available: boolean;
+  worker_id?: string;
+  worker_label?: string;
 };
 
 export type SessionSummary = {
@@ -17,9 +21,16 @@ export type SessionSummary = {
   mtime: number;
 };
 
+export type TaskEventType =
+  | "started"
+  | "progress"
+  | "updated"
+  | "notification";
+
 export type ChatBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
+  | { kind: "image"; media_type: string; data_b64: string }
   | {
       kind: "tool";
       tool_use_id: string;
@@ -27,7 +38,21 @@ export type ChatBlock =
       input: Record<string, unknown>;
       result?: unknown;
       is_error?: boolean;
+    }
+  | {
+      kind: "task";
+      event_type: TaskEventType;
+      task_id: string | null;
+      summary: string | null;
+      description: string | null;
+      status: string | null;
+      tool_use_id: string | null;
     };
+
+export type PromptImage = {
+  media_type: string;
+  data_b64: string;
+};
 
 export type ChatMessage = {
   id: string;
@@ -58,10 +83,35 @@ export type ClientMessage =
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
-  | { type: "prompt"; payload: { text: string; auto_approve?: boolean } }
+  | {
+      type: "prompt";
+      payload: {
+        text: string;
+        auto_approve?: boolean;
+        images?: PromptImage[];
+        stream?: boolean;
+      };
+    }
   | { type: "interrupt"; payload: Record<string, never> }
   | { type: "approve_tool"; payload: { tool_use_id: string } }
-  | { type: "deny_tool"; payload: { tool_use_id: string; reason?: string } };
+  | { type: "deny_tool"; payload: { tool_use_id: string; reason?: string } }
+  | { type: "list_directory"; payload: { project_id: number; path?: string } }
+  | { type: "read_file"; payload: { project_id: number; path: string } }
+  | { type: "browse_fs"; payload: { path?: string; worker_id?: string } }
+  | { type: "create_directory"; payload: { path: string; worker_id?: string } }
+  | { type: "create_project"; payload: { path: string; worker_id?: string } }
+  | { type: "user_input_response"; payload: { tool_use_id: string; answer: string } }
+  | { type: "terminal_open"; payload: { project_id: number; cols?: number; rows?: number } }
+  | { type: "terminal_input"; payload: { data: string } }
+  | { type: "terminal_resize"; payload: { cols: number; rows: number } }
+  | { type: "terminal_close"; payload: Record<string, never> };
+
+export type DirectoryEntry = {
+  name: string;
+  kind: "dir" | "file";
+  size: number | null;
+  mtime: number;
+};
 
 export type ServerMessage =
   | { type: "pong"; payload: Record<string, never> }
@@ -88,6 +138,8 @@ export type ServerMessage =
         cwd: string | null;
         resumed: boolean;
         auto_approve: boolean;
+        /** True when the session is currently mid-turn (e.g. reconnecting while streaming). */
+        is_busy?: boolean;
       };
     }
   | {
@@ -134,6 +186,19 @@ export type ServerMessage =
       payload: { session_id: string; subtype: string; data: unknown };
     }
   | {
+      type: "task_event";
+      payload: {
+        session_id: string;
+        event_type: TaskEventType;
+        task_id: string | null;
+        summary: string | null;
+        description: string | null;
+        status: string | null;
+        tool_use_id: string | null;
+        last_tool_name: string | null;
+      };
+    }
+  | {
       type: "result";
       payload: {
         session_id: string;
@@ -144,4 +209,49 @@ export type ServerMessage =
         is_error: boolean;
       };
     }
-  | { type: "error"; payload: { code: string; message: string } };
+  | {
+      type: "directory";
+      payload: {
+        project_id: number;
+        root: string;
+        path: string;
+        parent: string | null;
+        entries: DirectoryEntry[];
+      };
+    }
+  | {
+      type: "file_content";
+      payload: {
+        project_id: number;
+        path: string;
+        size: number;
+        too_large: boolean;
+        encoding: "utf-8" | "base64" | null;
+        content: string | null;
+      };
+    }
+  | { type: "error"; payload: { code: string; message: string } }
+  | {
+      type: "fs_directory";
+      payload: {
+        path: string;
+        parent: string | null;
+        entries: DirectoryEntry[];
+      };
+    }
+  | {
+      type: "project_created";
+      payload: { project: Project };
+    }
+  | {
+      type: "user_input_request";
+      payload: {
+        session_id: string;
+        tool_use_id: string;
+        question: string;
+        options: string[];
+      };
+    }
+  | { type: "terminal_ready"; payload: Record<string, never> }
+  | { type: "terminal_output"; payload: { data: string } }
+  | { type: "terminal_closed"; payload: { exit_code: number } };

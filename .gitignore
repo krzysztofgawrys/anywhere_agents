@@ -12,7 +12,13 @@ frontend/dist/
 # Build output (frontend → backend static)
 backend/src/static/
 
-# Environment
+# Frontend production build (volume-mounted into hub at runtime; rebuilt by `npm run build`)
+frontend-dist/
+
+# Local Claude Code state (per-machine settings, not for sharing)
+.claude/
+
+# Environment (secrets — never commit)
 .env
 docker/.env
 

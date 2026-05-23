@@ -97,9 +97,15 @@ async def test_set_auto_approve_toggle(
 
 
 def test_project_dir_for_cwd_encoding() -> None:
-    """Project dirs encode '/' as '-'."""
+    """Project dirs encode '/', '_' and '.' all as '-'."""
     p = project_dir_for_cwd("/home/alice/code/foo", projects_root=Path("/tmp/x"))
     assert p == Path("/tmp/x/-home-alice-code-foo")
+    # underscore is encoded too
+    p = project_dir_for_cwd("/home/me/code/claude_cloud", projects_root=Path("/tmp/x"))
+    assert p == Path("/tmp/x/-home-me-code-claude-cloud")
+    # dot is encoded too — leading double dash for hidden dirs
+    p = project_dir_for_cwd("/home/me/.config", projects_root=Path("/tmp/x"))
+    assert p == Path("/tmp/x/-home-me--config")
 
 
 async def test_scan_missing_root_is_noop(database: Database, tmp_path: Path) -> None:

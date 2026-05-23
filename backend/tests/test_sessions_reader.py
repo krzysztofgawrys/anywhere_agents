@@ -173,3 +173,66 @@ def test_get_session_messages_before_uuid_returns_older_page(tmp_path: Path) -> 
 def test_list_sessions_missing_project_returns_empty(tmp_path: Path) -> None:
     sessions = list_sessions("/nonexistent", projects_root=tmp_path / "projects")
     assert sessions == []
+
+
+def test_cli_marker_tags_stripped_from_user_text(tmp_path: Path) -> None:
+    """CLI internal tags like <ide_opened_file> are noise — strip from UI."""
+    projects_root = tmp_path / "projects"
+    cwd = "/home/me/code/proj"
+    project_dir = projects_root / "-home-me-code-proj"
+
+    polluted = (
+        "wykonaj zadanie\n"
+        "<ide_opened_file>The user opened /home/me/file.py</ide_opened_file>\n"
+        "<system-reminder>internal stuff</system-reminder>\n"
+        "real instruction"
+    )
+    _write_session(
+        project_dir / "s.jsonl",
+        [
+            {"type": "user", "uuid": "u1", "message": {"content": polluted}},
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "message": {"content": [{"type": "text", "text": "ok"}]},
+            },
+        ],
+    )
+
+    result = get_session_messages(cwd, "s", projects_root=projects_root)
+    user_msg = result["messages"][0]
+    user_text = user_msg["blocks"][0]["text"]
+    assert "ide_opened_file" not in user_text
+    assert "system-reminder" not in user_text
+    assert "wykonaj zadanie" in user_text
+    assert "real instruction" in user_text
+
+    # Preview in session list must also be cleaned
+    sessions = list_sessions(cwd, projects_root=projects_root)
+    assert sessions[0]["preview"] is not None
+    assert "ide_opened_file" not in sessions[0]["preview"]
+
+
+def test_user_message_with_only_marker_tags_is_dropped(tmp_path: Path) -> None:
+    """If user text is ENTIRELY marker tags, the message is hidden."""
+    projects_root = tmp_path / "projects"
+    cwd = "/home/me/code/proj"
+    project_dir = projects_root / "-home-me-code-proj"
+
+    only_noise = "<system-reminder>file changed</system-reminder>"
+    _write_session(
+        project_dir / "s.jsonl",
+        [
+            {"type": "user", "uuid": "u1", "message": {"content": only_noise}},
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "message": {"content": [{"type": "text", "text": "got it"}]},
+            },
+        ],
+    )
+
+    result = get_session_messages(cwd, "s", projects_root=projects_root)
+    # Only the assistant response should remain
+    assert len(result["messages"]) == 1
+    assert result["messages"][0]["role"] == "assistant"

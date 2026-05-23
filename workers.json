@@ -1,0 +1,20 @@
+[
+  {
+    "id": "local",
+    "label": "Laptop",
+    "url": "ws://worker:8002/ws",
+    "secret": "changeme"
+  },
+  {
+    "id": "big-worker",
+    "label": "Big Worker",
+    "url": "ws://192.168.1.25:8002/ws",
+    "secret": "changeme"
+  },
+  {
+    "id": "small-worker",
+    "label": "Small Worker",
+    "url": "ws://192.168.1.21:8002/ws",
+    "secret": "changeme"
+  }
+]

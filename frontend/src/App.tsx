@@ -1,19 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
+import { FileBrowser } from "./components/FileBrowser";
 import { LockTakeoverModal } from "./components/LockTakeoverModal";
 import { Message } from "./components/Message";
+import { NewProjectBrowser } from "./components/NewProjectBrowser";
 import { PermissionPrompt } from "./components/PermissionPrompt";
+import { Terminal } from "./components/Terminal";
+import { UserInputPrompt } from "./components/UserInputPrompt";
 import { Sidebar } from "./components/Sidebar";
+import { StreamingStatus } from "./components/StreamingStatus";
+import { TypingIndicator } from "./components/TypingIndicator";
+import { usePushNotifications } from "./hooks/usePushNotifications";
+import { useVisibilityNotify } from "./hooks/useVisibilityNotify";
+import { useWakeLock } from "./hooks/useWakeLock";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useChatStore } from "./stores/chat";
+import { useFilesStore } from "./stores/files";
 import { useProjectsStore } from "./stores/projects";
-import type { ServerMessage } from "./types";
+import type { ClientMessage, DirectoryEntry, Project, PromptImage, ServerMessage } from "./types";
 
 function App() {
   const messages = useChatStore((s) => s.messages);
   const status = useChatStore((s) => s.status);
+  const currentAssistantId = useChatStore((s) => s.currentAssistantId);
   const lastError = useChatStore((s) => s.lastError);
-  const cost = useChatStore((s) => s.cost);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const activeCwd = useChatStore((s) => s.activeCwd);
   const readOnly = useChatStore((s) => s.readOnly);
@@ -22,7 +32,9 @@ function App() {
   const oldestUuid = useChatStore((s) => s.oldestUuid);
   const loadingOlder = useChatStore((s) => s.loadingOlder);
   const autoApprove = useChatStore((s) => s.autoApprove);
+  const streamingActivity = useChatStore((s) => s.streamingActivity);
   const pendingPermissions = useChatStore((s) => s.pendingPermissions);
+  const pendingUserInputs = useChatStore((s) => s.pendingUserInputs);
   const handleChatMsg = useChatStore((s) => s.handleServerMessage);
   const appendUserPrompt = useChatStore((s) => s.appendUserPrompt);
   const resetChat = useChatStore((s) => s.reset);
@@ -31,8 +43,21 @@ function App() {
   const setLoadingOlder = useChatStore((s) => s.setLoadingOlder);
   const setPendingLock = useChatStore((s) => s.setPendingLock);
   const removePendingPermission = useChatStore((s) => s.removePendingPermission);
+  const removeUserInput = useChatStore((s) => s.removeUserInput);
 
   const handleProjectsMsg = useProjectsStore((s) => s.handleServerMessage);
+  const activeProjectId = useProjectsStore((s) => s.activeProjectId);
+  const setActiveProject = useProjectsStore((s) => s.setActive);
+  const handleFilesMsg = useFilesStore((s) => s.handleServerMessage);
+  const openFiles = useFilesStore((s) => s.open);
+
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [newProjectWorkerId, setNewProjectWorkerId] = useState<string | undefined>();
+  const [fsDirectory, setFsDirectory] = useState<{
+    path: string;
+    parent: string | null;
+    entries: DirectoryEntry[];
+  } | null>(null);
 
   const activeProjectIdRef = useRef<number | null>(null);
   useEffect(() => {
@@ -42,10 +67,89 @@ function App() {
     return unsub;
   }, []);
 
+  const notifyIfHidden = useVisibilityNotify();
+  const { requestSubscription, hasPushSubscription } = usePushNotifications();
+
+  const streaming = status === "streaming";
+  useWakeLock(streaming);
+
+  const LS_KEY = "claude_web_last_session";
+
+  const persistSession = useCallback((projectId: number, sessionId: string) => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ projectId, sessionId }));
+    } catch {}
+  }, []);
+
+  // Terminal state — must be declared before onServerMessage uses killTerminal.
+  const [terminalMounted, setTerminalMounted] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const terminalWriteRef = useRef<((b64: string) => void) | null>(null);
+  const killTerminal = useCallback(() => {
+    setTerminalMounted(false);
+    setTerminalOpen(false);
+    terminalWriteRef.current = null;
+  }, []);
+
   const onServerMessage = useCallback(
     (msg: ServerMessage) => {
+      if (msg.type === "result" && !msg.payload.is_error) {
+        // First result ever → good moment to ask for notification permission,
+        // the user just saw Claude finish something and understands why.
+        requestSubscription();
+        // Skip local notification when Web Push is active — the server
+        // already sends a push_notify that the SW displays.
+        if (!hasPushSubscription) {
+          notifyIfHidden("Claude finished", "Task completed — tap to view.");
+        }
+      }
       handleProjectsMsg(msg);
+      handleFilesMsg(msg);
+      if (msg.type === "directory" || msg.type === "file_content") {
+        // Already handled by the files store — don't push into chat.
+        return;
+      }
+      if (msg.type === "fs_directory") {
+        setFsDirectory(msg.payload);
+        return;
+      }
+      if (msg.type === "project_created") {
+        // projects list is refreshed by the backend sending a "projects" message
+        // immediately after; close the picker.
+        setNewProjectOpen(false);
+        setFsDirectory(null);
+        return;
+      }
+      if (msg.type === "terminal_output") {
+        terminalWriteRef.current?.(msg.payload.data);
+        return;
+      }
+      if (msg.type === "terminal_ready") {
+        return;
+      }
+      if (msg.type === "terminal_closed") {
+        // Process exited (e.g. user typed `exit`) — tear down the panel.
+        killTerminal();
+        return;
+      }
+      if (msg.type === "session_started") {
+        // Persist session so a fresh page load (e.g. from push notification tap)
+        // can auto-resume it without requiring user interaction.
+        const projectId = activeProjectIdRef.current;
+        if (projectId !== null) {
+          persistSession(projectId, msg.payload.session_id);
+        }
+        if (!msg.payload.resumed) {
+          // New session created — refresh the session list so it shows up
+          // immediately in the sidebar without requiring a page reload.
+          if (projectId !== null) {
+            send({ type: "list_sessions", payload: { project_id: projectId } });
+          }
+        }
+      }
       if (msg.type === "session_history") {
+        // Restore active project on reconnect (project_id is always in the payload).
+        setActiveProject(msg.payload.project_id);
         const isInitial = !msg.payload.before_uuid;
         if (isInitial) {
           setHistory(
@@ -75,38 +179,166 @@ function App() {
       }
     },
     [
+      requestSubscription,
+      hasPushSubscription,
+      notifyIfHidden,
+      persistSession,
       handleChatMsg,
       handleProjectsMsg,
+      handleFilesMsg,
       setHistory,
       prependHistory,
       setPendingLock,
+      setFsDirectory,
+      setNewProjectOpen,
+      setActiveProject,
+      killTerminal,
     ]
   );
 
-  const { connected, send } = useWebSocket({ onMessage: onServerMessage });
+  const onBrowseFiles = useCallback(
+    (project: Project) => {
+      openFiles({ id: project.id, name: project.name, path: project.path });
+    },
+    [openFiles]
+  );
+
+  // sendRef lets onReconnect close over the stable ref rather than the
+  // not-yet-declared `send` value — defined before useWebSocket.
+  const sendRef = useRef<((msg: ClientMessage) => boolean) | null>(null);
+
+  /** Try to resume: prefer in-memory state, fall back to localStorage.
+   *
+   * Only sends resume_session when the page is visible — if the tab is in the
+   * background, Chrome may briefly reconnect the WS (power management) but we
+   * must NOT reclaim the parked session, otherwise the backend push never fires.
+   */
+  const resumeLastSession = useCallback(() => {
+    let projectId = activeProjectIdRef.current;
+    let sessionId = useChatStore.getState().activeSessionId;
+
+    // Fresh page load — nothing in memory, check localStorage.
+    if (projectId === null || sessionId === null) {
+      try {
+        const saved = localStorage.getItem(LS_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as { projectId: number; sessionId: string };
+          projectId = parsed.projectId;
+          sessionId = parsed.sessionId;
+        }
+      } catch {}
+    }
+
+    if (projectId === null || sessionId === null) return;
+
+    if (!document.hidden) {
+      // Page is visible — claim the session lock and reload history.
+      sendRef.current?.({
+        type: "resume_session",
+        payload: { project_id: projectId, session_id: sessionId },
+      });
+    }
+    // Always reload history so background output becomes visible when user returns.
+    sendRef.current?.({
+      type: "session_history",
+      payload: { project_id: projectId, session_id: sessionId, limit: 30 },
+    });
+  }, []);
+
+  const onConnect = useCallback(() => {
+    // Fires only on the first WS connection of this page load (e.g. user tapped
+    // a push notification and opened a fresh tab). Resume from localStorage.
+    resumeLastSession();
+  }, [resumeLastSession]);
+
+  const onReconnect = useCallback(() => {
+    // WS re-established after a drop while the tab was open. Prefer in-memory
+    // state; the backend may have the session parked in its registry.
+    resumeLastSession();
+  }, [resumeLastSession]);
+
+  const { connected, send } = useWebSocket({ onMessage: onServerMessage, onReconnect, onConnect });
+
+  // Keep sendRef up-to-date (send is stable, but just to be safe)
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Search state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [matchCount, setMatchCount] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Update match count after each render when search is active
+  useLayoutEffect(() => {
+    if (!searchQuery) {
+      setMatchCount(0);
+      setSearchIndex(0);
+      return;
+    }
+    const matches = document.querySelectorAll(".search-match");
+    setMatchCount(matches.length);
+    // Reset to first match if count changed
+    setSearchIndex((prev) => (matches.length === 0 ? 0 : Math.min(prev, matches.length - 1)));
+  });
+
+  // Focus input when search opens
+  useEffect(() => {
+    if (searchOpen) {
+      searchInputRef.current?.focus();
+    }
+  }, [searchOpen]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchIndex(0);
+  }, []);
+
+  // Close search on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && searchOpen) closeSearch();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [searchOpen, closeSearch]);
+
+  const navigateMatch = useCallback((dir: 1 | -1) => {
+    const matches = document.querySelectorAll<HTMLElement>(".search-match");
+    if (matches.length === 0) return;
+    const next = (searchIndex + dir + matches.length) % matches.length;
+    setSearchIndex(next);
+    matches[next]?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [searchIndex]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
-  const prevMessagesLengthRef = useRef(0);
   const nearBottomRef = useRef(true);
+  // Runs on every message change INCLUDING streaming deltas (the assistant
+  // message object grows in place, so messages.length stays constant — we must
+  // not gate on length). Follow the bottom only while the user is parked there.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     if (loadingOlder) return;
-    // Only auto-scroll if user was already near the bottom — don't yank away
-    // if they're scrolling up to read older context.
-    if (messages.length > prevMessagesLengthRef.current && nearBottomRef.current) {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    if (nearBottomRef.current) {
+      // Instant (not smooth): rapid deltas would make smooth-scroll fight
+      // itself and never catch up. Instant keeps it pinned cleanly.
+      el.scrollTop = el.scrollHeight;
     }
-    prevMessagesLengthRef.current = messages.length;
   }, [messages, loadingOlder]);
 
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    // Track whether user is near the bottom (for auto-scroll on new messages).
-    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    // If the user scrolls up even slightly we stop following so reading isn't
+    // interrupted; resume once they come back to the bottom. Small threshold
+    // so a tiny nudge counts, but tolerant of sub-pixel rounding.
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
     if (el.scrollTop <= 30 && hasMore && !loadingOlder && oldestUuid && activeSessionId) {
       const projectId = activeProjectIdRef.current;
       if (projectId === null) return;
@@ -131,9 +363,22 @@ function App() {
   }, [hasMore, loadingOlder, oldestUuid, activeSessionId, send, setLoadingOlder]);
 
   const onSubmit = useCallback(
-    (text: string, autoApproveOnce: boolean) => {
-      appendUserPrompt(text);
-      send({ type: "prompt", payload: { text, auto_approve: autoApproveOnce } });
+    (
+      text: string,
+      autoApproveOnce: boolean,
+      images: PromptImage[],
+      streamTokens: boolean,
+    ) => {
+      appendUserPrompt(text, images);
+      send({
+        type: "prompt",
+        payload: {
+          text,
+          auto_approve: autoApproveOnce,
+          stream: streamTokens,
+          ...(images.length > 0 ? { images } : {}),
+        },
+      });
     },
     [send, appendUserPrompt]
   );
@@ -144,14 +389,26 @@ function App() {
 
   const onNewSession = useCallback(
     (projectId: number) => {
+      killTerminal();
       resetChat();
       send({ type: "new_session", payload: { project_id: projectId } });
     },
-    [resetChat, send]
+    [resetChat, send, killTerminal]
   );
 
   const onPickSession = useCallback(
     (projectId: number, sessionId: string) => {
+      // If this session is already active — just refresh history, don't
+      // restart the session or kill the terminal.
+      const alreadyActive = useChatStore.getState().activeSessionId === sessionId;
+      if (alreadyActive) {
+        send({
+          type: "session_history",
+          payload: { project_id: projectId, session_id: sessionId, limit: 30 },
+        });
+        return;
+      }
+      killTerminal();
       resetChat();
       send({
         type: "session_history",
@@ -162,7 +419,7 @@ function App() {
         payload: { project_id: projectId, session_id: sessionId },
       });
     },
-    [resetChat, send]
+    [resetChat, send, killTerminal]
   );
 
   const onTakeover = useCallback(() => {
@@ -194,6 +451,12 @@ function App() {
     [send, removePendingPermission]
   );
 
+  const onNewProject = useCallback((workerId?: string) => {
+    setFsDirectory(null);
+    setNewProjectWorkerId(workerId);
+    setNewProjectOpen(true);
+  }, []);
+
   const onToggleAutoApprove = useCallback(() => {
     const projectId = activeProjectIdRef.current;
     if (projectId === null) return;
@@ -204,7 +467,7 @@ function App() {
   }, [autoApprove, send]);
 
   return (
-    <div className="h-screen flex bg-gray-900 text-gray-100">
+    <div className="app-root flex bg-gray-900 text-gray-100 overflow-hidden">
       <Sidebar
         send={send}
         connected={connected}
@@ -212,9 +475,11 @@ function App() {
         onClose={() => setSidebarOpen(false)}
         onPickSession={onPickSession}
         onNewSession={onNewSession}
+        onBrowseFiles={onBrowseFiles}
+        onNewProject={onNewProject}
       />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <header className="border-b border-gray-800 px-3 md:px-4 py-2 md:py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2 md:gap-3 min-w-0">
             <button
@@ -244,6 +509,45 @@ function App() {
             )}
           </div>
           <div className="text-xs text-gray-500 shrink-0 flex items-center gap-3">
+            {messages.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearchOpen((v) => !v)}
+                className={`p-1 rounded border transition-colors ${
+                  searchOpen
+                    ? "bg-gray-700 text-gray-200 border-gray-600"
+                    : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
+                }`}
+                title="Search messages"
+                aria-label="Search messages"
+              >
+                <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="8.5" cy="8.5" r="5.5" />
+                  <line x1="13" y1="13" x2="18" y2="18" />
+                </svg>
+              </button>
+            )}
+            {(activeProjectId !== null || activeSessionId !== null) && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (terminalMounted) {
+                    setTerminalOpen((v) => !v);
+                  } else {
+                    setTerminalMounted(true);
+                    setTerminalOpen(true);
+                  }
+                }}
+                className={`text-xs px-2 py-1 rounded border transition-colors font-mono ${
+                  terminalOpen
+                    ? "bg-gray-700 text-gray-200 border-gray-600"
+                    : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
+                }`}
+                title="Toggle terminal"
+              >
+                &gt;_
+              </button>
+            )}
             {activeSessionId && (
               <button
                 type="button"
@@ -263,16 +567,71 @@ function App() {
                 {activeSessionId.slice(0, 8)}
               </span>
             )}
-            {cost > 0 && <span>${cost.toFixed(4)}</span>}
           </div>
         </header>
+
+        {searchOpen && (
+          <div className="border-b border-gray-800 px-3 py-2 flex items-center gap-2 bg-gray-900">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-gray-400 shrink-0">
+              <circle cx="8.5" cy="8.5" r="5.5" />
+              <line x1="13" y1="13" x2="18" y2="18" />
+            </svg>
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setSearchIndex(0); }}
+              placeholder="Search messages…"
+              className="flex-1 bg-transparent text-sm text-gray-100 placeholder-gray-500 outline-none"
+            />
+            {searchQuery && (
+              <span className="text-xs text-gray-400 shrink-0 whitespace-nowrap">
+                {matchCount === 0 ? "no matches" : `${searchIndex + 1} / ${matchCount}`}
+              </span>
+            )}
+            {searchQuery && matchCount > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => navigateMatch(-1)}
+                  className="p-0.5 text-gray-400 hover:text-gray-200 transition-colors"
+                  aria-label="Previous match"
+                >
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10 5l-7 7h14z" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigateMatch(1)}
+                  className="p-0.5 text-gray-400 hover:text-gray-200 transition-colors"
+                  aria-label="Next match"
+                >
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M10 15l7-7H3z" />
+                  </svg>
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={closeSearch}
+              className="p-0.5 text-gray-400 hover:text-gray-200 transition-colors"
+              aria-label="Close search"
+            >
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
+              </svg>
+            </button>
+          </div>
+        )}
 
         <main
           ref={scrollRef}
           onScroll={onScroll}
-          className="flex-1 overflow-y-auto px-3 md:px-6 py-4"
+          className={`flex-1 overflow-y-auto px-3 md:px-6 py-4${terminalOpen ? " hidden" : ""}`}
         >
-          <div className="max-w-3xl mx-auto">
+          <div className="max-w-3xl lg:max-w-5xl mx-auto">
             {loadingOlder && (
               <div className="text-center text-xs text-gray-500 py-2">
                 Loading older messages…
@@ -287,8 +646,9 @@ function App() {
               <EmptyState onOpenSidebar={() => setSidebarOpen(true)} />
             )}
             {messages.map((m) => (
-              <Message key={m.id} message={m} />
+              <Message key={m.id} message={m} searchQuery={searchQuery} />
             ))}
+            {status === "streaming" && !currentAssistantId && <TypingIndicator />}
             {lastError && (
               <div className="text-xs text-red-400 mt-2 px-3 py-2 rounded bg-red-950/40 border border-red-800">
                 {lastError}
@@ -296,6 +656,29 @@ function App() {
             )}
           </div>
         </main>
+
+        {terminalMounted && (activeProjectId ?? activeProjectIdRef.current) !== null && (
+          <div className={terminalOpen ? "flex-1 min-h-0" : "hidden"}>
+            <Terminal
+              key={activeProjectId ?? activeProjectIdRef.current}
+              projectId={(activeProjectId ?? activeProjectIdRef.current)!}
+              send={send}
+              onReady={(write) => { terminalWriteRef.current = write; }}
+              onHide={() => setTerminalOpen(false)}
+            />
+          </div>
+        )}
+
+        {pendingUserInputs.map((p) => (
+          <UserInputPrompt
+            key={p.toolUseId}
+            request={p}
+            send={send}
+            onAnswered={(toolUseId, _answer) => {
+              removeUserInput(toolUseId);
+            }}
+          />
+        ))}
 
         {pendingPermissions.map((p) => (
           <PermissionPrompt
@@ -306,13 +689,16 @@ function App() {
           />
         ))}
 
-        <Composer
-          disabled={!connected || !activeSessionId || readOnly}
-          streaming={status === "streaming"}
-          autoApproveActive={autoApprove}
-          onSubmit={onSubmit}
-          onInterrupt={onInterrupt}
-        />
+        <div className={terminalOpen ? "hidden" : ""}>
+          {streamingActivity && <StreamingStatus activity={streamingActivity} />}
+          <Composer
+            disabled={!connected || !activeSessionId || readOnly}
+            streaming={status === "streaming"}
+            autoApproveActive={autoApprove}
+            onSubmit={onSubmit}
+            onInterrupt={onInterrupt}
+          />
+        </div>
       </div>
 
       {pendingLock && (
@@ -322,6 +708,20 @@ function App() {
           onCancel={() => setPendingLock(null)}
         />
       )}
+
+      <FileBrowser send={send} />
+
+      <NewProjectBrowser
+        send={send}
+        directory={fsDirectory}
+        open={newProjectOpen}
+        workerId={newProjectWorkerId}
+        onClose={() => {
+          setNewProjectOpen(false);
+          setFsDirectory(null);
+          setNewProjectWorkerId(undefined);
+        }}
+      />
     </div>
   );
 }

@@ -8,6 +8,7 @@ type ProjectsState = {
   loading: boolean;
 
   setActive: (projectId: number | null) => void;
+  setLoading: () => void;
   handleServerMessage: (msg: ServerMessage) => void;
 };
 
@@ -15,9 +16,10 @@ export const useProjectsStore = create<ProjectsState>((set) => ({
   projects: [],
   sessionsByProject: {},
   activeProjectId: null,
-  loading: false,
+  loading: true,
 
   setActive: (projectId) => set({ activeProjectId: projectId }),
+  setLoading: () => set({ loading: true }),
 
   handleServerMessage: (msg) => {
     switch (msg.type) {

@@ -7,19 +7,33 @@ const RECONNECT_DELAY_MS = 2_000;
 type Options = {
   url?: string;
   onMessage: (msg: ServerMessage) => void;
+  onReconnect?: () => void;
+  /** Fired on every successful WS open — first connect AND reconnects. */
+  onConnect?: () => void;
 };
 
-export function useWebSocket({ url, onMessage }: Options) {
+export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options) {
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pingTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const handlerRef = useRef(onMessage);
+  const reconnectHandlerRef = useRef(onReconnect);
+  const connectHandlerRef = useRef(onConnect);
   const manuallyClosedRef = useRef(false);
+  const everConnectedRef = useRef(false);
 
   useEffect(() => {
     handlerRef.current = onMessage;
   }, [onMessage]);
+
+  useEffect(() => {
+    reconnectHandlerRef.current = onReconnect;
+  }, [onReconnect]);
+
+  useEffect(() => {
+    connectHandlerRef.current = onConnect;
+  }, [onConnect]);
 
   const send = useCallback((msg: ClientMessage) => {
     const ws = wsRef.current;
@@ -38,6 +52,8 @@ export function useWebSocket({ url, onMessage }: Options) {
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
+      const isReconnect = everConnectedRef.current;
+      everConnectedRef.current = true;
       setConnected(true);
       // Start heartbeat
       pingTimerRef.current = window.setInterval(() => {
@@ -45,6 +61,13 @@ export function useWebSocket({ url, onMessage }: Options) {
           ws.send(JSON.stringify({ type: "ping", payload: {} }));
         }
       }, HEARTBEAT_INTERVAL_MS);
+      if (isReconnect) {
+        // onReconnect fires after a prior disconnect (tab was open, WS dropped)
+        reconnectHandlerRef.current?.();
+      } else {
+        // onConnect fires only on the very first connection of this page load
+        connectHandlerRef.current?.();
+      }
     };
 
     ws.onmessage = (event) => {

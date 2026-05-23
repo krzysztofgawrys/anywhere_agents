@@ -1,0 +1,61 @@
+# Claude Web — hub + worker architecture
+#
+# Usage:
+#   cp .env.example .env   # fill in your values
+#   docker compose up -d   # build + start
+#   docker compose logs -f # follow logs
+#
+# Hub:   frontend proxy + auth + push notifications
+# Worker: Claude SDK, project scanning, terminal, file browser
+
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: docker/hub.Dockerfile
+    container_name: claude-web-hub
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${PORT:-127.0.0.1:8001}:8001"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - HOME=/home/app
+    volumes:
+      # Worker config — hub reads this on startup
+      - ./workers.json:/config/workers.json:ro
+      # Push notification keys (VAPID)
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Dev override: mount frontend build so that worker (Claude) can
+      # run `npm run build` and hub serves new files instantly.
+      - ./frontend-dist:/app/src/static-mount
+    depends_on:
+      worker:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    container_name: claude-web-worker
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+    volumes:
+      # Claude auth (claude login), settings, project session history
+      - ${HOME}/.claude:/home/app/.claude
+      - ${HOME}/.claude.json:/home/app/.claude.json
+      # Worker DB (projects index)
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Git credentials (read-only)
+      - ${HOME}/.ssh:/home/app/.ssh:ro
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      # ── Project roots ──────────────────────────────────────────────────
+      # Mount at the SAME absolute path as on host so that cwd recorded in
+      # ~/.claude/projects/*.jsonl resolves correctly inside the container.
+      # Add more lines below for additional project directories.
+      - ${HOME}/code:${HOME}/code
