@@ -1,21 +1,21 @@
-# Claude Web Worker — standalone compose for remote machines (PC1, PC2)
+# Claude Web Worker (Claude SDK) — standalone compose for remote machines (PC1, PC2)
 #
 # Deployment steps:
 #   1. Clone the repo on the remote machine
 #   2. Copy this file or use directly
 #   3. Create .env with UID, GID, and WORKER_SECRET matching hub's workers.json
 #   4. Edit volume mounts below for your project directories
-#   5. docker compose -f worker-compose.yml up -d --build
+#   5. docker compose -f worker-claude-compose.yml up -d --build
 #
 # Hub connects to this worker via the URL configured in workers.json.
 # Worker port must be reachable from hub (LAN, SSH tunnel, or Cloudflare tunnel).
 
 services:
-  worker:
+  worker-claude:
     build:
       context: .
-      dockerfile: docker/worker.Dockerfile
-    container_name: claude-web-worker
+      dockerfile: docker/worker-claude.Dockerfile
+    container_name: claude-web-worker-claude
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:

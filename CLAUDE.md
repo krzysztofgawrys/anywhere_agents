@@ -7,16 +7,17 @@ Web interface for local Claude Code. Mobile + desktop, accessed via Cloudflare T
 Hub + Workers architecture running in Docker:
 
 - **Hub**: FastAPI — frontend proxy, Cloudflare Access auth, WebSocket router to workers, push notifications
-- **Workers**: FastAPI — Claude SDK, project scanning, terminal, file browser, session management
+- **Workers**: FastAPI — agent SDK runtime, project scanning, terminal, file browser, session management.
+  Each worker is specialized for one agent SDK; currently `worker-claude` (Claude SDK). Future: `worker-copilot`, etc.
 - **Frontend**: React + Vite + Tailwind, builds to `frontend-dist/`
 - **Tunnel**: cloudflared (external)
 - **Auth**: Cloudflare Access JWT verified on WS handshake (dev bypass if unconfigured)
 
 ```
 ┌─────────────┐     ┌─────────────┐
-│   Browser   │────▶│     Hub     │──┬──▶ Worker (local/Docker)
-│  (PWA/Web)  │ WS  │  (Docker)   │  ├──▶ Worker (big-worker/remote)
-└─────────────┘     └─────────────┘  └──▶ Worker (small-worker/remote)
+│   Browser   │────▶│     Hub     │──┬──▶ worker-claude (local/Docker)
+│  (PWA/Web)  │ WS  │  (Docker)   │  ├──▶ worker-claude (big-worker/remote)
+└─────────────┘     └─────────────┘  └──▶ worker-claude (small-worker/remote)
 ```
 
 Workers are configured in `workers.json`. Hub connects to all workers on
@@ -30,7 +31,7 @@ correct worker based on project ID.
 cp .env.example .env   # fill in UID, GID, WORKER_SECRET
 docker compose up -d --build
 
-# Frontend dev (from worker or host)
+# Frontend dev (from worker-claude or host)
 cd frontend && npm install && npm run build
 # Hub serves from frontend-dist/ volume mount — no rebuild needed
 
@@ -59,7 +60,7 @@ hub/src/
 │   └── project_index.py ProjectIndex — hub_id ↔ (worker_id, worker_pid) mapping
 └── ws/handler.py        Multi-worker WS proxy + message routing
 
-worker/src/
+worker-claude/src/         (one per agent SDK — see future worker-copilot/, etc.)
 ├── main.py              FastAPI app, WS endpoint with shared secret auth
 ├── db.py                aiosqlite singleton + schema
 ├── projects/
@@ -86,13 +87,13 @@ frontend/src/
 
 ```
 docker/
-├── hub.Dockerfile       Multi-stage: node (frontend) → uv (deps) → python:3.13-slim
-├── worker.Dockerfile    Multi-stage: uv (deps) → python:3.13-slim + Node.js + Claude CLI
-└── entrypoint.sh        Injects user into /etc/passwd (fixes "I have no name!")
+├── hub.Dockerfile           Multi-stage: node (frontend) → uv (deps) → python:3.13-slim
+├── worker-claude.Dockerfile Multi-stage: uv (deps) → python:3.13-slim + Node.js + Claude CLI
+└── entrypoint.sh            Injects user into /etc/passwd (fixes "I have no name!")
 ```
 
-- `compose.yml` — hub + local worker (laptop)
-- `worker-compose.yml` — standalone worker for remote machines
+- `compose.yml` — hub + local worker-claude (laptop)
+- `worker-claude-compose.yml` — standalone worker-claude for remote machines
 - `workers.json` — worker registry (id, label, url, secret)
 
 Volume mounts use same absolute paths as host so Claude session history
@@ -100,7 +101,7 @@ Volume mounts use same absolute paths as host so Claude session history
 
 Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 `/app/src/static-mount`. Hub prefers this over the baked-in copy, so
-`npm run build` from the worker updates the UI without rebuilding the hub image.
+`npm run build` from worker-claude updates the UI without rebuilding the hub image.
 
 ## WebSocket Protocol
 
@@ -173,5 +174,5 @@ when Web Push is active.
 ## Testing
 
 ```bash
-cd worker && uv run pytest
+cd worker-claude && uv run pytest
 ```

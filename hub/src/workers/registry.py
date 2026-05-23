@@ -5,7 +5,7 @@ Config format (array of objects):
   {
     "id": "local",
     "label": "Laptop",
-    "url": "ws://worker:8002/ws",
+    "url": "ws://worker-claude:8002/ws",
     "secret": "changeme"
   },
   {

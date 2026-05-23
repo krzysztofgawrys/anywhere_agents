@@ -3,7 +3,7 @@ FROM python:3.13-slim AS deps
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
-COPY worker/pyproject.toml ./
+COPY worker-claude/pyproject.toml ./
 RUN mkdir -p src && touch src/__init__.py
 RUN uv lock && uv sync --frozen --no-dev
 
@@ -26,7 +26,7 @@ RUN mkdir -p /home/app && chmod 777 /home/app \
 
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv
-COPY worker/src/ /app/src/
+COPY worker-claude/src/ /app/src/
 COPY docker/entrypoint.sh /entrypoint.sh
 
 ENV HOME=/home/app \

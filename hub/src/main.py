@@ -46,7 +46,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Claude Web Hub", version="0.1.0", lifespan=lifespan)
 
-# Prefer a volume-mounted static dir (for live dev rebuilds from worker/Claude)
+# Prefer a volume-mounted static dir (for live dev rebuilds from worker-claude)
 # over the baked-in copy from the Docker image build.
 _STATIC_MOUNT = Path(__file__).parent / "static-mount"
 _STATIC_BAKED = Path(__file__).parent / "static"

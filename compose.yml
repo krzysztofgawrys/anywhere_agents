@@ -5,8 +5,9 @@
 #   docker compose up -d   # build + start
 #   docker compose logs -f # follow logs
 #
-# Hub:   frontend proxy + auth + push notifications
-# Worker: Claude SDK, project scanning, terminal, file browser
+# Hub:           frontend proxy + auth + push notifications
+# worker-claude: Claude SDK, project scanning, terminal, file browser
+#                (additional workers — e.g. worker-copilot — added as separate services)
 
 services:
   hub:
@@ -32,14 +33,14 @@ services:
       # run `npm run build` and hub serves new files instantly.
       - ./frontend-dist:/app/src/static-mount
     depends_on:
-      worker:
+      worker-claude:
         condition: service_healthy
 
-  worker:
+  worker-claude:
     build:
       context: .
-      dockerfile: docker/worker.Dockerfile
-    container_name: claude-web-worker
+      dockerfile: docker/worker-claude.Dockerfile
+    container_name: claude-web-worker-claude
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     environment:
