@@ -177,21 +177,23 @@ hub/src/
 │   └── project_index.py ProjectIndex - hub_id <-> (worker_id, worker_pid) mapping
 └── ws/handler.py        Multi-worker WS proxy + message routing
 
-worker-claude/src/
-├── main.py              FastAPI app, WS endpoint with shared secret auth
-├── db.py                aiosqlite singleton + schema
-├── projects/
-│   ├── scanner.py       walk ~/.claude/projects/, register in DB
-│   └── service.py       project CRUD (list, get, set_auto_approve)
-├── sessions/reader.py   parse .jsonl, list sessions, paginated history
+shared/worker_shared/        (path-installed in every worker via uv sources)
+├── db.py                aiosqlite singleton + schema (projects table)
 ├── files/browser.py     Sandboxed file browser (symlink-aware) + write_file
 ├── terminal/session.py  PTY terminal session (pty fork + asyncio reader)
+├── locks/manager.py     per-session lock registry (takeover supported)
+├── projects/service.py  project CRUD (list, get, set_auto_approve)
+└── sdk/registry.py      Session parking registry (keeps sessions alive after
+                         WS disconnect) - typed against a structural Protocol
+
+worker-claude/src/           (Claude SDK-specific runtime)
+├── main.py              FastAPI app, WS endpoint with shared secret auth
+├── projects/scanner.py  walk ~/.claude/projects/, register in DB
+├── sessions/reader.py   parse .jsonl, list sessions, paginated history
 ├── sdk/
 │   ├── session.py       ClaudeSDKClient wrapper (streaming, model switch, push)
 │   ├── manager.py       SessionManager - owns active session per WS
-│   ├── permissions.py   PermissionBroker - gated tool-use approvals
-│   └── registry.py      Session parking registry (keeps sessions alive after WS disconnect)
-├── locks/manager.py     per-session lock registry (takeover supported)
+│   └── permissions.py   PermissionBroker - gated tool-use approvals
 └── ws/handler.py        WS routing + heartbeat
 
 frontend/src/

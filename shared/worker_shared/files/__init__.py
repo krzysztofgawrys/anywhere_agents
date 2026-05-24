@@ -1,6 +1,6 @@
 """Project file browser - list directories, read files, sandboxed to project cwd."""
 
-from src.files.browser import (
+from worker_shared.files.browser import (
     FileBrowserError,
     create_absolute_directory,
     list_absolute_directory,

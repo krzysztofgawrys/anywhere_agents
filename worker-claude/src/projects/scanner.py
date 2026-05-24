@@ -13,7 +13,7 @@ from pathlib import Path
 
 import structlog
 
-from src.db import Database
+from worker_shared.db import Database
 
 logger = structlog.get_logger()
 

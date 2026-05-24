@@ -8,9 +8,8 @@ from typing import Any
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
 
-from src.db import db
-from src.terminal.session import TerminalSession
-from src.files import (
+from worker_shared.db import db
+from worker_shared.files import (
     FileBrowserError,
     create_absolute_directory,
     list_absolute_directory,
@@ -18,7 +17,14 @@ from src.files import (
     read_file,
     write_file,
 )
-from src.projects.service import create_project, get_project, list_projects, set_auto_approve
+from worker_shared.projects.service import (
+    create_project,
+    get_project,
+    list_projects,
+    set_auto_approve,
+)
+from worker_shared.terminal.session import TerminalSession
+
 from src.sdk.manager import SessionManager
 from src.sessions.reader import get_session_messages, list_sessions
 

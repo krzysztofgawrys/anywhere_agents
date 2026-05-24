@@ -10,8 +10,9 @@ from typing import Any
 
 import structlog
 
-from src.locks.manager import LockManager, locks
-from src.sdk.registry import registry
+from worker_shared.locks.manager import LockManager, locks
+from worker_shared.sdk.registry import registry
+
 from src.sdk.session import SendFn, Session
 
 logger = structlog.get_logger()

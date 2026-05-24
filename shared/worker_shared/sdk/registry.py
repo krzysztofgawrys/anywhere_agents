@@ -11,14 +11,35 @@ Sessions expire after :data:`DETACH_TTL` seconds without being reclaimed.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
 import structlog
 
-if TYPE_CHECKING:
-    from src.sdk.session import Session
-
 logger = structlog.get_logger()
+
+
+class _PermissionsLike(Protocol):
+    """Minimal protocol satisfied by every worker's PermissionBroker.
+
+    The shared registry only needs to cancel pending permission requests when
+    parking a session; it doesn't care about the broker's full API.
+    """
+
+    def cancel_permissions(self, reason: str = ...) -> None: ...
+
+
+class Session(Protocol):
+    """Protocol for an SDK-specific session that can be parked in the registry.
+
+    worker-claude's :class:`src.sdk.session.Session` and worker-copilot's
+    equivalent both satisfy this structurally - no inheritance required.
+    """
+
+    session_id: str
+    permissions: _PermissionsLike
+
+    def rebind(self, send: Any, *, parked: bool = ...) -> None: ...
+    async def stop(self) -> None: ...
 
 # How long a parked session survives without a client (seconds).
 # Raise this if you regularly kick off long-running agent tasks and close

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.db import Database
+from worker_shared.db import Database
 
 
 async def list_projects(database: Database) -> list[dict[str, Any]]:

@@ -3,6 +3,11 @@ FROM python:3.13-slim AS deps
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
+# Shared package (path-resolved from worker-claude/pyproject.toml as "../shared").
+# Copied to /shared so the relative path resolves from /app/pyproject.toml.
+# Source must be present at lock time because uv reads shared/pyproject.toml,
+# AND at runtime because the editable install points at /shared/worker_shared.
+COPY shared/ /shared/
 COPY worker-claude/pyproject.toml ./
 RUN mkdir -p src && touch src/__init__.py
 RUN uv lock && uv sync --frozen --no-dev
@@ -26,6 +31,8 @@ RUN mkdir -p /home/app && chmod 777 /home/app \
 
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv
+# Shared package source - editable install in .venv points at /shared/worker_shared
+COPY shared/ /shared/
 COPY worker-claude/src/ /app/src/
 COPY docker/entrypoint.sh /entrypoint.sh
 

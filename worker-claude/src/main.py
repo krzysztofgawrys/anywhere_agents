@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, WebSocket, status
 
-from src.db import db
+from worker_shared.db import db
+from worker_shared.sdk.registry import registry
+
 from src.projects.scanner import scan_and_register
-from src.sdk.registry import registry
 from src.ws.handler import handle_websocket
 
 structlog.configure(
