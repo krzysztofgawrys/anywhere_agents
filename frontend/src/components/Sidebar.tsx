@@ -35,7 +35,14 @@ export function Sidebar({
     new Map(
       projects
         .filter((p) => p.worker_id)
-        .map((p) => [p.worker_id!, { id: p.worker_id!, label: p.worker_label || p.worker_id! }])
+        .map((p) => [
+          p.worker_id!,
+          {
+            id: p.worker_id!,
+            label: p.worker_label || p.worker_id!,
+            type: p.worker_type || "claude",
+          },
+        ])
     ).values()
   );
   const multiWorker = workerList.length > 1;
@@ -126,7 +133,14 @@ export function Sidebar({
                   onClick={() => setWorkerDropdownOpen((v) => !v)}
                   className="flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-gray-400 hover:text-gray-200 transition-colors"
                 >
-                  <span>{workerFilter ? workerList.find((w) => w.id === workerFilter)?.label ?? "All" : "All workers"}</span>
+                  <span>
+                    {workerFilter
+                      ? (() => {
+                          const w = workerList.find((w) => w.id === workerFilter);
+                          return w ? `${w.label} [${w.type}]` : "All";
+                        })()
+                      : "All workers"}
+                  </span>
                   <svg
                     width="12"
                     height="12"
@@ -155,13 +169,16 @@ export function Sidebar({
                         key={w.id}
                         type="button"
                         onClick={() => { setWorkerFilter(w.id); setWorkerDropdownOpen(false); }}
-                        className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
+                        className={`w-full text-left px-3 py-1.5 text-sm transition-colors flex items-center justify-between gap-2 ${
                           workerFilter === w.id
                             ? "text-white bg-gray-800"
                             : "text-gray-300 hover:bg-gray-800 hover:text-white"
                         }`}
                       >
-                        {w.label}
+                        <span className="truncate">{w.label}</span>
+                        <span className="shrink-0 text-[10px] text-gray-500 font-normal lowercase tracking-normal">
+                          {w.type}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -352,6 +369,14 @@ function ProjectItem({
           {showWorker && project.worker_label && (
             <span className="shrink-0 text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">
               {project.worker_label}
+            </span>
+          )}
+          {showWorker && project.worker_type && (
+            <span
+              className="shrink-0 text-[10px] px-1 py-0.5 rounded bg-gray-800 text-gray-500 lowercase"
+              title={`Agent SDK: ${project.worker_type}`}
+            >
+              {project.worker_type}
             </span>
           )}
           {project.auto_approve && !unavailable && (

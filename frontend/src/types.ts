@@ -11,6 +11,10 @@ export type Project = {
   available: boolean;
   worker_id?: string;
   worker_label?: string;
+  /** Agent SDK family the worker runs (e.g. "claude", "copilot"). Free-form
+   * string. Frontend treats it cosmetically (badge + dropdown suffix). Missing
+   * field (older hub) is treated as "claude". */
+  worker_type?: string;
 };
 
 export type SessionSummary = {

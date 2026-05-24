@@ -3,18 +3,24 @@
 Config format (array of objects):
 [
   {
-    "id": "local",
-    "label": "Laptop",
+    "id": "local-claude",
+    "type": "claude",
+    "label": "Laptop (Claude)",
     "url": "ws://worker-claude:8002/ws",
     "secret": "changeme"
   },
   {
-    "id": "pc1",
-    "label": "Desktop PC",
-    "url": "ws://192.168.1.50:8002/ws",
+    "id": "local-copilot",
+    "type": "copilot",
+    "label": "Laptop (Copilot)",
+    "url": "ws://worker-copilot:8003/ws",
     "secret": "other-secret"
   }
 ]
+
+`type` is optional and free-form (string); default "claude" for backward
+compat with pre-multi-agent configs. Frontend uses it for a per-project
+badge and to suffix the worker filter dropdown label.
 """
 
 from __future__ import annotations
@@ -39,6 +45,9 @@ class WorkerInfo:
     label: str
     url: str
     secret: str
+    # Agent SDK family this worker runs. Free-form string so future SDKs can
+    # be added without touching the hub. Frontend uses it cosmetically only.
+    type: str = "claude"
 
 
 def load_workers(config_path: str = WORKERS_CONFIG_PATH) -> list[WorkerInfo]:
@@ -67,11 +76,15 @@ def load_workers(config_path: str = WORKERS_CONFIG_PATH) -> list[WorkerInfo]:
         if not worker_id or not url:
             logger.warning("workers_config_skip_entry", entry=entry)
             continue
+        worker_type = entry.get("type", "claude")
+        if not isinstance(worker_type, str) or not worker_type:
+            worker_type = "claude"
         workers.append(WorkerInfo(
             id=worker_id,
             label=entry.get("label", worker_id),
             url=url,
             secret=entry.get("secret", ""),
+            type=worker_type,
         ))
 
     logger.info("workers_loaded", count=len(workers), workers=[w.id for w in workers])

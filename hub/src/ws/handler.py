@@ -81,8 +81,9 @@ async def handle_websocket(
             if msg_type == "projects":
                 w_info = next((w for w in workers if w.id == worker_id), None)
                 label = w_info.label if w_info else worker_id
+                wtype = w_info.type if w_info else "claude"
                 raw_projects = msg.get("payload", {}).get("projects", [])
-                remapped = project_index.update_from_worker(worker_id, label, raw_projects)
+                remapped = project_index.update_from_worker(worker_id, label, raw_projects, wtype)
                 msg = {"type": "projects", "payload": {"projects": project_index.get_all()}}
                 try:
                     await websocket.send_json(msg)
@@ -163,6 +164,7 @@ async def handle_websocket(
     for wid, conn in worker_conns.items():
         w_info = next((w for w in workers if w.id == wid), None)
         label = w_info.label if w_info else wid
+        wtype = w_info.type if w_info else "claude"
         try:
             resp = await conn.request(
                 {"type": "list_projects", "payload": {}},
@@ -170,7 +172,7 @@ async def handle_websocket(
                 timeout=10.0,
             )
             project_index.update_from_worker(
-                wid, label, resp.get("payload", {}).get("projects", [])
+                wid, label, resp.get("payload", {}).get("projects", []), wtype
             )
         except Exception as e:
             logger.warning("prefetch_projects_failed", worker=wid, error=str(e))
@@ -204,6 +206,7 @@ async def handle_websocket(
                 for wid, conn in worker_conns.items():
                     w_info = next((w for w in workers if w.id == wid), None)
                     label = w_info.label if w_info else wid
+                    wtype = w_info.type if w_info else "claude"
                     try:
                         resp = await conn.request(
                             {"type": "list_projects", "payload": {}},
@@ -211,7 +214,7 @@ async def handle_websocket(
                             timeout=10.0,
                         )
                         remapped = project_index.update_from_worker(
-                            wid, label, resp.get("payload", {}).get("projects", [])
+                            wid, label, resp.get("payload", {}).get("projects", []), wtype
                         )
                         all_projects.extend(remapped)
                     except Exception as e:

@@ -17,6 +17,7 @@ from typing import Any
 class ProjectMapping:
     worker_id: str
     worker_label: str
+    worker_type: str
     worker_project_id: int
     data: dict[str, Any]
 
@@ -49,6 +50,7 @@ class ProjectIndex:
         worker_id: str,
         worker_label: str,
         projects: list[dict[str, Any]],
+        worker_type: str = "claude",
     ) -> list[dict[str, Any]]:
         """Replace all projects for a worker. Returns projects with remapped hub IDs."""
         # Clear old entries for this worker
@@ -65,10 +67,12 @@ class ProjectIndex:
                 "id": hub_id,
                 "worker_id": worker_id,
                 "worker_label": worker_label,
+                "worker_type": worker_type,
             }
             self._mappings[hub_id] = ProjectMapping(
                 worker_id=worker_id,
                 worker_label=worker_label,
+                worker_type=worker_type,
                 worker_project_id=worker_pid,
                 data=project_data,
             )
