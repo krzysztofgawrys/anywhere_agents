@@ -24,6 +24,9 @@ services:
         required: false
     environment:
       - HOME=/home/app
+      # Shared secret — authenticates the worker's HTTP push callbacks.
+      # Same value the worker uses for its inbound WS auth (hub→worker).
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
     volumes:
       # Worker config — hub reads this on startup
       - ./workers.json:/config/workers.json:ro
@@ -46,6 +49,10 @@ services:
     environment:
       - HOME=/home/app
       - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      # Hub address for out-of-band push delivery (POST /api/internal/push).
+      # Worker uses HTTP instead of WS for push_notify so it works after the
+      # client WS is gone (PWA killed on Android, etc.).
+      - HUB_URL=${HUB_URL:-http://hub:8001}
     volumes:
       # Claude auth (claude login), settings, project session history
       - ${HOME}/.claude:/home/app/.claude
@@ -53,10 +60,25 @@ services:
       # Worker DB (projects index)
       - ${HOME}/.claude-web:/home/app/.claude-web
       # Git credentials (read-only)
-      - ${HOME}/.ssh:/home/app/.ssh:ro
+      - ${HOME}/.ssh:/home/app/.ssh
       - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
       # ── Project roots ──────────────────────────────────────────────────
       # Mount at the SAME absolute path as on host so that cwd recorded in
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
       - ${HOME}/code:${HOME}/code
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: claude-web-tunnel
+    restart: unless-stopped
+    command: tunnel run
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Set TUNNEL_TOKEN in .env (it's a secret — keep it out of the repo).
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
+    depends_on:
+      hub:
+        condition: service_healthy

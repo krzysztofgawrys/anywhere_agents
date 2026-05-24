@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import Body, FastAPI, Request, WebSocket, status
+from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, status
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -84,6 +84,33 @@ async def push_test() -> JSONResponse:
     subs = len(push_manager._subscriptions)  # type: ignore[attr-defined]
     await push_manager.notify_all("Claude finished", "Task completed — tap to view.")
     return JSONResponse({"subscribers": subs})
+
+
+@app.post("/api/internal/push")
+async def internal_push(
+    body: dict = Body(...),
+    x_worker_secret: str | None = Header(default=None),
+) -> JSONResponse:
+    """Worker-only endpoint for emitting push notifications.
+
+    Required because the worker's WS-based push_notify path is only reachable
+    while a frontend client is connected — i.e. exactly NOT when we need it
+    most (PWA swiped away on Android, session running detached in the
+    background). HTTP is independent of any client WS lifecycle: as long as
+    the hub container is alive, the worker can deliver a push.
+
+    Auth: shared secret matching the hub's WORKER_SECRET env var (same value
+    the worker uses to authenticate inbound hub WS connections, just reused
+    in the other direction).
+    """
+    expected = os.environ.get("WORKER_SECRET", "")
+    if not expected or x_worker_secret != expected:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    await push_manager.notify_all(
+        body.get("title", "Claude finished"),
+        body.get("body", ""),
+    )
+    return JSONResponse({"ok": True})
 
 
 @app.websocket("/ws")

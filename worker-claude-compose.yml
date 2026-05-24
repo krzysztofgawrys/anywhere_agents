@@ -23,6 +23,10 @@ services:
     environment:
       - HOME=/home/app
       - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      # Hub URL for out-of-band push notification delivery.
+      # MUST be reachable from this worker (LAN, VPN, or reverse tunnel).
+      # Leave unset to disable push from this worker.
+      - HUB_URL=${HUB_URL:-}
     volumes:
       # Claude auth (claude login), settings, project session history
       - ${HOME}/.claude:/home/app/.claude

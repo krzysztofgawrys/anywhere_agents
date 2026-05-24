@@ -10,6 +10,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 from claude_agent_sdk import (
     AssistantMessage,
@@ -576,21 +577,20 @@ class Session:
                 })
 
         elif isinstance(msg, ResultMessage):
-            # Always emit push_notify on result. The hub forwards it to Web
-            # Push subscribers; the SW displays a notification tagged
-            # "claude-result", which dedupes with the local client-side
-            # `useVisibilityNotify` (same tag → browser replaces, doesn't
-            # stack). Gating this on `_is_parked` missed the common mobile
-            # case where the PWA is in the background but the WS is still
-            # alive — neither push nor local fallback would fire, since
-            # `App.tsx` skips local notify when a push subscription exists.
-            await self._send({
-                "type": "push_notify",
-                "payload": {
-                    "title": "Claude finished",
-                    "body": f"Task completed in {self._cwd or 'background'}",
-                },
-            })
+            # Always emit push_notify on result, via HTTP directly to the hub.
+            # We deliberately do NOT use the WS callback (self._send) here:
+            # the most important case for push is precisely when the client
+            # WS is gone (PWA swiped away on Android), at which point the
+            # WS callback is a no-op because the hub already closed the
+            # hub↔worker connection and the WS manager has dropped the
+            # connection_id. HTTP is independent of any client lifecycle,
+            # so it works whether the session is parked or actively
+            # connected. Same dedup story applies (SW + local notify share
+            # tag "claude-result").
+            await self._emit_push_notify(
+                title="Claude finished",
+                body=f"Task completed in {self._cwd or 'background'}",
+            )
             await self._send({
                 "type": "result",
                 "payload": {
@@ -746,6 +746,34 @@ class Session:
                 })
         # input_json_delta (partial tool input) is ignored — the final
         # AssistantMessage carries the fully assembled tool input.
+
+    async def _emit_push_notify(self, *, title: str, body: str) -> None:
+        """Deliver a push notification to the hub out-of-band over HTTP.
+
+        Independent of the client WS — works whether the session is parked
+        or actively connected. Best-effort: swallow all errors and just log
+        them, since failing to push must never disrupt the agent loop.
+        """
+        hub_url = os.environ.get("HUB_URL", "").rstrip("/")
+        secret = os.environ.get("WORKER_SECRET", "")
+        if not hub_url or not secret:
+            logger.debug("push_notify_skipped_no_hub_config")
+            return
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.post(
+                    f"{hub_url}/api/internal/push",
+                    json={"title": title, "body": body},
+                    headers={"X-Worker-Secret": secret},
+                )
+                if resp.status_code != 200:
+                    logger.warning(
+                        "push_notify_http_non_200",
+                        status=resp.status_code,
+                        body=resp.text[:200],
+                    )
+        except Exception as e:
+            logger.warning("push_notify_http_failed", error=str(e))
 
 
 def _iter_blocks(content: Any) -> AsyncIterator[Any] | list[Any]:
