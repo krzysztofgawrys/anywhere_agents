@@ -1,7 +1,7 @@
 [project]
 name = "claude-web-worker"
 version = "0.1.0"
-description = "Claude Web worker — runs Claude SDK sessions, project scanning, file browser"
+description = "Claude Web worker - runs Claude SDK sessions, project scanning, file browser"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

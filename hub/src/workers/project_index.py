@@ -1,9 +1,9 @@
-"""Project index — maps hub-level project IDs to (worker_id, worker_project_id).
+"""Project index - maps hub-level project IDs to (worker_id, worker_project_id).
 
 Hub assigns globally unique IDs by offsetting:
   hub_id = worker_index * 1_000_000 + worker_project_id
 
-This is transparent to the frontend — it sees hub_ids everywhere.
+This is transparent to the frontend - it sees hub_ids everywhere.
 When routing to a worker, hub resolves back to the original worker-side id.
 """
 

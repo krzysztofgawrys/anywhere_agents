@@ -118,7 +118,7 @@ def project_dir_for_cwd(cwd: str, projects_root: Path = PROJECTS_ROOT) -> Path:
     """Return the ~/.claude/projects/ subdirectory for a given cwd.
 
     Claude CLI encodes cwd by replacing '/', '_' AND '.' all with '-'. This is
-    a lossy hash — multiple cwds can collide — but the CLI accepts that because
+    a lossy hash - multiple cwds can collide - but the CLI accepts that because
     the real cwd is also stored inside every .jsonl entry.
 
     Example: `/home/me/code/claude_cloud` → `-home-me-code-claude-cloud`

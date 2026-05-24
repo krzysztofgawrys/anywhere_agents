@@ -1,4 +1,4 @@
-"""Tests for sessions/reader.py — list and read .jsonl session files."""
+"""Tests for sessions/reader.py - list and read .jsonl session files."""
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def test_list_sessions_missing_project_returns_empty(tmp_path: Path) -> None:
 
 
 def test_cli_marker_tags_stripped_from_user_text(tmp_path: Path) -> None:
-    """CLI internal tags like <ide_opened_file> are noise — strip from UI."""
+    """CLI internal tags like <ide_opened_file> are noise - strip from UI."""
     projects_root = tmp_path / "projects"
     cwd = "/home/me/code/proj"
     project_dir = projects_root / "-home-me-code-proj"

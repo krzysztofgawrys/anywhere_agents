@@ -51,7 +51,7 @@ function writeStreamPref(value: boolean): void {
   try {
     window.localStorage.setItem(STREAM_TOKENS_KEY, value ? "1" : "0");
   } catch {
-    // localStorage may be unavailable (private mode, etc.) — silently ignore.
+    // localStorage may be unavailable (private mode, etc.) - silently ignore.
   }
 }
 
@@ -317,7 +317,7 @@ export function Composer({
               disabled
                 ? "Connecting…"
                 : isTouch
-                  ? "Message Claude — tap ➤ to send. Paste / drop images."
+                  ? "Message Claude - tap ➤ to send. Paste / drop images."
                   : "Message Claude (Enter to send, Shift+Enter for newline). Paste / drop images."
             }
             rows={4}

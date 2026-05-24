@@ -1,4 +1,4 @@
-"""Worker registry — reads worker list from a JSON config file.
+"""Worker registry - reads worker list from a JSON config file.
 
 Config format (array of objects):
 [

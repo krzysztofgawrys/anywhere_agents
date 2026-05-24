@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
-# start.sh — one command to run Claude Web (production-like, no hot-reload).
+# start.sh - one command to run Claude Web (production-like, no hot-reload).
 #
 # What it does:
 #   1. Loads .env from project root (if present)
@@ -75,7 +75,7 @@ if [[ "$NO_BUILD" == false ]]; then
     if [[ "$SKIP_TESTS" == false ]]; then
         echo "Running tests..."
         cd "$BACKEND_DIR"
-        uv run pytest -q || { echo "Tests failed — fix before deploying."; exit 1; }
+        uv run pytest -q || { echo "Tests failed - fix before deploying."; exit 1; }
     fi
 fi
 

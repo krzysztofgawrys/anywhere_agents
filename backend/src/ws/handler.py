@@ -1,4 +1,4 @@
-"""WebSocket handler — protocol routing, heartbeat, session lifecycle."""
+"""WebSocket handler - protocol routing, heartbeat, session lifecycle."""
 
 import asyncio
 import json
@@ -24,7 +24,7 @@ from src.sessions.reader import get_session_messages, list_sessions
 logger = structlog.get_logger()
 
 HEARTBEAT_INTERVAL = 20  # client sends ping every 20s
-HEARTBEAT_TIMEOUT = 300  # 5 min — gives mobile browsers time to resume before WS is dropped
+HEARTBEAT_TIMEOUT = 300  # 5 min - gives mobile browsers time to resume before WS is dropped
 
 
 class ConnectionManager:

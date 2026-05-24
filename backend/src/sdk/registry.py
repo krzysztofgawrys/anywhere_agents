@@ -22,7 +22,7 @@ logger = structlog.get_logger()
 
 # How long a parked session survives without a client (seconds).
 # Raise this if you regularly kick off long-running agent tasks and close
-# the browser — the session keeps running in the background until reclaimed
+# the browser - the session keeps running in the background until reclaimed
 # or until this TTL expires. Each parked session holds an SDK subprocess in
 # memory, so don't set this arbitrarily high on memory-constrained machines.
 DETACH_TTL = 60 * 60  # 1 hour
@@ -59,11 +59,11 @@ class SessionRegistry:
 
         session.rebind(_noop_send, parked=True)
 
-        # Cancel only allow/deny permission futures — the agent can't wait for
+        # Cancel only allow/deny permission futures - the agent can't wait for
         # a human decision while detached. User-input (AskUserQuestion) futures
         # are intentionally kept alive: the agent stays blocked on them, and
         # after reconnect notify_reconnected() re-sends the question.
-        session.permissions.cancel_permissions("Client disconnected — session running in background")
+        session.permissions.cancel_permissions("Client disconnected - session running in background")
 
         self._sessions[sid] = session
         self._expiry_tasks[sid] = asyncio.create_task(self._expire(sid))
@@ -104,7 +104,7 @@ class SessionRegistry:
                 logger.warning("session_expire_stop_error", session_id=session_id, error=str(exc))
 
     async def stop_all(self) -> None:
-        """Stop every parked session — called on server shutdown."""
+        """Stop every parked session - called on server shutdown."""
         for task in list(self._expiry_tasks.values()):
             task.cancel()
         self._expiry_tasks.clear()

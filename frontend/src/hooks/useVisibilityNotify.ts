@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef } from "react";
  * Uses the SW's showNotification() so the notification appears even when the
  * page is suspended. Falls back silently if the browser doesn't support it.
  *
- * No backend round-trip needed — this is purely client-side via Page
+ * No backend round-trip needed - this is purely client-side via Page
  * Visibility API + Service Worker.
  */
 export function useVisibilityNotify(): (title: string, body: string) => void {
@@ -22,7 +22,7 @@ export function useVisibilityNotify(): (title: string, body: string) => void {
   }, []);
 
   return useCallback((title: string, body: string) => {
-    if (!document.hidden) return; // user can see the result — no notification needed
+    if (!document.hidden) return; // user can see the result - no notification needed
     if (Notification.permission !== "granted") return;
 
     playNotificationSound();
@@ -86,6 +86,6 @@ function playNotificationSound(): void {
     // Close the context once both tones have finished.
     setTimeout(() => { ctx.close().catch(() => {}); }, 400);
   } catch {
-    // Web Audio not supported or blocked — fail silently.
+    // Web Audio not supported or blocked - fail silently.
   }
 }

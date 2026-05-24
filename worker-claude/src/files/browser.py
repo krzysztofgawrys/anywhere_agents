@@ -32,7 +32,7 @@ def _resolve_within(root: Path, rel_path: str) -> Path:
     """Resolve `rel_path` against `root`.
 
     Blocks ``..`` segments in the input (path traversal), but allows symlinks
-    to point outside the project root — the Docker container filesystem is
+    to point outside the project root - the Docker container filesystem is
     the real sandbox, so anything mounted is intentionally accessible.
     """
     rel = (rel_path or "").lstrip("/")
@@ -99,7 +99,7 @@ def list_directory(project_path: str, rel_path: str = "") -> dict[str, Any]:
         try:
             st = child.stat()
         except OSError:
-            # Broken symlink, permission denied, or vanished entry — skip.
+            # Broken symlink, permission denied, or vanished entry - skip.
             continue
         try:
             is_dir = child.is_dir()
@@ -114,7 +114,7 @@ def list_directory(project_path: str, rel_path: str = "") -> dict[str, Any]:
             }
         )
 
-    # Use the input rel_path as canonical — not the resolved target.
+    # Use the input rel_path as canonical - not the resolved target.
     # Symlinks may resolve outside root, but the logical path through
     # the symlink stays valid for subsequent navigation.
     clean_rel = (rel_path or "").strip("/")
@@ -250,3 +250,46 @@ def read_file(project_path: str, rel_path: str) -> dict[str, Any]:
         "encoding": "utf-8",
         "content": text,
     }
+
+
+def write_file(project_path: str, rel_path: str, content: str) -> dict[str, Any]:
+    """Write UTF-8 text to a file inside the project, sandbox-checked.
+
+    Creates parent directories if needed. Atomic write (tmp + rename) to
+    prevent partial files on crash. Refuses binary writes and files over
+    MAX_FILE_BYTES.
+
+    Returns: { path, size }
+    """
+    if not rel_path or not rel_path.strip("/"):
+        raise FileBrowserError("bad_request", "File path required")
+
+    raw = content.encode("utf-8")
+    if len(raw) > MAX_FILE_BYTES:
+        raise FileBrowserError(
+            "too_large",
+            f"Content exceeds {MAX_FILE_BYTES // (1024*1024)} MiB limit",
+        )
+
+    root = Path(project_path)
+    if not root.exists() or not root.is_dir():
+        raise FileBrowserError("not_found", "Project root not found")
+    target = _resolve_within(root, rel_path)
+
+    # Refuse overwriting symlinks (prevent symlink-following attacks).
+    unresolved = root / (rel_path or "").lstrip("/")
+    if unresolved.is_symlink():
+        raise FileBrowserError("forbidden", "Cannot write through a symlink")
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(raw)
+        tmp.replace(target)
+    except PermissionError as exc:
+        raise FileBrowserError("forbidden", "Permission denied") from exc
+    except OSError as exc:
+        raise FileBrowserError("io_error", str(exc)) from exc
+
+    clean_rel = (rel_path or "").strip("/")
+    return {"path": clean_rel, "size": len(raw)}

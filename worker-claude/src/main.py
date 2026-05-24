@@ -1,4 +1,4 @@
-"""Worker entry point — WS server for hub connections."""
+"""Worker entry point - WS server for hub connections."""
 
 import os
 import uuid

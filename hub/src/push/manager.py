@@ -27,7 +27,7 @@ _VAPID_PATH = Path(
 _SUBS_PATH = Path(
     os.environ.get("CLAUDE_WEB_PUSH_SUBS_PATH", "~/.claude-web/push_subs.json")
 ).expanduser()
-_CONTACT = "mailto:admin@localhost"  # VAPID contact — required by push services
+_CONTACT = "mailto:admin@localhost"  # VAPID contact - required by push services
 
 
 class PushManager:
@@ -126,7 +126,7 @@ class PushManager:
         if _VAPID_PATH.exists():
             try:
                 data = json.loads(_VAPID_PATH.read_text())
-                # from_pem is a classmethod — capture the returned instance.
+                # from_pem is a classmethod - capture the returned instance.
                 v = Vapid.from_pem(data["private_pem"].encode())
                 logger.info("vapid_loaded", path=str(_VAPID_PATH))
                 return v

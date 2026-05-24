@@ -1,4 +1,4 @@
-"""Tests for project scanner and project service — Phase 3."""
+"""Tests for project scanner and project service - Phase 3."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def fake_projects_root(tmp_path: Path) -> Path:
     root = tmp_path / "projects"
     root.mkdir()
 
-    # Project A — has session with cwd inside
+    # Project A - has session with cwd inside
     project_a = root / "-home-alice-code-foo"
     project_a.mkdir()
     (project_a / "session1.jsonl").write_text(
@@ -37,7 +37,7 @@ def fake_projects_root(tmp_path: Path) -> Path:
         + "\n"
     )
 
-    # Project B — empty session file (no cwd) — should be skipped or fall back
+    # Project B - empty session file (no cwd) - should be skipped or fall back
     project_b = root / "-home-bob-code-bar"
     project_b.mkdir()
     (project_b / "session2.jsonl").write_text(
@@ -45,7 +45,7 @@ def fake_projects_root(tmp_path: Path) -> Path:
         + "\n"
     )
 
-    # Not a directory — should be ignored
+    # Not a directory - should be ignored
     (root / "file.txt").write_text("ignore me")
 
     return root
@@ -103,7 +103,7 @@ def test_project_dir_for_cwd_encoding() -> None:
     # underscore is encoded too
     p = project_dir_for_cwd("/home/me/code/claude_cloud", projects_root=Path("/tmp/x"))
     assert p == Path("/tmp/x/-home-me-code-claude-cloud")
-    # dot is encoded too — leading double dash for hidden dirs
+    # dot is encoded too - leading double dash for hidden dirs
     p = project_dir_for_cwd("/home/me/.config", projects_root=Path("/tmp/x"))
     assert p == Path("/tmp/x/-home-me--config")
 

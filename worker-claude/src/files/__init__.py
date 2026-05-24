@@ -1,4 +1,4 @@
-"""Project file browser — list directories, read files, sandboxed to project cwd."""
+"""Project file browser - list directories, read files, sandboxed to project cwd."""
 
 from src.files.browser import (
     FileBrowserError,
@@ -6,6 +6,7 @@ from src.files.browser import (
     list_absolute_directory,
     list_directory,
     read_file,
+    write_file,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "list_absolute_directory",
     "list_directory",
     "read_file",
+    "write_file",
 ]

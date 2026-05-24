@@ -1,4 +1,4 @@
-/** WebSocket protocol types — mirror of backend src/ws messages. */
+/** WebSocket protocol types - mirror of backend src/ws messages. */
 
 export type Project = {
   id: number;
@@ -31,6 +31,7 @@ export type ChatBlock =
   | { kind: "text"; text: string }
   | { kind: "thinking"; text: string }
   | { kind: "image"; media_type: string; data_b64: string }
+  | { kind: "info"; text: string }
   | {
       kind: "tool";
       tool_use_id: string;
@@ -98,6 +99,7 @@ export type ClientMessage =
   | { type: "deny_tool"; payload: { tool_use_id: string; reason?: string } }
   | { type: "list_directory"; payload: { project_id: number; path?: string } }
   | { type: "read_file"; payload: { project_id: number; path: string } }
+  | { type: "write_file"; payload: { project_id: number; path: string; content: string } }
   | { type: "browse_fs"; payload: { path?: string; worker_id?: string } }
   | { type: "create_directory"; payload: { path: string; worker_id?: string } }
   | { type: "create_project"; payload: { path: string; worker_id?: string } }
@@ -236,6 +238,14 @@ export type ServerMessage =
         too_large: boolean;
         encoding: "utf-8" | "base64" | null;
         content: string | null;
+      };
+    }
+  | {
+      type: "file_written";
+      payload: {
+        project_id: number;
+        path: string;
+        size: number;
       };
     }
   | { type: "error"; payload: { code: string; message: string } }

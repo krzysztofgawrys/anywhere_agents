@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { ClientMessage, DirectoryEntry } from "../types";
 import { useFilesStore } from "../stores/files";
 
@@ -12,13 +12,20 @@ export function FileBrowser({ send }: Props) {
   const file = useFilesStore((s) => s.file);
   const loading = useFilesStore((s) => s.loading);
   const error = useFilesStore((s) => s.error);
+  const editing = useFilesStore((s) => s.editing);
+  const editContent = useFilesStore((s) => s.editContent);
+  const saving = useFilesStore((s) => s.saving);
   const close = useFilesStore((s) => s.close);
   const beginNavigate = useFilesStore((s) => s.beginNavigate);
   const beginOpenFile = useFilesStore((s) => s.beginOpenFile);
   const closeFile = useFilesStore((s) => s.closeFile);
+  const beginEdit = useFilesStore((s) => s.beginEdit);
+  const cancelEdit = useFilesStore((s) => s.cancelEdit);
+  const setEditContent = useFilesStore((s) => s.setEditContent);
+  const beginSave = useFilesStore((s) => s.beginSave);
 
   // First-open: ask the server for the project root.
-  // Guard on `directory || file`, NOT on `loading` — open() leaves loading=false
+  // Guard on `directory || file`, NOT on `loading` - open() leaves loading=false
   // and `beginNavigate` flips it after we fire the request. If we gated on
   // loading we'd skip the very first send.
   useEffect(() => {
@@ -36,7 +43,9 @@ export function FileBrowser({ send }: Props) {
     if (!project) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (file) {
+      if (editing) {
+        cancelEdit();
+      } else if (file) {
         closeFile();
       } else {
         close();
@@ -44,9 +53,20 @@ export function FileBrowser({ send }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [project, file, close, closeFile]);
+  }, [project, file, editing, close, closeFile, cancelEdit]);
+
+  const saveFile = () => {
+    if (!project || !file) return;
+    beginSave();
+    send({
+      type: "write_file",
+      payload: { project_id: project.id, path: file.path, content: editContent },
+    });
+  };
 
   if (!project) return null;
+
+  const canEdit = file && file.encoding === "utf-8" && !file.tooLarge && file.content !== null;
 
   const navigateTo = (path: string) => {
     if (!project) return;
@@ -76,10 +96,14 @@ export function FileBrowser({ send }: Props) {
       <header className="border-b border-gray-800 px-3 md:px-4 py-2 md:py-3 flex items-center gap-3 shrink-0">
         <button
           type="button"
-          onClick={() => (file ? closeFile() : close())}
+          onClick={() => {
+            if (editing) { cancelEdit(); }
+            else if (file) { closeFile(); }
+            else { close(); }
+          }}
           className="p-1 -ml-1 text-gray-400 hover:text-white"
           aria-label={file ? "Back" : "Close file browser"}
-          title={file ? "Back to listing" : "Close"}
+          title={editing ? "Cancel edit" : file ? "Back to listing" : "Close"}
         >
           {file ? (
             <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
@@ -93,19 +117,50 @@ export function FileBrowser({ send }: Props) {
         </button>
         <div className="flex-1 min-w-0">
           <div className="text-xs text-gray-500 uppercase tracking-wide">
-            {file ? "File" : "Files"}
+            {editing ? "Editing" : file ? "File" : "Files"}
           </div>
           <div className="text-sm md:text-base font-mono truncate" title={project.path + (currentPath ? `/${currentPath}` : "")}>
             {file ? file.path : breadcrumbs}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={close}
-          className="text-xs text-gray-500 hover:text-gray-200 px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
-        >
-          Close
-        </button>
+        <div className="flex items-center gap-2">
+          {file && canEdit && !editing && (
+            <button
+              type="button"
+              onClick={beginEdit}
+              className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
+              title="Edit file"
+            >
+              Edit
+            </button>
+          )}
+          {editing && (
+            <>
+              <button
+                type="button"
+                onClick={cancelEdit}
+                className="text-xs text-gray-400 hover:text-gray-200 px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveFile}
+                disabled={saving}
+                className="text-xs text-white px-2 py-1 rounded border border-blue-600 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "Saving..." : "Save"}
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={close}
+            className="text-xs text-gray-500 hover:text-gray-200 px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
+          >
+            Close
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 overflow-y-auto">
@@ -134,6 +189,11 @@ export function FileBrowser({ send }: Props) {
               content: file.content,
               loading,
             }}
+            editing={editing}
+            editContent={editContent}
+            onEditChange={setEditContent}
+            onSave={saveFile}
+            saving={saving}
           />
         )}
       </div>
@@ -216,9 +276,23 @@ type FileViewerProps = {
     content: string | null;
     loading: boolean;
   };
+  editing: boolean;
+  editContent: string;
+  onEditChange: (content: string) => void;
+  onSave: () => void;
+  saving: boolean;
 };
 
-function FileViewer({ file }: FileViewerProps) {
+function FileViewer({ file, editing, editContent, onEditChange, onSave, saving }: FileViewerProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Focus textarea when entering edit mode.
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [editing]);
+
   if (file.loading && file.content === null) {
     return <div className="text-sm text-gray-500 p-4">Loading…</div>;
   }
@@ -256,7 +330,29 @@ function FileViewer({ file }: FileViewerProps) {
     }
     return (
       <div className="m-3 p-4 rounded bg-gray-800/60 border border-gray-700 text-sm text-gray-300">
-        Binary file ({formatSize(file.size)}) — preview not available.
+        Binary file ({formatSize(file.size)}) - preview not available.
+      </div>
+    );
+  }
+
+  if (editing) {
+    return (
+      <div className="flex flex-col h-full">
+        <textarea
+          ref={textareaRef}
+          value={editContent}
+          onChange={(e) => onEditChange(e.target.value)}
+          onKeyDown={(e) => {
+            // Ctrl/Cmd+S to save
+            if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+              e.preventDefault();
+              if (!saving) onSave();
+            }
+          }}
+          className="flex-1 w-full bg-gray-950 text-gray-100 text-xs md:text-sm font-mono p-3 md:p-4 resize-none outline-none leading-relaxed"
+          spellCheck={false}
+          disabled={saving}
+        />
       </div>
     );
   }

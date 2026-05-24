@@ -1,4 +1,4 @@
-"""Tests for LockManager — Phase 4."""
+"""Tests for LockManager - Phase 4."""
 
 from __future__ import annotations
 

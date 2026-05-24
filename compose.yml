@@ -1,4 +1,4 @@
-# Claude Web — hub + worker architecture
+# Claude Web - hub + worker architecture
 #
 # Usage:
 #   cp .env.example .env   # fill in your values
@@ -7,7 +7,7 @@
 #
 # Hub:           frontend proxy + auth + push notifications
 # worker-claude: Claude SDK, project scanning, terminal, file browser
-#                (additional workers — e.g. worker-copilot — added as separate services)
+#                (additional workers - e.g. worker-copilot - added as separate services)
 
 services:
   hub:
@@ -24,11 +24,11 @@ services:
         required: false
     environment:
       - HOME=/home/app
-      # Shared secret — authenticates the worker's HTTP push callbacks.
+      # Shared secret - authenticates the worker's HTTP push callbacks.
       # Same value the worker uses for its inbound WS auth (hub→worker).
       - WORKER_SECRET=${WORKER_SECRET:-changeme}
     volumes:
-      # Worker config — hub reads this on startup
+      # Worker config - hub reads this on startup
       - ./workers.json:/config/workers.json:ro
       # Push notification keys (VAPID)
       - ${HOME}/.claude-web:/home/app/.claude-web
@@ -77,7 +77,7 @@ services:
       - path: .env
         required: false
     environment:
-      # Set TUNNEL_TOKEN in .env (it's a secret — keep it out of the repo).
+      # Set TUNNEL_TOKEN in .env (it's a secret - keep it out of the repo).
       - TUNNEL_TOKEN=${TUNNEL_TOKEN:-}
     depends_on:
       hub:

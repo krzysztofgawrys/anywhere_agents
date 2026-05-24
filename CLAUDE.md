@@ -6,8 +6,8 @@ Web interface for local Claude Code. Mobile + desktop, accessed via Cloudflare T
 
 Hub + Workers architecture running in Docker:
 
-- **Hub**: FastAPI — frontend proxy, Cloudflare Access auth, WebSocket router to workers, push notifications
-- **Workers**: FastAPI — agent SDK runtime, project scanning, terminal, file browser, session management.
+- **Hub**: FastAPI - frontend proxy, Cloudflare Access auth, WebSocket router to workers, push notifications
+- **Workers**: FastAPI - agent SDK runtime, project scanning, terminal, file browser, session management.
   Each worker is specialized for one agent SDK; currently `worker-claude` (Claude SDK). Future: `worker-copilot`, etc.
 - **Frontend**: React + Vite + Tailwind, builds to `frontend-dist/`
 - **Tunnel**: cloudflared (external)
@@ -33,7 +33,7 @@ docker compose up -d --build
 
 # Frontend dev (from worker-claude or host)
 cd frontend && npm install && npm run build
-# Hub serves from frontend-dist/ volume mount — no rebuild needed
+# Hub serves from frontend-dist/ volume mount - no rebuild needed
 
 # Hub changes require image rebuild:
 docker compose up -d --build hub
@@ -45,7 +45,7 @@ docker compose up -d --build hub
 - TypeScript: strict mode, functional components + hooks, Tailwind utility-first
 - WS protocol: all messages are `{ type, payload }` JSON
 - Commits: conventional commits (`feat:`, `fix:`, `refactor:`)
-- No socket.io, no Redux, no react-query — keep deps minimal
+- No socket.io, no Redux, no react-query - keep deps minimal
 
 ## Module Layout
 
@@ -56,11 +56,11 @@ hub/src/
 ├── push/manager.py      Web Push (VAPID) notification manager
 ├── workers/
 │   ├── registry.py      Read workers.json → WorkerInfo list
-│   ├── connection.py    WorkerConnection — WS client to a single worker
-│   └── project_index.py ProjectIndex — hub_id ↔ (worker_id, worker_pid) mapping
+│   ├── connection.py    WorkerConnection - WS client to a single worker
+│   └── project_index.py ProjectIndex - hub_id ↔ (worker_id, worker_pid) mapping
 └── ws/handler.py        Multi-worker WS proxy + message routing
 
-worker-claude/src/         (one per agent SDK — see future worker-copilot/, etc.)
+worker-claude/src/         (one per agent SDK - see future worker-copilot/, etc.)
 ├── main.py              FastAPI app, WS endpoint with shared secret auth
 ├── db.py                aiosqlite singleton + schema
 ├── projects/
@@ -71,8 +71,8 @@ worker-claude/src/         (one per agent SDK — see future worker-copilot/, et
 ├── terminal/session.py  PTY terminal session (pty fork + asyncio reader)
 ├── sdk/
 │   ├── session.py       ClaudeSDKClient wrapper (one conversation)
-│   ├── manager.py       SessionManager — owns active session per WS
-│   └── permissions.py   PermissionBroker — gated tool-use approvals
+│   ├── manager.py       SessionManager - owns active session per WS
+│   └── permissions.py   PermissionBroker - gated tool-use approvals
 ├── locks/manager.py     per-session lock registry (takeover supported)
 └── ws/handler.py        WS routing + heartbeat
 
@@ -92,9 +92,9 @@ docker/
 └── entrypoint.sh            Injects user into /etc/passwd (fixes "I have no name!")
 ```
 
-- `compose.yml` — hub + local worker-claude (laptop)
-- `worker-claude-compose.yml` — standalone worker-claude for remote machines
-- `workers.json` — worker registry (id, label, url, secret)
+- `compose.yml` - hub + local worker-claude (laptop)
+- `worker-claude-compose.yml` - standalone worker-claude for remote machines
+- `workers.json` - worker registry (id, label, url, secret)
 
 Volume mounts use same absolute paths as host so Claude session history
 (~/.claude/projects/*.jsonl) resolves correctly inside containers.
@@ -130,14 +130,14 @@ Hub remaps project IDs: `hub_id = worker_index * 1_000_000 + worker_project_id`
 
 ## Environment Variables
 
-- `CF_ACCESS_TEAM_DOMAIN` — e.g. `myteam.cloudflareaccess.com`
-- `CF_ACCESS_AUD` — Application Audience tag from CF dashboard
-- `CF_ACCESS_ALLOWED_EMAILS` — comma-separated email allowlist
-- `CLAUDE_WEB_ENV` — `prod` for fail-closed auth, `dev` (default) for bypass
-- `WORKER_SECRET` — shared secret for hub↔worker authentication
-- `WORKERS_CONFIG` — path to workers.json (default `/config/workers.json`)
-- `CLAUDE_WEB_DB_PATH` — SQLite path (default `~/.claude-web/db.sqlite`)
-- `UID` / `GID` — container user mapping (match host user)
+- `CF_ACCESS_TEAM_DOMAIN` - e.g. `myteam.cloudflareaccess.com`
+- `CF_ACCESS_AUD` - Application Audience tag from CF dashboard
+- `CF_ACCESS_ALLOWED_EMAILS` - comma-separated email allowlist
+- `CLAUDE_WEB_ENV` - `prod` for fail-closed auth, `dev` (default) for bypass
+- `WORKER_SECRET` - shared secret for hub↔worker authentication
+- `WORKERS_CONFIG` - path to workers.json (default `/config/workers.json`)
+- `CLAUDE_WEB_DB_PATH` - SQLite path (default `~/.claude-web/db.sqlite`)
+- `UID` / `GID` - container user mapping (match host user)
 
 Without CF vars, auth is bypassed (dev mode).
 
@@ -146,7 +146,7 @@ Without CF vars, auth is bypassed (dev mode).
 - Per-project `auto_approve` flag (sidebar dot + header pill, toggleable while
   a session is active)
 - Per-prompt one-shot override via composer checkbox ("Auto-approve tools for
-  this prompt") — armed before query, disarmed after `result`
+  this prompt") - armed before query, disarmed after `result`
 - When neither is on, every tool call surfaces a `permission_request` block
   above the composer for explicit Allow / Deny
 - User's `~/.claude/settings.json` `permissions.allow` patterns still apply
@@ -166,10 +166,33 @@ Without CF vars, auth is bypassed (dev mode).
 
 Two systems, deduplicated:
 - **Web Push** (server-side): worker sends `push_notify` → hub → VAPID push → SW `push` event
-- **Local** (client-side): `useVisibilityNotify` — fallback when push subscription is not active
+- **Local** (client-side): `useVisibilityNotify` - fallback when push subscription is not active
 
 Both use `tag: "claude-result"` to avoid stacking. Local notify is skipped
 when Web Push is active.
+
+## Host SSH Access (from inside the worker container)
+
+The worker container has SSH access back to the WSL2 host laptop. Useful for
+anything that can't be done from inside the sandbox: `docker compose` rebuilds,
+poking running containers, inspecting host network state, hitting services
+bound to host-only ports, etc.
+
+```bash
+# Host = docker gateway (host.docker.internal isn't resolved here)
+ssh -i ~/.ssh/claude_rsa kgawrys@172.22.0.1 'docker ps'
+ssh -i ~/.ssh/claude_rsa kgawrys@172.22.0.1 'docker compose -f /home/kgawrys/code/claude_cloud/compose.yml up -d --build hub'
+```
+
+- Key: `~/.ssh/claude_rsa` (mounted read-only via the `~/.ssh:ro` volume)
+- Host user: `kgawrys`
+- Host: `172.22.0.1` - the docker bridge gateway = WSL2 host (`LAPTOP-0GC2FGEB`).
+  Don't hard-code the IP in scripts; resolve it from `/proc/net/route` if needed
+  (Docker subnets can change). For one-off commands the literal IP is fine.
+- Project paths inside the host shell match the in-container paths (same
+  `~/code/claude_cloud` thanks to the bind mount), so commands like
+  `docker compose -f /home/kgawrys/code/claude_cloud/compose.yml ...` work
+  verbatim on either side.
 
 ## Testing
 

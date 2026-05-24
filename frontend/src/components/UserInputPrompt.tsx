@@ -8,7 +8,7 @@ type Props = {
   onAnswered: (toolUseId: string, answers: string[]) => void;
   /** When true, render only a compact header bar (no body). */
   minimized: boolean;
-  /** Toggle the minimized state — lifted so App can hide the composer when expanded. */
+  /** Toggle the minimized state - lifted so App can hide the composer when expanded. */
   onToggleMinimize: () => void;
 };
 
@@ -18,7 +18,7 @@ type Props = {
  * AskUserQuestion can pose multiple distinct questions at once (each with
  * its own options + free-text fallback). The agent expects an answer for
  * every question, so we collect them all locally and submit them as a
- * parallel `answers: string[]` array — one entry per question, in order.
+ * parallel `answers: string[]` array - one entry per question, in order.
  *
  * Layout:
  *  - Header is always visible (with minimize + dismiss buttons).
@@ -129,7 +129,7 @@ export function UserInputPrompt({
               </span>
             )}
             <span className="text-xs text-gray-400 truncate">
-              — {questions[0]?.question || ""}
+              - {questions[0]?.question || ""}
             </span>
           </div>
           <span className="text-xs text-blue-300/80 shrink-0 flex items-center gap-1">
@@ -150,7 +150,7 @@ export function UserInputPrompt({
   // ── Expanded: header + scrollable body, capped at 60vh ─────────────────
   return (
     <div className="border-t border-blue-600/40 bg-blue-950/20 flex flex-col max-h-[60vh] min-h-0">
-      {/* Header — always visible */}
+      {/* Header - always visible */}
       <div className="px-3 md:px-4 py-2.5 shrink-0 border-b border-blue-600/20">
         <div className="max-w-3xl lg:max-w-5xl mx-auto flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -195,7 +195,7 @@ export function UserInputPrompt({
         </div>
       </div>
 
-      {/* Scrollable body — questions + answers */}
+      {/* Scrollable body - questions + answers */}
       <div className="overflow-y-auto px-3 md:px-4 py-3 flex-1 min-h-0">
         <div className="max-w-3xl lg:max-w-5xl mx-auto">
           <form
@@ -224,7 +224,7 @@ export function UserInputPrompt({
                   {q.question}
                 </p>
 
-                {/* Option buttons — pre-fill the field on click */}
+                {/* Option buttons - pre-fill the field on click */}
                 {q.options.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {q.options.map((opt, j) => {
@@ -248,7 +248,7 @@ export function UserInputPrompt({
                   </div>
                 )}
 
-                {/* Free-text input — the source of truth for this answer */}
+                {/* Free-text input - the source of truth for this answer */}
                 <input
                   type="text"
                   data-q-index={i}
@@ -266,7 +266,7 @@ export function UserInputPrompt({
               </div>
             ))}
 
-            {/* Single submit button — answers all questions at once */}
+            {/* Single submit button - answers all questions at once */}
             <div className="flex justify-end pt-1">
               <button
                 type="submit"

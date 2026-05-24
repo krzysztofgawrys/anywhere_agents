@@ -36,6 +36,22 @@ const mdComponents: Components = {
 export function Message({ message, searchQuery }: Props) {
   const isUser = message.role === "user";
   const sq = searchQuery ?? "";
+
+  // System info banners - thin amber line, no bubble
+  if (message.role === "system") {
+    const infoBlock = message.blocks.find((b) => b.kind === "info");
+    if (infoBlock && infoBlock.kind === "info") {
+      return (
+        <div className="flex items-center justify-center gap-2 py-1.5 text-xs text-amber-400/80">
+          <span className="h-px flex-1 bg-amber-700/30" />
+          <span>{infoBlock.text}</span>
+          <span className="h-px flex-1 bg-amber-700/30" />
+        </div>
+      );
+    }
+    return null;
+  }
+
   return (
     <div className="mb-3">
       <div
@@ -45,7 +61,7 @@ export function Message({ message, searchQuery }: Props) {
       >
         {message.blocks.map((block, i) => {
           if (block.kind === "text") {
-            // User text is raw input (often pasted code) — render verbatim,
+            // User text is raw input (often pasted code) - render verbatim,
             // preserving whitespace/newlines. Only assistant output is
             // markdown (Claude generates it intentionally).
             if (isUser) {
@@ -97,7 +113,7 @@ export function Message({ message, searchQuery }: Props) {
           }
           if (block.kind === "task") {
             // Inline task lifecycle event (Monitor / TaskCreate). Compact,
-            // muted, mono — meant to read as a log line, not a chat bubble.
+            // muted, mono - meant to read as a log line, not a chat bubble.
             const label =
               block.event_type === "notification"
                 ? "task notification"
@@ -146,15 +162,19 @@ export function Message({ message, searchQuery }: Props) {
               </a>
             );
           }
-          return (
-            <ToolBlock
-              key={i}
-              name={block.name}
-              input={block.input}
-              result={block.result}
-              isError={block.is_error}
-            />
-          );
+          if (block.kind === "tool") {
+            return (
+              <ToolBlock
+                key={i}
+                name={block.name}
+                input={block.input}
+                result={block.result}
+                isError={block.is_error}
+              />
+            );
+          }
+          // info blocks inside non-system messages (shouldn't happen, but safe)
+          return null;
         })}
         {!message.finished && !isUser && message.blocks.length === 0 && (
           <span className="flex items-center gap-1 text-gray-400 py-1" aria-label="Claude is typing">

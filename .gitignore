@@ -18,7 +18,7 @@ frontend-dist/
 # Local Claude Code state (per-machine settings, not for sharing)
 .claude/
 
-# Environment (secrets — never commit)
+# Environment (secrets - never commit)
 .env
 docker/.env
 

@@ -1,4 +1,4 @@
-# NOTE: cloudflared temporarily disabled — running externally, routing traffic
+# NOTE: cloudflared temporarily disabled - running externally, routing traffic
 # directly to localhost:8001. Re-enable when consolidating to Docker.
 #
 # services:

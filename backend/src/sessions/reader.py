@@ -189,7 +189,7 @@ def get_session_messages(
 
     entries = _safe_read_lines(jsonl)
 
-    # Build ChatMessage records — group consecutive blocks under one role
+    # Build ChatMessage records - group consecutive blocks under one role
     messages: list[dict[str, Any]] = []
     for entry in entries:
         etype = entry.get("type")
@@ -211,7 +211,7 @@ def get_session_messages(
 
         # Strip CLI marker tags from user text blocks; drop blocks left empty.
         # Also extract <task-notification> / <task-started> / <task-progress>
-        # XML — those get attached to the preceding assistant message as `task`
+        # XML - those get attached to the preceding assistant message as `task`
         # blocks instead of leaking as raw blue user-bubble text.
         pending_task_blocks: list[dict[str, Any]] = []
         if etype == "user":
@@ -244,7 +244,7 @@ def get_session_messages(
                     prev["blocks"].extend(pending_task_blocks)
                     break
             else:
-                # No preceding assistant — create a synthetic assistant carrier
+                # No preceding assistant - create a synthetic assistant carrier
                 # so the events still appear in the timeline.
                 messages.append({
                     "id": entry.get("uuid", "") + "-task",
@@ -294,7 +294,7 @@ def get_session_messages(
         if cutoff is not None:
             messages = messages[:cutoff]
 
-    # Apply limit — return last N (chronologically the latest of the eligible set)
+    # Apply limit - return last N (chronologically the latest of the eligible set)
     has_more = False
     if limit > 0 and len(messages) > limit:
         has_more = True

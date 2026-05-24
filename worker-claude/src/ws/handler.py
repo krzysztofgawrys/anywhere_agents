@@ -1,4 +1,4 @@
-"""Worker WS handler — same routing as backend, no auth layer."""
+"""Worker WS handler - same routing as backend, no auth layer."""
 
 import asyncio
 import json
@@ -16,6 +16,7 @@ from src.files import (
     list_absolute_directory,
     list_directory,
     read_file,
+    write_file,
 )
 from src.projects.service import create_project, get_project, list_projects, set_auto_approve
 from src.sdk.manager import SessionManager
@@ -63,7 +64,7 @@ async def handle_websocket(
     connection_id: str,
     device_label: str = "unknown",
 ) -> None:
-    """Main WS message loop — called from worker main.py."""
+    """Main WS message loop - called from worker main.py."""
     await manager.accept(websocket, connection_id)
 
     async def send(msg: dict[str, Any]) -> None:
@@ -322,6 +323,35 @@ async def _route(
                 "too_large": result["too_large"],
                 "encoding": result["encoding"],
                 "content": result["content"],
+            },
+        })
+        return terminal
+
+    if msg_type == "write_file":
+        project_id = payload.get("project_id")
+        rel_path = payload.get("path")
+        content = payload.get("content")
+        if not isinstance(project_id, int) or not isinstance(rel_path, str):
+            await _send_error(send, "bad_request", "project_id and path required")
+            return terminal
+        if not isinstance(content, str):
+            await _send_error(send, "bad_request", "content (string) required")
+            return terminal
+        project = await get_project(db, project_id)
+        if not project:
+            await _send_error(send, "not_found", f"project {project_id} not found")
+            return terminal
+        try:
+            result = write_file(project["path"], rel_path, content)
+        except FileBrowserError as exc:
+            await _send_error(send, exc.code, exc.message)
+            return terminal
+        await send({
+            "type": "file_written",
+            "payload": {
+                "project_id": project_id,
+                "path": result["path"],
+                "size": result["size"],
             },
         })
         return terminal

@@ -23,7 +23,7 @@ logger = structlog.get_logger()
 _VAPID_PATH = Path(
     os.environ.get("CLAUDE_WEB_VAPID_PATH", "~/.claude-web/vapid.json")
 ).expanduser()
-_CONTACT = "mailto:admin@localhost"  # VAPID contact — required by push services
+_CONTACT = "mailto:admin@localhost"  # VAPID contact - required by push services
 
 
 class PushManager:
@@ -90,7 +90,7 @@ class PushManager:
         if _VAPID_PATH.exists():
             try:
                 data = json.loads(_VAPID_PATH.read_text())
-                # from_pem is a classmethod — capture the returned instance.
+                # from_pem is a classmethod - capture the returned instance.
                 v = Vapid.from_pem(data["private_pem"].encode())
                 logger.info("vapid_loaded", path=str(_VAPID_PATH))
                 return v

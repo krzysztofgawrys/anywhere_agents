@@ -1,4 +1,4 @@
-"""Tests for WebSocket endpoint — Phase 1 ping/pong."""
+"""Tests for WebSocket endpoint - Phase 1 ping/pong."""
 
 import pytest
 from fastapi.testclient import TestClient

@@ -85,7 +85,7 @@ def list_directory(project_path: str, rel_path: str = "") -> dict[str, Any]:
         try:
             st = child.stat()
         except OSError:
-            # Broken symlink or vanished entry — skip rather than fail the whole listing.
+            # Broken symlink or vanished entry - skip rather than fail the whole listing.
             continue
         is_dir = child.is_dir()
         entries.append(

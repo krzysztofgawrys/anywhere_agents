@@ -5,7 +5,7 @@ When a session runs in `default` mode, every tool call goes through
 `approve_tool` or `deny_tool`. Approval futures live in PermissionBroker.
 
 When the session is in `bypassPermissions` mode (auto-approve), Claude SDK
-doesn't invoke `can_use_tool` at all — we still pass one for safety but it's
+doesn't invoke `can_use_tool` at all - we still pass one for safety but it's
 unused.
 
 Per-prompt override: the WS handler builds a Session with `auto_approve_once`
@@ -40,7 +40,7 @@ class PermissionBroker:
     point without coupling to the session internals.
 
     On WS disconnect we cancel *permission* futures (allow/deny decisions don't
-    survive reconnect) but we keep *user_input* futures alive — the agent is
+    survive reconnect) but we keep *user_input* futures alive - the agent is
     blocked waiting for an answer and we can re-surface the question after
     reconnect via :meth:`resend_pending_user_inputs`.
     """
@@ -127,7 +127,7 @@ class PermissionBroker:
     ) -> list[str]:
         """Ask the WS client for free-text answer(s) and block until they arrive.
 
-        ``questions`` is a list of ``{question: str, options: list[str]}`` dicts —
+        ``questions`` is a list of ``{question: str, options: list[str]}`` dicts -
         AskUserQuestion can pose multiple distinct questions in a single tool
         call, each with its own answer.
 
@@ -210,7 +210,7 @@ class PermissionBroker:
 
         Called on WS disconnect so tool calls don't block forever.
         User-input futures are intentionally kept alive so questions survive
-        reconnect — see :meth:`resend_pending_user_inputs`.
+        reconnect - see :meth:`resend_pending_user_inputs`.
         """
         for fut in list(self._pending.values()):
             if not fut.done():
@@ -218,7 +218,7 @@ class PermissionBroker:
         self._pending.clear()
 
     def cancel_all(self, reason: str = "Connection closed") -> None:
-        """Deny every pending request — called on full session teardown."""
+        """Deny every pending request - called on full session teardown."""
         self.cancel_permissions(reason)
         for tool_use_id, fut in list(self._user_input_pending.items()):
             if fut.done():

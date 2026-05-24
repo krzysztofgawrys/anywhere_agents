@@ -1,4 +1,4 @@
-"""Project file browser — list directories, read files, sandboxed to project cwd."""
+"""Project file browser - list directories, read files, sandboxed to project cwd."""
 
 from src.files.browser import (
     FileBrowserError,

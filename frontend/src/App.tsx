@@ -63,7 +63,7 @@ function App() {
   } | null>(null);
 
   // Which AskUserQuestion panels are minimized (keyed by tool_use_id). Lifted
-  // here so the composer can be hidden whenever a panel is expanded — see
+  // here so the composer can be hidden whenever a panel is expanded - see
   // anyUserInputExpanded below.
   const [minimizedInputs, setMinimizedInputs] = useState<Set<string>>(new Set());
   const toggleInputMinimized = useCallback((toolUseId: string) => {
@@ -113,7 +113,7 @@ function App() {
     } catch {}
   }, []);
 
-  // Terminal state — must be declared before onServerMessage uses killTerminal.
+  // Terminal state - must be declared before onServerMessage uses killTerminal.
   const [terminalMounted, setTerminalMounted] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const terminalWriteRef = useRef<((b64: string) => void) | null>(null);
@@ -129,16 +129,16 @@ function App() {
         // First result ever → good moment to ask for notification permission,
         // the user just saw Claude finish something and understands why.
         requestSubscription();
-        // Skip local notification when Web Push is active — the server
+        // Skip local notification when Web Push is active - the server
         // already sends a push_notify that the SW displays.
         if (!hasPushSubscription) {
-          notifyIfHidden("Claude finished", "Task completed — tap to view.");
+          notifyIfHidden("Claude finished", "Task completed - tap to view.");
         }
       }
       handleProjectsMsg(msg);
       handleFilesMsg(msg);
-      if (msg.type === "directory" || msg.type === "file_content") {
-        // Already handled by the files store — don't push into chat.
+      if (msg.type === "directory" || msg.type === "file_content" || msg.type === "file_written") {
+        // Already handled by the files store - don't push into chat.
         return;
       }
       if (msg.type === "fs_directory") {
@@ -160,7 +160,7 @@ function App() {
         return;
       }
       if (msg.type === "terminal_closed") {
-        // Process exited (e.g. user typed `exit`) — tear down the panel.
+        // Process exited (e.g. user typed `exit`) - tear down the panel.
         killTerminal();
         return;
       }
@@ -172,7 +172,7 @@ function App() {
           persistSession(projectId, msg.payload.session_id);
         }
         if (!msg.payload.resumed) {
-          // New session created — refresh the session list so it shows up
+          // New session created - refresh the session list so it shows up
           // immediately in the sidebar without requiring a page reload.
           if (projectId !== null) {
             send({ type: "list_sessions", payload: { project_id: projectId } });
@@ -236,12 +236,12 @@ function App() {
   );
 
   // sendRef lets onReconnect close over the stable ref rather than the
-  // not-yet-declared `send` value — defined before useWebSocket.
+  // not-yet-declared `send` value - defined before useWebSocket.
   const sendRef = useRef<((msg: ClientMessage) => boolean) | null>(null);
 
   /** Try to resume: prefer in-memory state, fall back to localStorage.
    *
-   * Only sends resume_session when the page is visible — if the tab is in the
+   * Only sends resume_session when the page is visible - if the tab is in the
    * background, Chrome may briefly reconnect the WS (power management) but we
    * must NOT reclaim the parked session, otherwise the backend push never fires.
    */
@@ -249,7 +249,7 @@ function App() {
     let projectId = activeProjectIdRef.current;
     let sessionId = useChatStore.getState().activeSessionId;
 
-    // Fresh page load — nothing in memory, check localStorage.
+    // Fresh page load - nothing in memory, check localStorage.
     if (projectId === null || sessionId === null) {
       try {
         const saved = localStorage.getItem(LS_KEY);
@@ -264,7 +264,7 @@ function App() {
     if (projectId === null || sessionId === null) return;
 
     if (!document.hidden) {
-      // Page is visible — claim the session lock and reload history.
+      // Page is visible - claim the session lock and reload history.
       sendRef.current?.({
         type: "resume_session",
         payload: { project_id: projectId, session_id: sessionId },
@@ -351,7 +351,7 @@ function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   // Runs on every message change INCLUDING streaming deltas (the assistant
-  // message object grows in place, so messages.length stays constant — we must
+  // message object grows in place, so messages.length stays constant - we must
   // not gate on length). Follow the bottom only while the user is parked there.
   useEffect(() => {
     const el = scrollRef.current;
@@ -403,7 +403,7 @@ function App() {
     ) => {
       // In plan mode, prepend an instruction so Claude only plans.
       const promptText = planMode
-        ? `[PLAN MODE — read-only, do NOT execute any changes]\n${text}`
+        ? `[PLAN MODE - read-only, do NOT execute any changes]\n${text}`
         : text;
       appendUserPrompt(text, images);
       send({
@@ -434,7 +434,7 @@ function App() {
           send({
             type: "prompt",
             payload: {
-              text: "Provide a concise summary of our conversation so far: key decisions made, files changed, current state, and any open issues. Be brief — this is to save context window space.",
+              text: "Provide a concise summary of our conversation so far: key decisions made, files changed, current state, and any open issues. Be brief - this is to save context window space.",
               stream: true,
             },
           });
@@ -484,7 +484,7 @@ function App() {
 
   const onPickSession = useCallback(
     (projectId: number, sessionId: string) => {
-      // If this session is already active — just refresh history, don't
+      // If this session is already active - just refresh history, don't
       // restart the session or kill the terminal.
       const alreadyActive = useChatStore.getState().activeSessionId === sessionId;
       if (alreadyActive) {
@@ -649,7 +649,7 @@ function App() {
                   type="button"
                   onClick={onToggleAutoApprove}
                   className={`hover:text-gray-300 transition-colors ${autoApprove ? "text-yellow-400" : ""}`}
-                  title={autoApprove ? "Auto-approve ON — click to disable" : "Click to auto-approve every tool"}
+                  title={autoApprove ? "Auto-approve ON - click to disable" : "Click to auto-approve every tool"}
                 >
                   auto {autoApprove ? "on" : "off"}
                 </button>
@@ -784,7 +784,7 @@ function App() {
           />
         ))}
 
-        {/* Composer is hidden while an AskUserQuestion panel is expanded —
+        {/* Composer is hidden while an AskUserQuestion panel is expanded -
             the agent is blocked on the user's answer and the panel needs the
             screen real estate. Minimize the panel to bring the composer back. */}
         <div className={terminalOpen || anyUserInputExpanded ? "hidden" : ""}>

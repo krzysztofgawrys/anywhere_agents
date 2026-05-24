@@ -1,7 +1,7 @@
 [project]
 name = "claude-web-hub"
 version = "0.1.0"
-description = "Claude Web hub — frontend proxy, auth, worker routing"
+description = "Claude Web hub - frontend proxy, auth, worker routing"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",

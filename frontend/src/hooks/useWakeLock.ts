@@ -25,7 +25,7 @@ export function useWakeLock(active: boolean): void {
           lock = sentinel;
         })
         .catch(() => {
-          // Permission denied or API unavailable — fail silently.
+          // Permission denied or API unavailable - fail silently.
         });
     };
 

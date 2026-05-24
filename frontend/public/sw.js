@@ -1,4 +1,4 @@
-/* Service Worker — handles Web Push notifications for Claude Web */
+/* Service Worker - handles Web Push notifications for Claude Web */
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -8,7 +8,7 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-// Minimal fetch handler — required for Chrome to treat this as a proper PWA
+// Minimal fetch handler - required for Chrome to treat this as a proper PWA
 // and use manifest icons (instead of a generated letter) for Add to Home Screen.
 self.addEventListener('fetch', (event) => {
   event.respondWith(fetch(event.request));
@@ -37,7 +37,7 @@ self.addEventListener('push', (event) => {
     requireInteraction: false,
   };
 
-  // Suppress the notification when the PWA is already on screen — the
+  // Suppress the notification when the PWA is already on screen - the
   // worker now emits push_notify on every result, so without this check
   // the user gets a notification while staring at the app. If any client
   // window reports visibilityState === 'visible', skip the banner.

@@ -79,7 +79,7 @@ async def push_unsubscribe(body: dict = Body(...)) -> JSONResponse:
 async def push_test() -> JSONResponse:
     """Dev-only: fire a test push to all subscribers."""
     subs = len(push_manager._subscriptions)  # type: ignore[attr-defined]
-    await push_manager.notify_all("Claude finished", "Task completed — tap to view.")
+    await push_manager.notify_all("Claude finished", "Task completed - tap to view.")
     return JSONResponse({"subscribers": subs})
 
 
@@ -126,7 +126,7 @@ def _device_label_from_headers(websocket: WebSocket, claims: dict[str, Any]) -> 
     return f"{email} @ {device}"
 
 
-# Serve static files (frontend build) — must be last.
+# Serve static files (frontend build) - must be last.
 #
 # index.html must NEVER be cached (CF, browser, anything): it carries the
 # pointers to the hashed asset filenames. Hashed assets are content-addressed
@@ -144,7 +144,7 @@ class NoCacheStatic(StaticFiles):
             or path.endswith(".webmanifest")
             or path.startswith("icon-")
         ):
-            # PWA manifest, service worker, and icons must never be cached —
+            # PWA manifest, service worker, and icons must never be cached -
             # Chrome uses these to build the WebAPK; stale copies prevent icon
             # updates from propagating to the Android home screen.
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"

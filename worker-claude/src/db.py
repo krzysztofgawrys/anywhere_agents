@@ -54,7 +54,7 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self.path) as conn:
             await conn.executescript(SCHEMA)
-            # Apply additive migrations — ignore errors (column may already exist)
+            # Apply additive migrations - ignore errors (column may already exist)
             for stmt in MIGRATIONS:
                 try:
                     await conn.execute(stmt)

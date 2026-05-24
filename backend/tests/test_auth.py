@@ -1,4 +1,4 @@
-"""Tests for CF Access JWT verification — cert TTL + fail-closed."""
+"""Tests for CF Access JWT verification - cert TTL + fail-closed."""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ async def test_cert_cache_refreshed_on_signature_miss() -> None:
     async def fake_get_keys(force: bool = False) -> dict[str, Any]:
         nonlocal call_count
         call_count += 1
-        # Return certs that won't match any token — forces the retry path
+        # Return certs that won't match any token - forces the retry path
         bogus_cert = "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----"
         return {"public_certs": [{"cert": bogus_cert}]}
 

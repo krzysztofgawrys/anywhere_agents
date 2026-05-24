@@ -99,7 +99,7 @@ function activityLabel(activity: StreamingActivity): string {
  * Disappears when `result` arrives (caller removes it by not rendering).
  */
 export function StreamingStatus({ activity }: Props) {
-  if (activity.kind === "text") return null; // text is self-evident — don't duplicate
+  if (activity.kind === "text") return null; // text is self-evident - don't duplicate
 
   const label = activityLabel(activity);
   const isWaiting = activity.kind === "waiting";

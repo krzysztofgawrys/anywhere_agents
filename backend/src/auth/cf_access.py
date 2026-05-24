@@ -45,7 +45,7 @@ def _cf_configured() -> bool:
 
 
 def _reset_certs_cache() -> None:
-    """Test helper — clear the in-memory key cache."""
+    """Test helper - clear the in-memory key cache."""
     global _certs_fetched_at
     _certs_cache.clear()
     _certs_fetched_at = 0.0
@@ -112,9 +112,9 @@ def _decode_with_any(token: str, keys: list[Any]) -> dict[str, Any] | None:
                 audience=CF_ACCESS_AUD,
             )
         except jwt.InvalidSignatureError:
-            continue  # wrong key — try the next
+            continue  # wrong key - try the next
         except jwt.InvalidTokenError:
-            # aud/exp/format invalid — no other key will help
+            # aud/exp/format invalid - no other key will help
             return None
     return None
 
@@ -147,7 +147,7 @@ async def verify_cf_access_token(token: str | None) -> dict[str, Any] | None:
         certs = _extract_public_keys(await _get_public_keys())
         payload = _decode_with_any(token, certs)
 
-        # No cert matched — keys may have rotated. Force a refresh and retry once.
+        # No cert matched - keys may have rotated. Force a refresh and retry once.
         if payload is None:
             certs = _extract_public_keys(await _get_public_keys(force=True))
             payload = _decode_with_any(token, certs)

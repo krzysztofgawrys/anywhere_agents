@@ -71,7 +71,7 @@ export function Sidebar({
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   // Cloudflare Access intercepts `/cdn-cgi/access/logout` on any protected
-  // origin and clears the session cookie — no need to fetch the team domain
+  // origin and clears the session cookie - no need to fetch the team domain
   // from the backend. In dev (no CF in front of localhost) the link 404s,
   // which is fine: there's no session to log out of.
   const hideLogout =
@@ -280,7 +280,7 @@ export function Sidebar({
           ))}
         </div>
 
-        {/* Logout — CF Access intercepts /cdn-cgi/access/logout on the origin */}
+        {/* Logout - CF Access intercepts /cdn-cgi/access/logout on the origin */}
         {!hideLogout && (
           <div className="px-4 py-3 border-t border-gray-800 shrink-0">
             <a

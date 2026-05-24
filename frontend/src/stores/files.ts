@@ -24,6 +24,12 @@ type FilesState = {
   file: FileView | null;
   loading: boolean;
   error: string | null;
+  /** True when the file viewer is in edit mode. */
+  editing: boolean;
+  /** Content buffer while editing (diverges from file.content on user edits). */
+  editContent: string;
+  /** True while a write_file request is in flight. */
+  saving: boolean;
 
   open: (project: ProjectRef) => void;
   close: () => void;
@@ -33,6 +39,14 @@ type FilesState = {
   beginOpenFile: (path: string) => void;
   closeFile: () => void;
   setError: (msg: string | null) => void;
+  /** Enter edit mode (textarea replaces <pre>). */
+  beginEdit: () => void;
+  /** Cancel edit mode without saving. */
+  cancelEdit: () => void;
+  /** Update the edit buffer as the user types. */
+  setEditContent: (content: string) => void;
+  /** Mark a save in progress. */
+  beginSave: () => void;
   handleServerMessage: (msg: ServerMessage) => void;
 };
 
@@ -42,16 +56,20 @@ export const useFilesStore = create<FilesState>((set, get) => ({
   file: null,
   loading: false,
   error: null,
+  editing: false,
+  editContent: "",
+  saving: false,
 
   open: (project) =>
     set({
       project,
       directory: null,
       file: null,
-      // loading stays false here — the FileBrowser effect picks up the change
-      // and fires `list_directory`, which switches loading on through beginNavigate.
       loading: false,
       error: null,
+      editing: false,
+      editContent: "",
+      saving: false,
     }),
 
   close: () =>
@@ -61,18 +79,36 @@ export const useFilesStore = create<FilesState>((set, get) => ({
       file: null,
       loading: false,
       error: null,
+      editing: false,
+      editContent: "",
+      saving: false,
     }),
 
-  beginNavigate: () => set({ loading: true, error: null, file: null }),
+  beginNavigate: () => set({ loading: true, error: null, file: null, editing: false, editContent: "", saving: false }),
   beginOpenFile: (path) =>
     set({
       loading: true,
       error: null,
       file: { path, size: 0, tooLarge: false, encoding: null, content: null },
+      editing: false,
+      editContent: "",
+      saving: false,
     }),
-  closeFile: () => set({ file: null, error: null }),
+  closeFile: () => set({ file: null, error: null, editing: false, editContent: "", saving: false }),
 
-  setError: (msg) => set({ error: msg, loading: false }),
+  setError: (msg) => set({ error: msg, loading: false, saving: false }),
+
+  beginEdit: () => {
+    const { file } = get();
+    if (!file || file.encoding !== "utf-8" || file.content === null) return;
+    set({ editing: true, editContent: file.content, error: null });
+  },
+
+  cancelEdit: () => set({ editing: false, editContent: "", error: null }),
+
+  setEditContent: (content) => set({ editContent: content }),
+
+  beginSave: () => set({ saving: true, error: null }),
 
   handleServerMessage: (msg) => {
     const state = get();
@@ -88,6 +124,9 @@ export const useFilesStore = create<FilesState>((set, get) => ({
         file: null,
         loading: false,
         error: null,
+        editing: false,
+        editContent: "",
+        saving: false,
       });
       return;
     }
@@ -106,13 +145,33 @@ export const useFilesStore = create<FilesState>((set, get) => ({
         },
         loading: false,
         error: null,
+        editing: false,
+        editContent: "",
+        saving: false,
       });
       return;
     }
 
-    if (msg.type === "error" && state.loading) {
-      // Errors aren't tagged with project_id; if we're the one waiting, claim it.
-      set({ error: msg.payload.message, loading: false });
+    if (
+      msg.type === "file_written" &&
+      msg.payload.project_id === state.project.id
+    ) {
+      // Save succeeded - update file view with saved content, exit edit mode.
+      const { editContent } = get();
+      set((s) => ({
+        file: s.file
+          ? { ...s.file, content: editContent, size: msg.payload.size }
+          : s.file,
+        editing: false,
+        editContent: "",
+        saving: false,
+        error: null,
+      }));
+      return;
+    }
+
+    if (msg.type === "error" && (state.loading || state.saving)) {
+      set({ error: msg.payload.message, loading: false, saving: false });
       return;
     }
   },

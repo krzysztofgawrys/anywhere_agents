@@ -1,4 +1,4 @@
-"""Tests for SDK session wrapper — Phase 2."""
+"""Tests for SDK session wrapper - Phase 2."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from src.sdk.session import Session
 
 
 class _FakeClient:
-    """Minimal stand-in for ClaudeSDKClient — records calls, replays fixed messages."""
+    """Minimal stand-in for ClaudeSDKClient - records calls, replays fixed messages."""
 
     def __init__(self, messages: list[Any] | None = None) -> None:
         self._messages = messages or []
@@ -51,7 +51,7 @@ class _FakeClient:
     async def receive_messages(self) -> AsyncIterator[Any]:
         # Long-lived consumer: yield all queued messages, then park so the
         # stream task doesn't terminate (mirrors real SDK behaviour between
-        # turns) — the test stops the session at teardown.
+        # turns) - the test stops the session at teardown.
         for m in self._messages:
             yield m
         # Sleep forever; cancelled by Session.stop().
@@ -88,7 +88,7 @@ async def test_prompt_streams_text_delta_and_result(
     """Text is streamed via StreamEvent content_block_delta in include_partial mode.
 
     The final AssistantMessage carries the assembled TextBlock but we ignore it
-    to avoid duplication — only ToolUseBlock from AssistantMessage is forwarded.
+    to avoid duplication - only ToolUseBlock from AssistantMessage is forwarded.
     """
     messages = [
         StreamEvent(
@@ -256,7 +256,7 @@ async def test_task_notification_emits_task_event(
     """Monitor / TaskCreate task_* system messages stream out as `task_event`.
 
     Without this the UI sees a 'running…' tool call with no progress until the
-    tool finally returns — symptom is "chat appears frozen during Monitor".
+    tool finally returns - symptom is "chat appears frozen during Monitor".
     """
     messages = [
         SystemMessage(
@@ -498,7 +498,7 @@ async def test_send_prompt_with_images_uses_async_stream(
 
     assert len(captured) == 1
     prompt, sid = captured[0]
-    # Not a plain string — should be an async iterable
+    # Not a plain string - should be an async iterable
     assert not isinstance(prompt, str)
     # Drain it
     collected = []

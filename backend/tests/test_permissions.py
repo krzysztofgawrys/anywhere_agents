@@ -1,4 +1,4 @@
-"""Tests for PermissionBroker — Phase 5."""
+"""Tests for PermissionBroker - Phase 5."""
 
 from __future__ import annotations
 

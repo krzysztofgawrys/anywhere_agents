@@ -1,4 +1,4 @@
-"""Hub entry point — frontend proxy, auth, worker routing."""
+"""Hub entry point - frontend proxy, auth, worker routing."""
 
 import os
 import uuid
@@ -82,7 +82,7 @@ async def push_unsubscribe(body: dict = Body(...)) -> JSONResponse:
 @app.post("/api/push/test")
 async def push_test() -> JSONResponse:
     subs = len(push_manager._subscriptions)  # type: ignore[attr-defined]
-    await push_manager.notify_all("Claude finished", "Task completed — tap to view.")
+    await push_manager.notify_all("Claude finished", "Task completed - tap to view.")
     return JSONResponse({"subscribers": subs})
 
 
@@ -94,7 +94,7 @@ async def internal_push(
     """Worker-only endpoint for emitting push notifications.
 
     Required because the worker's WS-based push_notify path is only reachable
-    while a frontend client is connected — i.e. exactly NOT when we need it
+    while a frontend client is connected - i.e. exactly NOT when we need it
     most (PWA swiped away on Android, session running detached in the
     background). HTTP is independent of any client WS lifecycle: as long as
     the hub container is alive, the worker can deliver a push.
@@ -115,7 +115,7 @@ async def internal_push(
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """Frontend WS — CF Access auth, then proxy to worker."""
+    """Frontend WS - CF Access auth, then proxy to worker."""
     token = websocket.headers.get("cf-access-jwt-assertion")
     claims = await verify_cf_access_token(token)
 
@@ -160,7 +160,7 @@ def _device_label_from_headers(websocket: WebSocket, claims: dict[str, Any]) -> 
     return f"{email} @ {device}"
 
 
-# Serve static files (frontend build) — must be last.
+# Serve static files (frontend build) - must be last.
 class NoCacheStatic(StaticFiles):
     async def get_response(self, path: str, scope: Any) -> Response:
         response = await super().get_response(path, scope)

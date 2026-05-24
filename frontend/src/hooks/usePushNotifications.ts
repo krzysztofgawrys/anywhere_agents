@@ -28,7 +28,7 @@ async function subscribeWithRegistration(
     try {
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appServerKey });
     } catch {
-      // VAPID key mismatch — unsubscribe stale and retry once
+      // VAPID key mismatch - unsubscribe stale and retry once
       const stale = await reg.pushManager.getSubscription();
       if (stale) await stale.unsubscribe();
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: appServerKey });
@@ -48,7 +48,7 @@ async function subscribeWithRegistration(
  * On mount: silently registers /sw.js and, if permission is already granted,
  * completes the push subscription (covers page reloads after first consent).
  *
- * Returns `requestSubscription()` — call this on user-meaningful events (e.g.
+ * Returns `requestSubscription()` - call this on user-meaningful events (e.g.
  * the first `result` message) so the browser permission prompt appears in
  * context, not as a cold popup on page load.
  */
@@ -85,7 +85,7 @@ export function usePushNotifications(): {
     return () => { cancelled = true; };
   }, []);
 
-  // Step 2: exported — call this from a user-meaningful moment.
+  // Step 2: exported - call this from a user-meaningful moment.
   const requestSubscription = useCallback(() => {
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
     if (Notification.permission === "denied") return;

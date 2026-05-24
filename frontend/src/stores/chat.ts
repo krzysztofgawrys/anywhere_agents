@@ -39,9 +39,9 @@ type ChatState = {
   currentAssistantId: string | null;
   activeSessionId: string | null;
   activeCwd: string | null;
-  /** What the backend is currently doing — updated on each streamed event. */
+  /** What the backend is currently doing - updated on each streamed event. */
   streamingActivity: StreamingActivity | null;
-  /** True when this client lost the lock — UI drops to read-only. */
+  /** True when this client lost the lock - UI drops to read-only. */
   readOnly: boolean;
   /** Set when server rejected a resume_session due to existing lock. */
   pendingLock: LockInfo | null;
@@ -123,7 +123,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setHistory: (messages, hasMore, oldestUuid) =>
     set((s) => ({
       messages,
-      // Don't downgrade from "streaming" — if session_started just told us the
+      // Don't downgrade from "streaming" - if session_started just told us the
       // backend is mid-turn, preserve that state. Otherwise clear to "idle".
       status: s.status === "streaming" ? ("streaming" as const) : ("idle" as const),
       currentAssistantId: s.status === "streaming" ? s.currentAssistantId : null,
@@ -189,7 +189,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           autoApprove: msg.payload.auto_approve,
           pendingPermissions: [],
           pendingUserInputs: [],
-          // Backend tells us the session is mid-turn on reconnect — restore streaming
+          // Backend tells us the session is mid-turn on reconnect - restore streaming
           // so the user sees the correct state before the history payload arrives.
           ...(msg.payload.is_busy && s.status !== "streaming"
             ? { status: "streaming" as const }
@@ -212,7 +212,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
 
       case "user_input_request": {
-        // De-dupe by tool_use_id — on reconnect the backend re-sends pending
+        // De-dupe by tool_use_id - on reconnect the backend re-sends pending
         // questions and we don't want to stack duplicates of the same prompt.
         const incoming: PendingUserInput = {
           toolUseId: msg.payload.tool_use_id,
@@ -250,7 +250,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({
           readOnly: true,
           status: "idle",
-          lastError: "Session taken over by another client — read-only mode.",
+          lastError: "Session taken over by another client - read-only mode.",
         });
         return;
 
@@ -300,7 +300,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       case "tool_result": {
-        // Tool finished — back to thinking/generating until next event.
+        // Tool finished - back to thinking/generating until next event.
         set((s) => ({
           streamingActivity: { kind: "thinking" },
           messages: s.messages.map((m) => ({
@@ -335,7 +335,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           set({ streamingActivity: null });
           // Backend is still processing the previous prompt. Roll back the
           // optimistically-appended user message (if any) and stay in streaming
-          // state — the result will arrive shortly and re-enable the composer.
+          // state - the result will arrive shortly and re-enable the composer.
           set((s) => ({
             messages:
               s.messages.length > 0 &&
@@ -351,16 +351,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       case "project_updated":
-        // The active project's auto_approve was toggled — reflect in UI.
+        // The active project's auto_approve was toggled - reflect in UI.
         set({ autoApprove: msg.payload.auto_approve });
         return;
 
       case "projects":
       case "sessions":
       case "session_history":
-      case "system":
       case "pong":
         return;
+
+      case "system": {
+        const sub = msg.payload.subtype;
+        if (sub === "model_changed") {
+          const data = msg.payload.data as Record<string, unknown> | undefined;
+          const model = (data?.model as string) ?? null;
+          const label = model
+            ? model.replace("claude-", "").split("-202")[0]
+            : "default";
+          const infoMsg: ChatMessage = {
+            id: newId(),
+            role: "system",
+            blocks: [{ kind: "info", text: `Model changed to ${label}` }],
+            finished: true,
+          };
+          set({ messages: [...get().messages, infoMsg] });
+        }
+        return;
+      }
     }
   },
 }));

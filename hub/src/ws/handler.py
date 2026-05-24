@@ -1,4 +1,4 @@
-"""Hub WS handler — multi-worker proxy with transparent project ID remapping.
+"""Hub WS handler - multi-worker proxy with transparent project ID remapping.
 
 Frontend sees hub-assigned project IDs. Hub resolves them to (worker_id,
 worker_project_id) and routes to the correct worker. Session-bound messages
@@ -24,7 +24,8 @@ HEARTBEAT_TIMEOUT = 300
 # Message types that carry project_id and need ID remapping + routing
 _PROJECT_BOUND = frozenset({
     "list_sessions", "session_history", "new_session", "resume_session",
-    "set_auto_approve", "list_directory", "read_file", "terminal_open",
+    "set_auto_approve", "list_directory", "read_file", "write_file",
+    "terminal_open",
 })
 
 # Message types that route to the active worker (session-bound, no project_id)
@@ -33,10 +34,10 @@ _SESSION_BOUND = frozenset({
     "user_input_response", "terminal_input", "terminal_resize", "terminal_close",
 })
 
-# Response types from worker that carry project_id — need remapping back
+# Response types from worker that carry project_id - need remapping back
 _RESPONSE_WITH_PROJECT_ID = frozenset({
     "sessions", "session_history", "directory", "file_content",
-    "project_updated", "project_created",
+    "file_written", "project_updated", "project_created",
 })
 
 
@@ -62,7 +63,7 @@ async def handle_websocket(
             nonlocal active_worker_id
             msg_type = msg.get("type")
 
-            # Push notifications — handle locally
+            # Push notifications - handle locally
             if msg_type == "push_notify":
                 payload = msg.get("payload", {})
                 await push_manager.notify_all(
@@ -76,7 +77,7 @@ async def handle_websocket(
                 active_worker_id = worker_id
 
             # Spontaneous "projects" list from worker (e.g. after create_project)
-            # — remap all project IDs and update the index.
+            # - remap all project IDs and update the index.
             if msg_type == "projects":
                 w_info = next((w for w in workers if w.id == worker_id), None)
                 label = w_info.label if w_info else worker_id

@@ -8,7 +8,7 @@ type Options = {
   url?: string;
   onMessage: (msg: ServerMessage) => void;
   onReconnect?: () => void;
-  /** Fired on every successful WS open — first connect AND reconnects. */
+  /** Fired on every successful WS open - first connect AND reconnects. */
   onConnect?: () => void;
 };
 
@@ -91,7 +91,7 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
     };
 
     ws.onerror = () => {
-      // ignore — close handler will run
+      // ignore - close handler will run
     };
 
     wsRef.current = ws;

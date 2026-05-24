@@ -1,4 +1,4 @@
-"""ClaudeSDKClient wrapper — one Session per active conversation."""
+"""ClaudeSDKClient wrapper - one Session per active conversation."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ class Session:
         self._idle_event.set()
         # Background tasks tailing per-task stdout files (Monitor / TaskCreate).
         # SDK only emits 3 typed events per task (started / updated / final
-        # notification) — the actual per-line stdout sits in a file we have to
+        # notification) - the actual per-line stdout sits in a file we have to
         # follow ourselves to get live ticks into the UI. Keyed by task_id.
         self._task_tails: dict[str, asyncio.Task[None]] = {}
         # True while the session is parked in the registry (WS disconnected).
@@ -240,7 +240,7 @@ class Session:
         `images`: list of {"media_type": "image/png|jpeg|...", "data_b64": "..."}
         `stream`: when True, forward fine-grained text/thinking deltas as they
         arrive (token-by-token feel). When False (default), suppress deltas and
-        emit complete text/thinking blocks from the final AssistantMessage —
+        emit complete text/thinking blocks from the final AssistantMessage -
         chunks per turn, easier to read.
         """
         if self._client is None:
@@ -291,7 +291,7 @@ class Session:
 
         The long-lived ``_consume_stream`` task and any active ``_task_tails``
         capture ``self._send`` via attribute lookup, so replacing the attribute
-        is enough — no restart needed.
+        is enough - no restart needed.
 
         Pass ``parked=True`` when parking (WS disconnected) so the stream task
         knows to fire a push notification on the next ResultMessage.
@@ -325,7 +325,7 @@ class Session:
         tool_input: dict[str, Any],
         ctx: ToolPermissionContext,
     ) -> PermissionResultAllow | PermissionResultDeny:
-        """SDK callback — invoked for every tool call when permission_mode='default'."""
+        """SDK callback - invoked for every tool call when permission_mode='default'."""
         logger.info("can_use_tool", tool_name=tool_name, session_id=self._session_id)
         if tool_name in _USER_INPUT_TOOLS:
             # Surface a question UI to the user rather than Allow/Deny.
@@ -391,7 +391,7 @@ class Session:
         )
 
     async def _consume_stream(self) -> None:
-        """Long-lived consumer — runs for the lifetime of the session.
+        """Long-lived consumer - runs for the lifetime of the session.
 
         Uses receive_messages() (not receive_response()) because the latter
         terminates at ResultMessage, leaving us deaf to task-notifications
@@ -402,7 +402,7 @@ class Session:
             async for msg in self._client.receive_messages():
                 await self._dispatch(msg)
                 if isinstance(msg, ResultMessage):
-                    # Turn finished — one-shot auto-approve expires; we go idle.
+                    # Turn finished - one-shot auto-approve expires; we go idle.
                     self._permissions.disarm_one_shot()
                     self._busy = False
                     self._idle_event.set()
@@ -478,7 +478,7 @@ class Session:
                     # text (also visible in the .jsonl). We forward those as
                     # structured task_event so the UI can render them as
                     # compact blocks instead of leaking raw XML as a blue
-                    # user bubble. Non-task user TextBlocks are dropped — the
+                    # user bubble. Non-task user TextBlocks are dropped - the
                     # frontend already echoes the user's own prompt locally
                     # and pure-text system-reminders carry no useful UX info.
                     for ev in parse_task_events(block.text):
@@ -501,7 +501,7 @@ class Session:
             # in between turns. SDK emits 3 kinds: task_started (kicked off),
             # task_updated (status change, e.g. completed), task_notification
             # (final summary with output_file). Per-stdout-line ticks are NOT
-            # streamed by the SDK — they live in `output_file` only, so we
+            # streamed by the SDK - they live in `output_file` only, so we
             # start a live tail on task_started to surface them as they land.
             if msg.subtype in (
                 "task_started",
@@ -519,7 +519,7 @@ class Session:
 
                 # task_updated is redundant with the task_notification that
                 # follows it (same status, same task_id) and pointless for the
-                # UI on its own — render-wise it would show up as a duplicate
+                # UI on its own - render-wise it would show up as a duplicate
                 # "task started · completed" block with no summary. Skip the
                 # WS emit but still use it below to stop tailing.
                 if msg.subtype != "task_updated":
@@ -543,7 +543,7 @@ class Session:
                 # burst at the end.
                 if msg.subtype == "task_started" and task_id:
                     self._start_task_tail(task_id, data.get("tool_use_id"))
-                # Terminal status — give the tail a moment to drain any final
+                # Terminal status - give the tail a moment to drain any final
                 # bytes, then cancel it. Same handling for both task_updated
                 # (status=completed/failed/stopped in patch) and the final
                 # task_notification.
@@ -561,7 +561,7 @@ class Session:
 
         elif isinstance(msg, ResultMessage):
             if self._is_parked:
-                # Session is running in the background (WS disconnected) —
+                # Session is running in the background (WS disconnected) -
                 # fire a Web Push notification so the user knows it's done.
                 from src.push.manager import push_manager
                 asyncio.ensure_future(
@@ -656,7 +656,7 @@ class Session:
             return
 
         try:
-            # Polling tail — readline returns "" at EOF, sleep and try again.
+            # Polling tail - readline returns "" at EOF, sleep and try again.
             with path.open("r") as f:
                 buffer = ""
                 while True:
@@ -701,7 +701,7 @@ class Session:
 
         Only content_block_delta carries useful incremental text/thinking;
         other events (message_start/stop, content_block_start/stop, message_delta)
-        are SDK plumbing we can ignore — the assembled AssistantMessage handles
+        are SDK plumbing we can ignore - the assembled AssistantMessage handles
         tool_use and the ResultMessage handles completion.
         """
         ev = msg.event
@@ -723,7 +723,7 @@ class Session:
                     "type": "thinking",
                     "payload": {"session_id": self._session_id, "text": text},
                 })
-        # input_json_delta (partial tool input) is ignored — the final
+        # input_json_delta (partial tool input) is ignored - the final
         # AssistantMessage carries the fully assembled tool input.
 
 

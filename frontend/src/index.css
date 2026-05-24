@@ -30,7 +30,7 @@ body {
   padding-right: env(safe-area-inset-right);
 }
 
-/* Markdown tables: don't squish columns on mobile — render at natural width
+/* Markdown tables: don't squish columns on mobile - render at natural width
    and let the wrapper (.overflow-x-auto in Message.tsx) scroll horizontally. */
 .prose table {
   width: max-content;
@@ -58,7 +58,7 @@ body {
   white-space: pre-wrap;
 }
 
-/* Typing indicator — 3 staggered bouncing dots. */
+/* Typing indicator - 3 staggered bouncing dots. */
 @keyframes typing-bounce {
   0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
   40% { transform: translateY(-4px); opacity: 1; }

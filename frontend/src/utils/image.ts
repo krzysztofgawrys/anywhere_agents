@@ -2,7 +2,7 @@ import type { PromptImage } from "../types";
 
 const SUPPORTED = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
-/** Max raw bytes per image — Claude's hard limit is ~5MB. Reject earlier. */
+/** Max raw bytes per image - Claude's hard limit is ~5MB. Reject earlier. */
 export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
 
 export function isSupportedImage(file: File | Blob): boolean {
@@ -16,7 +16,7 @@ export function fileToBase64(file: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error ?? new Error("read failed"));
     reader.onload = () => {
       const result = reader.result as string;
-      // result is "data:image/png;base64,XXXX..." — strip the prefix
+      // result is "data:image/png;base64,XXXX..." - strip the prefix
       const comma = result.indexOf(",");
       resolve(comma >= 0 ? result.slice(comma + 1) : result);
     };

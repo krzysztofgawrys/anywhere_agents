@@ -105,7 +105,7 @@ export function NewProjectBrowser({ send, directory, open, onClose, workerId }: 
           </button>
           <div className="flex-1 min-w-0">
             <div className="text-xs text-gray-500 uppercase tracking-wide mb-0.5">
-              New project — select directory
+              New project - select directory
             </div>
             {/* Breadcrumb */}
             <div className="text-sm font-mono text-gray-200 truncate" title={directory?.path ?? ""}>

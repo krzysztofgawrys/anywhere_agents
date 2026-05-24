@@ -2,7 +2,7 @@ import { useMemo } from "react";
 
 type DiffLine = { kind: "add" | "del" | "ctx"; text: string };
 
-/** Naive line diff using LCS — fine for tool-call previews, not huge files. */
+/** Naive line diff using LCS - fine for tool-call previews, not huge files. */
 function diffLines(a: string, b: string): DiffLine[] {
   const aLines = a.split("\n");
   const bLines = b.split("\n");

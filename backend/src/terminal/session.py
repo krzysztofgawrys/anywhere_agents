@@ -66,7 +66,7 @@ class TerminalSession:
         )
         os.close(slave_fd)
 
-        # Non-blocking reader on master fd — fires in the event loop
+        # Non-blocking reader on master fd - fires in the event loop
         # without blocking a thread pool worker.
         self._loop.add_reader(master_fd, self._on_readable)
         logger.info("terminal_started", cwd=self._cwd, pid=self._proc.pid)

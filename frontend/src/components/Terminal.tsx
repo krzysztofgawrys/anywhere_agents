@@ -9,7 +9,7 @@ type Props = {
   send: (msg: ClientMessage) => boolean;
   /** App calls this with a write function once xterm is ready. */
   onReady: (write: (b64: string) => void) => void;
-  /** Called when X is clicked — only hides, does NOT kill the PTY. */
+  /** Called when X is clicked - only hides, does NOT kill the PTY. */
   onHide: () => void;
 };
 
@@ -30,7 +30,7 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
         selectionBackground: "#264f7840",
       },
       fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", monospace',
-      fontSize: 13,
+      fontSize: 12,
       lineHeight: 1.2,
       cursorBlink: true,
       allowProposedApi: true,
@@ -68,7 +68,7 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Resize observer — tell PTY when the panel changes size
+  // Resize observer - tell PTY when the panel changes size
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;

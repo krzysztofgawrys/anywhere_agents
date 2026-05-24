@@ -1,4 +1,4 @@
-"""SessionManager — owns the active Session per WS connection.
+"""SessionManager - owns the active Session per WS connection.
 
 Coordinates with LockManager to enforce one-writer-per-session.
 """
@@ -85,7 +85,7 @@ class SessionManager:
     ) -> Session | None:
         """Resume an existing session, acquiring its lock (force=takeover).
 
-        Checks the in-process :mod:`registry` first — if the session was parked
+        Checks the in-process :mod:`registry` first - if the session was parked
         after a WS disconnect it is reclaimed (fast path, no SDK restart needed).
         Falls back to a full SDK resume from the JSONL transcript on disk.
         """
@@ -112,7 +112,7 @@ class SessionManager:
                 force=force,
             )
             if not acquired and existing is not None:
-                # Another client holds the lock — put the session back and
+                # Another client holds the lock - put the session back and
                 # surface the conflict to the caller.
                 registry.park(parked)
                 await self._send({
@@ -196,7 +196,7 @@ class SessionManager:
     def resolve_user_input(self, tool_use_id: str, answers: list[str]) -> bool:
         """Deliver user answers to a pending AskUserQuestion tool call.
 
-        AskUserQuestion can pose multiple questions in one call — ``answers``
+        AskUserQuestion can pose multiple questions in one call - ``answers``
         is one string per question, in the same order they were sent.
         """
         if self._current is None:

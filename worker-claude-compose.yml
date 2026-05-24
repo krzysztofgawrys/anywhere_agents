@@ -1,4 +1,4 @@
-# Claude Web Worker (Claude SDK) — standalone compose for remote machines (PC1, PC2)
+# Claude Web Worker (Claude SDK) - standalone compose for remote machines (PC1, PC2)
 #
 # Deployment steps:
 #   1. Clone the repo on the remote machine
@@ -31,7 +31,7 @@ services:
       # Claude auth (claude login), settings, project session history
       - ${HOME}/.claude:/home/app/.claude
       - ${HOME}/.claude.json:/home/app/.claude.json
-      # Worker DB (projects index) — create dir first: mkdir -p ~/.claude-web
+      # Worker DB (projects index) - create dir first: mkdir -p ~/.claude-web
       - ${HOME}/.claude-web:/home/app/.claude-web
       # Git credentials (read-only)
       - ${HOME}/.ssh:/home/app/.ssh:ro

@@ -22,7 +22,7 @@ RUN uv lock && uv sync --frozen --no-dev
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.13-slim
 
-# Hub is lightweight — no Node.js, no Claude CLI
+# Hub is lightweight - no Node.js, no Claude CLI
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
