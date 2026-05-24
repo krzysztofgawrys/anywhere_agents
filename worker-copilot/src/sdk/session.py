@@ -308,7 +308,17 @@ class Session:
         if data is None:
             return
 
+        # Streaming-vs-block rule (matches worker-claude): per-prompt the
+        # frontend sets `stream` (bool). When True, forward every Copilot
+        # delta as a small text_delta and SUPPRESS the terminal
+        # AssistantMessageData (otherwise the consolidated text would arrive
+        # AFTER the deltas and the UI would render it as a duplicate). When
+        # False, suppress deltas and emit only the consolidated text at the
+        # end of the turn so the user sees one block per assistant message.
+
         if isinstance(data, AssistantMessageDeltaData):
+            if not self._stream_enabled:
+                return
             text = getattr(data, "delta_content", "") or ""
             if text:
                 await self._send({
@@ -318,19 +328,19 @@ class Session:
             return
 
         if isinstance(data, AssistantMessageData):
-            # When streaming is on we already pushed every delta; emit the
-            # final consolidated content only if streaming was off (we keep
-            # streaming=True today so this is a no-op for most turns).
-            if not self._stream_enabled:
-                text = getattr(data, "content", "") or ""
-                if text:
-                    await self._send({
-                        "type": "text_delta",
-                        "payload": {"session_id": self._session_id, "text": text},
-                    })
+            if self._stream_enabled:
+                return
+            text = getattr(data, "content", "") or ""
+            if text:
+                await self._send({
+                    "type": "text_delta",
+                    "payload": {"session_id": self._session_id, "text": text},
+                })
             return
 
         if isinstance(data, AssistantReasoningDeltaData):
+            if not self._stream_enabled:
+                return
             text = getattr(data, "delta_content", "") or ""
             if text:
                 await self._send({
@@ -340,13 +350,14 @@ class Session:
             return
 
         if isinstance(data, AssistantReasoningData):
-            if not self._stream_enabled:
-                text = getattr(data, "content", "") or ""
-                if text:
-                    await self._send({
-                        "type": "thinking",
-                        "payload": {"session_id": self._session_id, "text": text},
-                    })
+            if self._stream_enabled:
+                return
+            text = getattr(data, "content", "") or ""
+            if text:
+                await self._send({
+                    "type": "thinking",
+                    "payload": {"session_id": self._session_id, "text": text},
+                })
             return
 
         if isinstance(data, ToolExecutionStartData):
