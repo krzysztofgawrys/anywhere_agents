@@ -94,6 +94,12 @@ function App() {
   );
 
   const activeProjectIdRef = useRef<number | null>(null);
+  // True while we expect a `result` event whose arrival should trigger a fresh
+  // session_history refetch. Set on WS reconnect (resumeLastSession) when the
+  // session may have produced messages during the disconnect window that the
+  // SDK hadn't flushed to JSONL yet at the time of our initial history fetch.
+  // Cleared once we refetch (or after a fallback timeout).
+  const pendingHistoryRefreshRef = useRef(false);
   useEffect(() => {
     const unsub = useProjectsStore.subscribe((s) => {
       activeProjectIdRef.current = s.activeProjectId;
@@ -135,6 +141,28 @@ function App() {
         // already sends a push_notify that the SW displays.
         if (!hasPushSubscription) {
           notifyIfHidden("Claude finished", "Task completed - tap to view.");
+        }
+      }
+      if (msg.type === "result" && pendingHistoryRefreshRef.current) {
+        // A turn just finished after a WS reconnect - the SDK has now
+        // flushed the in-flight turn to JSONL, so refetch history to pick
+        // up any messages produced during the disconnect window.
+        pendingHistoryRefreshRef.current = false;
+        const projectId = activeProjectIdRef.current;
+        const sessionId = useChatStore.getState().activeSessionId;
+        if (projectId !== null && sessionId !== null) {
+          sendRef.current?.({
+            type: "session_history",
+            payload: { project_id: projectId, session_id: sessionId, limit: 30 },
+          });
+        }
+      }
+      if (msg.type === "session_started" && pendingHistoryRefreshRef.current) {
+        // Reconnect responded - if the session was already idle, the initial
+        // history fetch is authoritative (no in-flight turn to wait on).
+        // Clear the flag so we don't refetch on a future unrelated `result`.
+        if (!msg.payload.is_busy) {
+          pendingHistoryRefreshRef.current = false;
         }
       }
       handleProjectsMsg(msg);
@@ -288,6 +316,14 @@ function App() {
   const onReconnect = useCallback(() => {
     // WS re-established after a drop while the tab was open. Prefer in-memory
     // state; the backend may have the session parked in its registry.
+    //
+    // During the disconnect window the SDK may have produced new events that
+    // didn't reach our (dead) WS - the worker silently dropped them. If a
+    // turn ended in that window the SDK has by now flushed to JSONL, but the
+    // initial session_history we send below may race with the flush. Arm a
+    // refetch on the first `result` event so we pick up the complete state
+    // once the in-flight turn (if any) finishes.
+    pendingHistoryRefreshRef.current = true;
     resumeLastSession();
   }, [resumeLastSession]);
 

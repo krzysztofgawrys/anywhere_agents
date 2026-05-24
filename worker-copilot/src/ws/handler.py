@@ -80,7 +80,13 @@ async def handle_websocket(
     await manager.accept(websocket, connection_id)
 
     async def send(msg: dict[str, Any]) -> None:
-        await manager.send(connection_id, msg)
+        # Swallow send failures so a dying WS (hub closed its end, network
+        # blip) doesn't propagate an exception into the SDK stream task and
+        # tear down the per-session consumer mid-turn.
+        try:
+            await manager.send(connection_id, msg)
+        except Exception as e:
+            logger.warning("ws_send_failed", error=str(e))
 
     sessions = SessionManager(
         send=send,

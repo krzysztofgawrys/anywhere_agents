@@ -169,6 +169,21 @@ async def handle_websocket(
             nonlocal active_worker_id
             msg_type = msg.get("type")
 
+            # Hub probes optional worker capabilities (currently `list_models`)
+            # via background request/response. If a worker doesn't implement
+            # one, it replies with `{type: "error", code: "not_implemented"}` -
+            # that's a hub-internal capability miss, not a user-facing error.
+            # Swallow it so the frontend doesn't pop a red banner on startup.
+            if msg_type == "error":
+                payload = msg.get("payload") or {}
+                if payload.get("code") == "not_implemented":
+                    logger.debug(
+                        "worker_not_implemented",
+                        worker=worker_id,
+                        message=payload.get("message"),
+                    )
+                    return
+
             # Push notifications - handle locally
             if msg_type == "push_notify":
                 payload = msg.get("payload", {})
