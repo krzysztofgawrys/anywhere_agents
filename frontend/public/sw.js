@@ -37,7 +37,19 @@ self.addEventListener('push', (event) => {
     requireInteraction: false,
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  // Suppress the notification when the PWA is already on screen — the
+  // worker now emits push_notify on every result, so without this check
+  // the user gets a notification while staring at the app. If any client
+  // window reports visibilityState === 'visible', skip the banner.
+  event.waitUntil((async () => {
+    const clients = await self.clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true,
+    });
+    const hasVisibleClient = clients.some((c) => c.visibilityState === 'visible');
+    if (hasVisibleClient) return;
+    await self.registration.showNotification(title, options);
+  })());
 });
 
 self.addEventListener('notificationclick', (event) => {
