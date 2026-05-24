@@ -3,6 +3,12 @@
 Frontend sees hub-assigned project IDs. Hub resolves them to (worker_id,
 worker_project_id) and routes to the correct worker. Session-bound messages
 (prompt, interrupt, approve/deny) route to the active worker.
+
+Workers list is read fresh from workers.json on every frontend WS connection
+(no hub restart needed to pick up edits). Workers that fail to connect, or
+that disconnect mid-session, are retried in background every
+RETRY_INTERVAL_S seconds; on (re)connect the worker's projects are fetched
+and the aggregated `projects` payload is pushed to the frontend.
 """
 
 import asyncio
@@ -15,11 +21,15 @@ from fastapi import WebSocket, WebSocketDisconnect
 from src.push.manager import push_manager
 from src.workers.connection import WorkerConnection
 from src.workers.project_index import ProjectIndex
-from src.workers.registry import WorkerInfo
+from src.workers.registry import WorkerInfo, load_workers
 
 logger = structlog.get_logger()
 
 HEARTBEAT_TIMEOUT = 300
+
+# How often to retry a worker that failed to connect (or disconnected).
+# Per-WS background tasks; cancelled when the frontend WS disconnects.
+RETRY_INTERVAL_S = 30.0
 
 # Message types that carry project_id and need ID remapping + routing
 _PROJECT_BOUND = frozenset({
@@ -46,15 +56,26 @@ async def handle_websocket(
     connection_id: str,
     *,
     device_label: str = "unknown",
-    workers: list[WorkerInfo],
 ) -> None:
-    """Proxy frontend WS to multiple worker WS connections."""
+    """Proxy frontend WS to multiple worker WS connections.
+
+    Reads workers.json fresh per call so config edits are picked up without a
+    hub restart. Workers that fail to connect (or disconnect mid-session) are
+    retried in background by per-WS asyncio tasks until success or WS close.
+    """
     await websocket.accept()
+
+    # Fresh snapshot of the worker registry for this frontend WS session.
+    # Adding/removing entries in workers.json takes effect on the next
+    # frontend connection - no hub restart needed.
+    workers = load_workers()
 
     project_index = ProjectIndex()
     active_worker_id: str | None = None
     worker_conns: dict[str, WorkerConnection] = {}
-    any_worker_alive = True
+    # Per-worker background retry tasks. Keyed by worker id; entry exists iff
+    # a retry loop is currently waiting/attempting for that worker.
+    retry_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def make_on_message(worker_id: str) -> Any:
         """Build a per-worker message handler."""
@@ -113,39 +134,110 @@ async def handle_websocket(
 
         return on_worker_message
 
-    async def on_worker_disconnect() -> None:
-        nonlocal any_worker_alive
-        live = any(c.connected for c in worker_conns.values())
-        if not live:
-            any_worker_alive = False
-            try:
-                await websocket.send_json({
-                    "type": "error",
-                    "payload": {
-                        "code": "worker_disconnected",
-                        "message": "All worker connections lost",
-                    },
-                })
-            except Exception:
-                pass
+    def make_on_disconnect(worker_id: str) -> Any:
+        """Build a per-worker disconnect handler that schedules a reconnect."""
 
-    # Connect to all workers
-    for w in workers:
-        on_msg = await make_on_message(w.id)
+        async def on_disconnect() -> None:
+            # Drop the dead conn so routing returns a clean "worker_unavailable"
+            # error to the frontend if the user tries to send to it before the
+            # reconnect succeeds.
+            worker_conns.pop(worker_id, None)
+            logger.warning("worker_disconnected", worker=worker_id)
+            # Schedule a reconnect unless one is already in flight. Look up
+            # current config from `workers` (the snapshot for this WS session) -
+            # if the entry was removed from workers.json between WS connects,
+            # there's nothing to reconnect to anyway.
+            w = next((w for w in workers if w.id == worker_id), None)
+            if w is not None and worker_id not in retry_tasks:
+                retry_tasks[worker_id] = asyncio.create_task(_retry(w))
+
+        return on_disconnect
+
+    async def _try_connect(w: WorkerInfo) -> bool:
+        """Open one WS connection to a worker. Returns True on success."""
         conn = WorkerConnection(
             worker_url=w.url,
             worker_secret=w.secret,
             device_label=device_label,
-            on_message=on_msg,
-            on_disconnect=on_worker_disconnect,
+            on_message=await make_on_message(w.id),
+            on_disconnect=make_on_disconnect(w.id),
         )
         try:
             await conn.connect()
-            worker_conns[w.id] = conn
         except Exception as e:
             logger.warning("worker_connect_failed", worker=w.id, error=str(e))
+            return False
+        worker_conns[w.id] = conn
+        return True
 
+    async def _fetch_and_push_aggregate() -> None:
+        """Refresh projects from every connected worker and push to frontend.
+
+        Called after a worker (re)connects, so the frontend immediately sees
+        the new worker's projects without a manual reload.
+        """
+        for wid in list(worker_conns.keys()):
+            conn = worker_conns.get(wid)
+            if conn is None or not conn.connected:
+                continue
+            w_info = next((w for w in workers if w.id == wid), None)
+            label = w_info.label if w_info else wid
+            wtype = w_info.type if w_info else "claude"
+            try:
+                resp = await conn.request(
+                    {"type": "list_projects", "payload": {}},
+                    response_type="projects",
+                    timeout=10.0,
+                )
+                project_index.update_from_worker(
+                    wid, label, resp.get("payload", {}).get("projects", []), wtype
+                )
+            except Exception as e:
+                logger.warning("post_connect_projects_failed", worker=wid, error=str(e))
+        try:
+            await websocket.send_json({
+                "type": "projects",
+                "payload": {"projects": project_index.get_all()},
+            })
+        except Exception:
+            pass
+
+    async def _retry(w: WorkerInfo) -> None:
+        """Background loop: retry a worker until connected or task cancelled."""
+        try:
+            while True:
+                await asyncio.sleep(RETRY_INTERVAL_S)
+                # Could have been connected via another path - skip if so.
+                existing = worker_conns.get(w.id)
+                if existing is not None and existing.connected:
+                    return
+                logger.info("worker_retry_attempt", worker=w.id, url=w.url)
+                if await _try_connect(w):
+                    logger.info("worker_retry_succeeded", worker=w.id)
+                    try:
+                        await _fetch_and_push_aggregate()
+                    except Exception as e:
+                        logger.warning("retry_post_push_failed", worker=w.id, error=str(e))
+                    return
+        except asyncio.CancelledError:
+            return
+        finally:
+            retry_tasks.pop(w.id, None)
+
+    # Initial connection pass. Workers that fail get a background retry task.
+    for w in workers:
+        if not await _try_connect(w):
+            retry_tasks[w.id] = asyncio.create_task(_retry(w))
+
+    # All workers failed initial connect AND there were workers configured -
+    # close so the frontend reconnects (its useWebSocket hook retries
+    # automatically with backoff). If we kept the WS open here the frontend
+    # would sit there forever waiting for a `projects` payload that never
+    # arrives until a retry tick fires.
     if not worker_conns:
+        for task in list(retry_tasks.values()):
+            task.cancel()
+        retry_tasks.clear()
         await websocket.send_json({
             "type": "error",
             "payload": {
@@ -288,6 +380,11 @@ async def handle_websocket(
     except Exception as e:
         logger.error("ws_error", connection_id=connection_id, error=str(e), exc_info=True)
     finally:
+        # Cancel any in-flight retry tasks first so they don't try to push a
+        # `projects` payload to an already-closed WS.
+        for task in list(retry_tasks.values()):
+            task.cancel()
+        retry_tasks.clear()
         for conn in worker_conns.values():
             await conn.close()
         logger.info("ws_disconnected", connection_id=connection_id)

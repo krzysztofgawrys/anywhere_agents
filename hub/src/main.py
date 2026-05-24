@@ -133,11 +133,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         device=device_label,
     )
 
+    # NOTE: handle_websocket reads workers.json fresh on every call so config
+    # edits land without a hub restart. The module-level `workers` snapshot is
+    # only used for the startup log line.
     await handle_websocket(
         websocket,
         connection_id,
         device_label=device_label,
-        workers=workers,
     )
 
 
