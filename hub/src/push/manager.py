@@ -1,7 +1,8 @@
 """Web Push notification manager.
 
 Generates VAPID keys on first run (stored in ~/.claude-web/vapid.json),
-holds in-memory push subscriptions sent by the browser, and delivers
+persists push subscriptions sent by the browser to
+~/.claude-web/push_subs.json (so they survive hub rebuilds), and delivers
 notifications via pywebpush when the agent finishes a task in the background.
 """
 
@@ -23,6 +24,9 @@ logger = structlog.get_logger()
 _VAPID_PATH = Path(
     os.environ.get("CLAUDE_WEB_VAPID_PATH", "~/.claude-web/vapid.json")
 ).expanduser()
+_SUBS_PATH = Path(
+    os.environ.get("CLAUDE_WEB_PUSH_SUBS_PATH", "~/.claude-web/push_subs.json")
+).expanduser()
 _CONTACT = "mailto:admin@localhost"  # VAPID contact — required by push services
 
 
@@ -32,7 +36,7 @@ class PushManager:
     def __init__(self) -> None:
         self._vapid = self._load_or_generate_vapid()
         # subscription endpoint → subscription dict (endpoint, keys)
-        self._subscriptions: dict[str, dict[str, Any]] = {}
+        self._subscriptions: dict[str, dict[str, Any]] = self._load_subscriptions()
 
     # ------------------------------------------------------------------
     # Public API
@@ -50,11 +54,15 @@ class PushManager:
         """Store a push subscription from a browser client."""
         endpoint = subscription.get("endpoint", "")
         if endpoint:
+            existing = self._subscriptions.get(endpoint)
             self._subscriptions[endpoint] = subscription
+            if existing != subscription:
+                self._save_subscriptions()
             logger.info("push_subscription_added", endpoint=endpoint[:60])
 
     def remove_subscription(self, endpoint: str) -> None:
-        self._subscriptions.pop(endpoint, None)
+        if self._subscriptions.pop(endpoint, None) is not None:
+            self._save_subscriptions()
 
     async def notify_all(self, title: str, body: str = "") -> None:
         """Send a push notification to all registered subscribers."""
@@ -78,12 +86,40 @@ class PushManager:
                     dead.append(endpoint)
             except Exception as e:
                 logger.warning("push_error", error=str(e))
-        for ep in dead:
-            self._subscriptions.pop(ep, None)
+        if dead:
+            for ep in dead:
+                self._subscriptions.pop(ep, None)
+            self._save_subscriptions()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _load_subscriptions(self) -> dict[str, dict[str, Any]]:
+        """Load persisted subscriptions from disk. Returns empty dict on miss/error."""
+        if not _SUBS_PATH.exists():
+            return {}
+        try:
+            data = json.loads(_SUBS_PATH.read_text())
+            if not isinstance(data, dict):
+                logger.warning("push_subs_load_unexpected_shape")
+                return {}
+            # Keys are endpoints, values are subscription dicts.
+            logger.info("push_subs_loaded", count=len(data))
+            return data
+        except Exception as e:
+            logger.warning("push_subs_load_failed", error=str(e))
+            return {}
+
+    def _save_subscriptions(self) -> None:
+        """Persist subscriptions to disk so they survive hub restarts."""
+        try:
+            _SUBS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _SUBS_PATH.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._subscriptions))
+            tmp.replace(_SUBS_PATH)
+        except Exception as e:
+            logger.warning("push_subs_save_failed", error=str(e))
 
     def _load_or_generate_vapid(self) -> Vapid:
         _VAPID_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -576,16 +576,21 @@ class Session:
                 })
 
         elif isinstance(msg, ResultMessage):
-            if self._is_parked:
-                # Session is running in the background (WS disconnected) —
-                # send push_notify to hub so it can fire a Web Push notification.
-                await self._send({
-                    "type": "push_notify",
-                    "payload": {
-                        "title": "Claude finished",
-                        "body": f"Task completed in {self._cwd or 'background'}",
-                    },
-                })
+            # Always emit push_notify on result. The hub forwards it to Web
+            # Push subscribers; the SW displays a notification tagged
+            # "claude-result", which dedupes with the local client-side
+            # `useVisibilityNotify` (same tag → browser replaces, doesn't
+            # stack). Gating this on `_is_parked` missed the common mobile
+            # case where the PWA is in the background but the WS is still
+            # alive — neither push nor local fallback would fire, since
+            # `App.tsx` skips local notify when a push subscription exists.
+            await self._send({
+                "type": "push_notify",
+                "payload": {
+                    "title": "Claude finished",
+                    "body": f"Task completed in {self._cwd or 'background'}",
+                },
+            })
             await self._send({
                 "type": "result",
                 "payload": {
