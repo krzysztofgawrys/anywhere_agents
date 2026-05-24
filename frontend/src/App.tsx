@@ -32,6 +32,9 @@ function App() {
   const oldestUuid = useChatStore((s) => s.oldestUuid);
   const loadingOlder = useChatStore((s) => s.loadingOlder);
   const autoApprove = useChatStore((s) => s.autoApprove);
+  const planMode = useChatStore((s) => s.planMode);
+  const setPlanMode = useChatStore((s) => s.setPlanMode);
+  const selectedModel = useChatStore((s) => s.model);
   const streamingActivity = useChatStore((s) => s.streamingActivity);
   const pendingPermissions = useChatStore((s) => s.pendingPermissions);
   const pendingUserInputs = useChatStore((s) => s.pendingUserInputs);
@@ -398,31 +401,81 @@ function App() {
       images: PromptImage[],
       streamTokens: boolean,
     ) => {
+      // In plan mode, prepend an instruction so Claude only plans.
+      const promptText = planMode
+        ? `[PLAN MODE — read-only, do NOT execute any changes]\n${text}`
+        : text;
       appendUserPrompt(text, images);
       send({
         type: "prompt",
         payload: {
-          text,
+          text: promptText,
           auto_approve: autoApproveOnce,
           stream: streamTokens,
           ...(images.length > 0 ? { images } : {}),
         },
       });
     },
-    [send, appendUserPrompt]
+    [send, appendUserPrompt, planMode]
   );
 
   const onInterrupt = useCallback(() => {
     send({ type: "interrupt", payload: {} });
   }, [send]);
 
+  const onCommand = useCallback(
+    (name: string) => {
+      switch (name) {
+        case "clear":
+          resetChat();
+          break;
+        case "compact":
+          appendUserPrompt("/compact");
+          send({
+            type: "prompt",
+            payload: {
+              text: "Provide a concise summary of our conversation so far: key decisions made, files changed, current state, and any open issues. Be brief — this is to save context window space.",
+              stream: true,
+            },
+          });
+          break;
+        case "new":
+          if (activeProjectId != null) {
+            killTerminal();
+            resetChat();
+            send({ type: "new_session", payload: { project_id: activeProjectId, model: selectedModel } });
+          }
+          break;
+        case "model opus":
+          useChatStore.getState().setModel("claude-opus-4-6");
+          break;
+        case "model sonnet":
+          useChatStore.getState().setModel("claude-sonnet-4-6");
+          break;
+        case "model haiku":
+          useChatStore.getState().setModel("claude-haiku-4-5-20251001");
+          break;
+        case "model default":
+          useChatStore.getState().setModel(null);
+          break;
+        case "plan":
+          setPlanMode(true);
+          break;
+        case "act":
+          setPlanMode(false);
+          break;
+      }
+    },
+    [resetChat, activeProjectId, send, killTerminal, setPlanMode, selectedModel],
+  );
+
   const onNewSession = useCallback(
     (projectId: number) => {
       killTerminal();
       resetChat();
-      send({ type: "new_session", payload: { project_id: projectId } });
+      send({ type: "new_session", payload: { project_id: projectId, model: selectedModel } });
     },
-    [resetChat, send, killTerminal]
+    [resetChat, send, killTerminal, selectedModel]
   );
 
   const onPickSession = useCallback(
@@ -445,10 +498,10 @@ function App() {
       });
       send({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId },
+        payload: { project_id: projectId, session_id: sessionId, model: selectedModel },
       });
     },
-    [resetChat, send, killTerminal]
+    [resetChat, send, killTerminal, selectedModel]
   );
 
   const onTakeover = useCallback(() => {
@@ -459,10 +512,11 @@ function App() {
         project_id: pendingLock.projectId,
         session_id: pendingLock.sessionId,
         force: true,
+        model: selectedModel,
       },
     });
     setPendingLock(null);
-  }, [pendingLock, send, setPendingLock]);
+  }, [pendingLock, send, setPendingLock, selectedModel]);
 
   const onAllowTool = useCallback(
     (toolUseId: string) => {
@@ -578,18 +632,24 @@ function App() {
               </button>
             )}
             {activeSessionId && (
-              <button
-                type="button"
-                onClick={onToggleAutoApprove}
-                className={`text-xs px-2 py-1 rounded border transition-colors ${
-                  autoApprove
-                    ? "bg-yellow-900/40 text-yellow-300 border-yellow-700/60 hover:bg-yellow-900/60"
-                    : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
-                }`}
-                title={autoApprove ? "Auto-approve ON — click to disable" : "Click to auto-approve every tool"}
-              >
-                {autoApprove ? "auto ON" : "auto OFF"}
-              </button>
+              <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                <span className="hover:text-gray-300" title="Change with /model">
+                  {selectedModel ? selectedModel.replace("claude-", "").split("-202")[0] : "default"}
+                </span>
+                <span className="text-gray-600">|</span>
+                <span className={planMode ? "text-blue-400" : ""} title="Toggle with /plan or /act">
+                  {planMode ? "plan" : "act"}
+                </span>
+                <span className="text-gray-600">|</span>
+                <button
+                  type="button"
+                  onClick={onToggleAutoApprove}
+                  className={`hover:text-gray-300 transition-colors ${autoApprove ? "text-yellow-400" : ""}`}
+                  title={autoApprove ? "Auto-approve ON — click to disable" : "Click to auto-approve every tool"}
+                >
+                  auto {autoApprove ? "on" : "off"}
+                </button>
+              </div>
             )}
             {activeSessionId && (
               <span className="font-mono hidden md:inline" title={activeSessionId}>
@@ -729,6 +789,7 @@ function App() {
             disabled={!connected || !activeSessionId || readOnly}
             streaming={status === "streaming"}
             autoApproveActive={autoApprove}
+            onCommand={onCommand}
             onSubmit={onSubmit}
             onInterrupt={onInterrupt}
           />

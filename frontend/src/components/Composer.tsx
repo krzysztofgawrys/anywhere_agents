@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useMemo,
   useRef,
   useState,
   type ClipboardEvent,
@@ -7,6 +8,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
+import { matchCommands, type SlashCommand } from "../commands";
 import { useSpeechInput } from "../hooks/useSpeechInput";
 import type { PromptImage } from "../types";
 import {
@@ -21,6 +23,10 @@ type Props = {
   disabled: boolean;
   streaming: boolean;
   autoApproveActive: boolean;
+  /** Extra slash commands (e.g. custom commands loaded from the worker). */
+  extraCommands?: SlashCommand[];
+  /** Called when the user selects a slash command from autocomplete. */
+  onCommand?: (name: string) => void;
   onSubmit: (
     text: string,
     autoApproveOnce: boolean,
@@ -53,6 +59,8 @@ export function Composer({
   disabled,
   streaming,
   autoApproveActive,
+  extraCommands,
+  onCommand,
   onSubmit,
   onInterrupt,
 }: Props) {
@@ -63,6 +71,13 @@ export function Composer({
   const [dragHover, setDragHover] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [streamTokens, setStreamTokens] = useState<boolean>(readStreamPref);
+  const [cmdIndex, setCmdIndex] = useState(0);
+
+  const cmdMatches = useMemo(
+    () => matchCommands(text.trim(), extraCommands),
+    [text, extraCommands],
+  );
+  const showCmds = cmdMatches.length > 0 && !streaming;
 
   // Touch devices have no Shift+Enter. There, Enter must insert a newline
   // (default textarea behaviour) and sending is done via the Send button.
@@ -138,10 +153,27 @@ export function Composer({
     [addFiles]
   );
 
+  const pickCommand = useCallback(
+    (cmd: SlashCommand) => {
+      setText("");
+      setCmdIndex(0);
+      onCommand?.(cmd.name);
+    },
+    [onCommand],
+  );
+
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const trimmed = text.trim();
     if ((!trimmed && images.length === 0) || disabled || streaming) return;
+    // If there's an exact slash-command match, execute it instead of sending.
+    if (trimmed.startsWith("/") && cmdMatches.length > 0) {
+      const exact = cmdMatches.find((c) => `/${c.name}` === trimmed);
+      if (exact) {
+        pickCommand(exact);
+        return;
+      }
+    }
     onSubmit(trimmed, autoOnce, images, streamTokens);
     setText("");
     setAutoOnce(false);
@@ -150,6 +182,29 @@ export function Composer({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Slash-command autocomplete navigation
+    if (showCmds) {
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setCmdIndex((i) => (i > 0 ? i - 1 : cmdMatches.length - 1));
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setCmdIndex((i) => (i < cmdMatches.length - 1 ? i + 1 : 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickCommand(cmdMatches[cmdIndex]!);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setText("");
+        return;
+      }
+    }
     // On touch devices Enter always = newline; send via the button only.
     if (isTouch) return;
     if (e.key === "Enter" && !e.shiftKey) {
@@ -220,7 +275,31 @@ export function Composer({
             Auto-approve is ON for this project
           </div>
         )}
-        <div className="flex gap-2 items-end">
+        <div className="flex gap-2 items-end relative">
+          {showCmds && (
+            <div className="absolute bottom-full left-0 mb-1 w-72 rounded-lg bg-gray-800 border border-gray-700 shadow-xl overflow-hidden z-20">
+              {cmdMatches.map((cmd, i) => (
+                <button
+                  key={cmd.name}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault(); // keep textarea focused
+                    pickCommand(cmd);
+                  }}
+                  className={`w-full flex items-baseline gap-2 px-3 py-2 text-sm text-left ${
+                    i === cmdIndex
+                      ? "bg-blue-600/40 text-white"
+                      : "hover:bg-gray-700 text-gray-200"
+                  }`}
+                >
+                  <span className="font-mono font-medium">/{cmd.name}</span>
+                  <span className="text-xs text-gray-400 truncate">
+                    {cmd.description}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
           <input
             ref={fileInputRef}
             type="file"

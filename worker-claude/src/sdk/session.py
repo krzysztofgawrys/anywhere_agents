@@ -108,11 +108,13 @@ class Session:
         session_id: str | None = None,
         resume_session_id: str | None = None,
         auto_approve: bool = False,
+        model: str | None = None,
     ) -> None:
         self._send = send
         self._cwd = cwd
         self._session_id = resume_session_id or session_id or str(uuid.uuid4())
         self._resume = resume_session_id
+        self._model = model
         self._client: ClaudeSDKClient | None = None
         # Long-lived consumer of client.receive_messages(). We need to keep
         # reading between turns so Monitor / TaskCreate task-notifications that
@@ -172,6 +174,7 @@ class Session:
             can_use_tool=self._can_use_tool,
             include_partial_messages=True,
             resume=self._resume,
+            model=self._model,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()

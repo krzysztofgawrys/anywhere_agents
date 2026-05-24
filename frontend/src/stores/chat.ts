@@ -51,6 +51,10 @@ type ChatState = {
   loadingOlder: boolean;
   /** Server says the project/session is in auto-approve. */
   autoApprove: boolean;
+  /** Plan mode: prepend planning instruction to prompts, no writes. */
+  planMode: boolean;
+  /** Selected model passed to new/resume session. null = SDK default. */
+  model: string | null;
   /** Outstanding permission requests, oldest first. */
   pendingPermissions: PendingPermission[];
   /** AskUserQuestion requests waiting for the user to answer. */
@@ -68,6 +72,8 @@ type ChatState = {
   removePendingPermission: (toolUseId: string) => void;
   removeUserInput: (toolUseId: string) => void;
   setAutoApprove: (value: boolean) => void;
+  setPlanMode: (value: boolean) => void;
+  setModel: (value: string | null) => void;
 };
 
 function newId(): string {
@@ -88,6 +94,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   oldestUuid: null,
   loadingOlder: false,
   autoApprove: false,
+  planMode: false,
+  model: null,
   pendingPermissions: [],
   pendingUserInputs: [],
 
@@ -106,6 +114,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       oldestUuid: null,
       loadingOlder: false,
       autoApprove: false,
+      planMode: false,
+      model: null,
       pendingPermissions: [],
       pendingUserInputs: [],
     }),
@@ -145,6 +155,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     })),
 
   setAutoApprove: (value) => set({ autoApprove: value }),
+  setPlanMode: (value) => set({ planMode: value }),
+  setModel: (value) => set({ model: value }),
 
   appendUserPrompt: (text, images) => {
     const blocks: ChatBlock[] = [];

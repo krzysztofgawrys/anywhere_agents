@@ -38,7 +38,9 @@ class SessionManager:
     def current(self) -> Session | None:
         return self._current
 
-    async def new_session(self, cwd: str, *, auto_approve: bool = False) -> Session | None:
+    async def new_session(
+        self, cwd: str, *, auto_approve: bool = False, model: str | None = None,
+    ) -> Session | None:
         """Start a fresh session bound to `cwd`. Returns the session (or None on lock fail)."""
         if not Path(cwd).is_dir():
             await self._send({
@@ -51,7 +53,7 @@ class SessionManager:
             return None
 
         await self._release_current_lock()
-        session = Session(send=self._send, cwd=cwd, auto_approve=auto_approve)
+        session = Session(send=self._send, cwd=cwd, auto_approve=auto_approve, model=model)
 
         acquired, _ = await self._locks.try_acquire(
             session_id=session.session_id,
@@ -79,6 +81,7 @@ class SessionManager:
         *,
         force: bool = False,
         auto_approve: bool = False,
+        model: str | None = None,
     ) -> Session | None:
         """Resume an existing session, acquiring its lock (force=takeover).
 
@@ -159,6 +162,7 @@ class SessionManager:
             cwd=cwd,
             resume_session_id=session_id,
             auto_approve=auto_approve,
+            model=model,
         )
         await session.start()
         self._current = session

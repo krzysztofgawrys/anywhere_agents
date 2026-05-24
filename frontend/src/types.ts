@@ -74,10 +74,10 @@ export type ClientMessage =
         before_uuid?: string | null;
       };
     }
-  | { type: "new_session"; payload: { project_id: number } }
+  | { type: "new_session"; payload: { project_id: number; model?: string | null } }
   | {
       type: "resume_session";
-      payload: { project_id: number; session_id: string; force?: boolean };
+      payload: { project_id: number; session_id: string; force?: boolean; model?: string | null };
     }
   | {
       type: "set_auto_approve";

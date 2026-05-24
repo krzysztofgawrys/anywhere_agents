@@ -193,7 +193,9 @@ async def _route(
             await _send_error(send, "not_found", f"project {project_id} not found")
             return terminal
         await sessions.new_session(
-            cwd=project["path"], auto_approve=project["auto_approve"]
+            cwd=project["path"],
+            auto_approve=project["auto_approve"],
+            model=payload.get("model") or None,
         )
         return terminal
 
@@ -213,6 +215,7 @@ async def _route(
             session_id=session_id,
             force=force,
             auto_approve=project["auto_approve"],
+            model=payload.get("model") or None,
         )
         return terminal
 
