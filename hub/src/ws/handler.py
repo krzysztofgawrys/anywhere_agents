@@ -31,6 +31,18 @@ HEARTBEAT_TIMEOUT = 300
 # Per-WS background tasks; cancelled when the frontend WS disconnects.
 RETRY_INTERVAL_S = 30.0
 
+# Fallback model lists when a worker doesn't implement `list_models`. Used as
+# the initial value of `worker_models[w.id]` so the frontend's /model
+# autocomplete has something sane immediately, even before the background
+# list_models query returns. Indexed by worker type from workers.json.
+_DEFAULT_MODELS_BY_TYPE: dict[str, list[dict[str, str]]] = {
+    "claude": [
+        {"id": "claude-opus-4-6", "name": "Claude Opus 4.6"},
+        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
+        {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
+    ],
+}
+
 # Message types that carry project_id and need ID remapping + routing
 _PROJECT_BOUND = frozenset({
     "list_sessions", "session_history", "new_session", "resume_session",
@@ -76,6 +88,10 @@ async def handle_websocket(
     # Per-worker background retry tasks. Keyed by worker id; entry exists iff
     # a retry loop is currently waiting/attempting for that worker.
     retry_tasks: dict[str, asyncio.Task[None]] = {}
+    # Cache of each worker's available models. Seeded with the type default
+    # immediately on (re)connect; a background `list_models` query refreshes
+    # it once the worker responds.
+    worker_models: dict[str, list[dict[str, str]]] = {}
 
     def _workers_payload() -> list[dict[str, Any]]:
         """Serialize every known worker (connected or not) for the frontend.
@@ -83,6 +99,9 @@ async def handle_websocket(
         Frontend sidebar uses this to render the worker filter dropdown so
         workers with zero projects (e.g. fresh worker-copilot skeleton) are
         still visible. `connected` mirrors the live WS connection state.
+        `models` is the active model list for /model autocomplete; the cache
+        is seeded with type defaults immediately on connect and refreshed in
+        the background once the worker responds to `list_models`.
         """
         out: list[dict[str, Any]] = []
         for w in workers:
@@ -92,8 +111,56 @@ async def handle_websocket(
                 "label": w.label,
                 "type": w.type,
                 "connected": bool(conn is not None and conn.connected),
+                "models": worker_models.get(w.id) or _DEFAULT_MODELS_BY_TYPE.get(w.type, []),
             })
         return out
+
+    async def _refresh_models(w: WorkerInfo) -> None:
+        """Background: ask a worker for its live model list, update cache, push.
+
+        Best-effort - if the worker doesn't implement `list_models` the
+        request times out and we keep whatever the type-default seeded the
+        cache with. Short timeout to avoid blocking the workers payload.
+        """
+        conn = worker_conns.get(w.id)
+        if conn is None or not conn.connected:
+            return
+        try:
+            resp = await conn.request(
+                {"type": "list_models", "payload": {}},
+                response_type="models",
+                timeout=5.0,
+            )
+        except Exception:
+            return
+        models = resp.get("payload", {}).get("models")
+        if not isinstance(models, list) or not models:
+            return
+        # Normalize to {id, name} only - drop SDK-specific fields the frontend
+        # doesn't render.
+        normalized: list[dict[str, str]] = []
+        for m in models:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id")
+            if not isinstance(mid, str) or not mid:
+                continue
+            normalized.append({"id": mid, "name": m.get("name") or mid})
+        if not normalized:
+            return
+        worker_models[w.id] = normalized
+        # Push a fresh `projects` payload so the frontend sees updated models
+        # without waiting for the next list_projects round-trip.
+        try:
+            await websocket.send_json({
+                "type": "projects",
+                "payload": {
+                    "projects": project_index.get_all(),
+                    "workers": _workers_payload(),
+                },
+            })
+        except Exception:
+            pass
 
     async def make_on_message(worker_id: str) -> Any:
         """Build a per-worker message handler."""
@@ -192,6 +259,12 @@ async def handle_websocket(
             logger.warning("worker_connect_failed", worker=w.id, error=str(e))
             return False
         worker_conns[w.id] = conn
+        # Seed the model cache with the type default so the frontend has
+        # something immediately; refresh in background from the worker's
+        # actual list_models response (workers without that handler keep
+        # the seed).
+        worker_models.setdefault(w.id, list(_DEFAULT_MODELS_BY_TYPE.get(w.type, [])))
+        asyncio.create_task(_refresh_models(w))
         return True
 
     async def _fetch_and_push_aggregate() -> None:

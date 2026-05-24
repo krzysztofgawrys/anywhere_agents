@@ -408,6 +408,24 @@ async def _route(
 
     # ── SDK-specific: route through SessionManager ─────────────────────────
 
+    if msg_type == "list_models":
+        # Lazy-start the CopilotClient if needed, ask SDK for its model list.
+        # Frontend uses this to populate /model autocomplete dynamically.
+        try:
+            from src.sdk.client import get_client
+            client = await get_client()
+            sdk_models = await client.list_models()
+            models = [
+                {"id": getattr(m, "id", ""), "name": getattr(m, "name", "") or getattr(m, "id", "")}
+                for m in sdk_models
+                if getattr(m, "id", "")
+            ]
+        except Exception as e:
+            logger.warning("list_models_failed", error=str(e))
+            models = []
+        await send({"type": "models", "payload": {"models": models}})
+        return terminal
+
     if msg_type == "new_session":
         project_id = payload.get("project_id")
         if not isinstance(project_id, int):

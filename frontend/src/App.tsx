@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "./components/Composer";
 import { FileBrowser } from "./components/FileBrowser";
 import { LockTakeoverModal } from "./components/LockTakeoverModal";
@@ -51,6 +51,8 @@ function App() {
   const handleProjectsMsg = useProjectsStore((s) => s.handleServerMessage);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const setActiveProject = useProjectsStore((s) => s.setActive);
+  const projects = useProjectsStore((s) => s.projects);
+  const workersList = useProjectsStore((s) => s.workers);
   const handleFilesMsg = useFilesStore((s) => s.handleServerMessage);
   const openFiles = useFilesStore((s) => s.open);
 
@@ -423,8 +425,33 @@ function App() {
     send({ type: "interrupt", payload: {} });
   }, [send]);
 
+  // Dynamic /model autocomplete entries sourced from the active worker's
+  // models list (hub puts it in `workers` payload). Falls back to nothing
+  // when no project is active or the worker hasn't reported models yet.
+  const modelCommands = useMemo(() => {
+    if (activeProjectId == null) return [];
+    const project = projects.find((p) => p.id === activeProjectId);
+    if (!project || !project.worker_id) return [];
+    const w = workersList.find((wi) => wi.id === project.worker_id);
+    if (!w || !w.models || w.models.length === 0) return [];
+    return w.models.map((m) => ({
+      name: `model ${m.id}`,
+      description: `Switch to ${m.name}`,
+    }));
+  }, [activeProjectId, projects, workersList]);
+
   const onCommand = useCallback(
     (name: string) => {
+      // Dynamic /model <id> handler - matches any model id from the active
+      // worker's models list (injected as extraCommands by the Composer).
+      if (name.startsWith("model ") && name !== "model default") {
+        const modelId = name.slice("model ".length).trim();
+        if (modelId) {
+          useChatStore.getState().setModel(modelId);
+          send({ type: "set_model", payload: { model: modelId } });
+          return;
+        }
+      }
       switch (name) {
         case "clear":
           resetChat();
@@ -445,18 +472,6 @@ function App() {
             resetChat();
             send({ type: "new_session", payload: { project_id: activeProjectId, model: selectedModel } });
           }
-          break;
-        case "model opus":
-          useChatStore.getState().setModel("claude-opus-4-6");
-          send({ type: "set_model", payload: { model: "claude-opus-4-6" } });
-          break;
-        case "model sonnet":
-          useChatStore.getState().setModel("claude-sonnet-4-6");
-          send({ type: "set_model", payload: { model: "claude-sonnet-4-6" } });
-          break;
-        case "model haiku":
-          useChatStore.getState().setModel("claude-haiku-4-5-20251001");
-          send({ type: "set_model", payload: { model: "claude-haiku-4-5-20251001" } });
           break;
         case "model default":
           useChatStore.getState().setModel(null);
@@ -796,6 +811,7 @@ function App() {
             onCommand={onCommand}
             onSubmit={onSubmit}
             onInterrupt={onInterrupt}
+            extraCommands={modelCommands}
           />
         </div>
       </div>

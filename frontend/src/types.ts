@@ -1,5 +1,14 @@
 /** WebSocket protocol types - mirror of backend src/ws messages. */
 
+/** A model the active worker supports - sourced from the worker's SDK
+ * (Copilot: `client.list_models()`) or a hub-side type default for
+ * workers that don't expose a list endpoint. Frontend uses this to build
+ * the /model autocomplete dynamically. */
+export type ModelInfo = {
+  id: string;
+  name: string;
+};
+
 /** Worker the hub knows about (from workers.json). `connected` reflects
  * whether the hub has a live WS to it right now. Hub sends the full list
  * with every `projects` payload so the frontend can show workers even when
@@ -9,6 +18,9 @@ export type WorkerInfo = {
   label: string;
   type: string;
   connected: boolean;
+  /** Models the active worker accepts. May be empty briefly between
+   * connect and the background list_models response landing. */
+  models?: ModelInfo[];
 };
 
 export type Project = {

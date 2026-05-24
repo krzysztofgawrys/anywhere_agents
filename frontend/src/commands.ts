@@ -7,13 +7,17 @@ export type SlashCommand = {
   description: string;
 };
 
-/** Built-in commands always available regardless of worker state. */
+/** Built-in commands always available regardless of worker state.
+ *
+ * Per-worker model entries (e.g. `/model gpt-5.3-codex` for Copilot,
+ * `/model claude-sonnet-4-6` for Claude) are injected dynamically by App.tsx
+ * via the `extra` argument of {@link matchCommands}, sourced from the
+ * `workers[].models` field of the hub's projects payload. That way the
+ * autocomplete reflects whatever the active worker's SDK actually accepts.
+ */
 export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "clear", description: "Clear chat messages" },
   { name: "compact", description: "Summarize conversation to save context" },
-  { name: "model opus", description: "Switch to Claude Opus 4.6" },
-  { name: "model sonnet", description: "Switch to Claude Sonnet 4.6" },
-  { name: "model haiku", description: "Switch to Claude Haiku 4.5" },
   { name: "model default", description: "Switch to SDK default model" },
   { name: "new", description: "Start a new session in this project" },
   { name: "plan", description: "Switch to plan mode (read-only, no changes)" },
