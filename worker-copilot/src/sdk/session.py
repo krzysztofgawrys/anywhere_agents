@@ -305,6 +305,16 @@ class Session:
 
     async def _dispatch_event(self, event: Any) -> None:
         data: SessionEventData | None = getattr(event, "data", None)
+        # Temporary debug: log every event class we see so we can confirm
+        # which tool lifecycle events the SDK actually emits in practice
+        # (ToolExecutionComplete vs ToolExecutionPartialResult vs other).
+        # Remove once the dispatcher is verified end-to-end.
+        logger.info(
+            "copilot_event",
+            session_id=self._session_id,
+            event_type=getattr(event, "type", None),
+            data_class=type(data).__name__ if data is not None else None,
+        )
         if data is None:
             return
 
@@ -373,12 +383,24 @@ class Session:
             return
 
         if isinstance(data, ToolExecutionCompleteData):
+            raw_result = getattr(data, "result", None)
+            raw_error = getattr(data, "error", None)
+            # Some tools return rich pydantic/dataclass objects; fall back to
+            # str() to guarantee the payload is JSON-serializable (otherwise
+            # send_json raises and the message vanishes, leaving the UI stuck
+            # at "running" forever).
+            try:
+                content: Any = raw_result if raw_result is not None else raw_error
+                if content is not None and not isinstance(content, (str, int, float, bool, list, dict)):
+                    content = str(content)
+            except Exception:
+                content = str(raw_result or raw_error)
             await self._send({
                 "type": "tool_result",
                 "payload": {
                     "session_id": self._session_id,
                     "tool_use_id": getattr(data, "tool_call_id", ""),
-                    "content": getattr(data, "result", None) or getattr(data, "error", None),
+                    "content": content,
                     "is_error": not bool(getattr(data, "success", True)),
                 },
             })
