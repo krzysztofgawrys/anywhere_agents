@@ -62,17 +62,6 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-@app.get("/api/auth/info")
-async def auth_info() -> JSONResponse:
-    """Return auth config the frontend needs (e.g. logout URL)."""
-    from src.auth.cf_access import CF_ACCESS_TEAM_DOMAIN, _cf_configured
-
-    logout_url: str | None = None
-    if _cf_configured() and CF_ACCESS_TEAM_DOMAIN:
-        logout_url = f"https://{CF_ACCESS_TEAM_DOMAIN}/cdn-cgi/access/logout"
-    return JSONResponse({"logout_url": logout_url})
-
-
 @app.get("/api/push/vapid-public-key")
 async def vapid_public_key() -> JSONResponse:
     return JSONResponse({"publicKey": push_manager.vapid_public_key_b64()})

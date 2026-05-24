@@ -55,20 +55,29 @@ export function Sidebar({
     return () => document.removeEventListener("mousedown", handler);
   }, [workerDropdownOpen]);
 
-  const filteredProjects = workerFilter
-    ? projects.filter((p) => p.worker_id === workerFilter)
-    : projects;
+  // Search query
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+
+  const filteredProjects = projects.filter((p) => {
+    if (workerFilter && p.worker_id !== workerFilter) return false;
+    if (!normalizedQuery) return true;
+    return (
+      p.name.toLowerCase().includes(normalizedQuery) ||
+      p.path.toLowerCase().includes(normalizedQuery)
+    );
+  });
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
-  const [logoutUrl, setLogoutUrl] = useState<string | null>(null);
 
-  // Fetch logout URL once on mount.
-  useEffect(() => {
-    fetch("/api/auth/info")
-      .then((r) => r.json())
-      .then((d: { logout_url: string | null }) => setLogoutUrl(d.logout_url))
-      .catch(() => {});
-  }, []);
+  // Cloudflare Access intercepts `/cdn-cgi/access/logout` on any protected
+  // origin and clears the session cookie — no need to fetch the team domain
+  // from the backend. In dev (no CF in front of localhost) the link 404s,
+  // which is fine: there's no session to log out of.
+  const hideLogout =
+    typeof window !== "undefined" &&
+    (window.location.hostname === "localhost" ||
+      window.location.hostname === "127.0.0.1");
 
   useEffect(() => {
     if (connected) {
@@ -185,6 +194,40 @@ export function Sidebar({
               </button>
             </div>
           </div>
+          <div className="relative mt-2">
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
+            >
+              <path
+                fillRule="evenodd"
+                d="M9 3a6 6 0 104.472 10.03l3.249 3.248a1 1 0 001.414-1.414l-3.248-3.249A6 6 0 009 3zm-4 6a4 4 0 118 0 4 4 0 01-8 0z"
+                clipRule="evenodd"
+              />
+            </svg>
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search projects…"
+              aria-label="Search projects"
+              className="w-full bg-gray-900 border border-gray-700 rounded text-sm text-gray-200 placeholder-gray-500 pl-7 pr-7 py-1.5 focus:outline-none focus:border-gray-500"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery("")}
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-gray-200 hover:bg-gray-700 text-xs leading-none"
+                title="Clear search"
+                aria-label="Clear search"
+              >
+                ×
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
@@ -200,7 +243,9 @@ export function Sidebar({
           )}
           {!loading && filteredProjects.length === 0 && (
             <p className="text-xs text-gray-500 px-2 py-4">
-              No projects found.
+              {normalizedQuery
+                ? `No projects match "${searchQuery.trim()}".`
+                : "No projects found."}
             </p>
           )}
           {filteredProjects.map((p) => (
@@ -235,11 +280,11 @@ export function Sidebar({
           ))}
         </div>
 
-        {/* Logout */}
-        {logoutUrl && (
+        {/* Logout — CF Access intercepts /cdn-cgi/access/logout on the origin */}
+        {!hideLogout && (
           <div className="px-4 py-3 border-t border-gray-800 shrink-0">
             <a
-              href={logoutUrl}
+              href="/cdn-cgi/access/logout"
               className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-200 transition-colors"
             >
               <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor">
