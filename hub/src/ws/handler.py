@@ -252,8 +252,10 @@ async def handle_websocket(
     active_worker_id = next(iter(worker_conns))
 
     # Pre-populate project index so project IDs resolve immediately
-    # (frontend may send new_session with a cached project_id before list_projects)
-    for wid, conn in worker_conns.items():
+    # (frontend may send new_session with a cached project_id before list_projects).
+    # Snapshot to list because on_disconnect callbacks (fired on await
+    # conn.request below if a worker drops) mutate worker_conns mid-iteration.
+    for wid, conn in list(worker_conns.items()):
         w_info = next((w for w in workers if w.id == wid), None)
         label = w_info.label if w_info else wid
         wtype = w_info.type if w_info else "claude"
@@ -295,7 +297,9 @@ async def handle_websocket(
             # ── list_projects: fan out, aggregate, remap IDs ─────────
             if msg_type == "list_projects":
                 all_projects: list[dict[str, Any]] = []
-                for wid, conn in worker_conns.items():
+                # Snapshot - await conn.request below can yield to an
+                # on_disconnect callback that mutates worker_conns.
+                for wid, conn in list(worker_conns.items()):
                     w_info = next((w for w in workers if w.id == wid), None)
                     label = w_info.label if w_info else wid
                     wtype = w_info.type if w_info else "claude"
@@ -385,6 +389,11 @@ async def handle_websocket(
         for task in list(retry_tasks.values()):
             task.cancel()
         retry_tasks.clear()
-        for conn in worker_conns.values():
+        # Snapshot conn list - conn.close triggers on_disconnect which mutates
+        # worker_conns. Also pop each entry so a stray on_disconnect that
+        # arrives during shutdown can't re-spawn a retry task (retry_tasks
+        # was just cleared but make_on_disconnect may try to add to it).
+        for conn in list(worker_conns.values()):
             await conn.close()
+        worker_conns.clear()
         logger.info("ws_disconnected", connection_id=connection_id)
