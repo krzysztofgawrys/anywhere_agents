@@ -24,27 +24,39 @@ export function Sidebar({
   onClose,
 }: Props) {
   const projects = useProjectsStore((s) => s.projects);
+  const workersFromHub = useProjectsStore((s) => s.workers);
   const sessionsByProject = useProjectsStore((s) => s.sessionsByProject);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const loading = useProjectsStore((s) => s.loading);
   const setActive = useProjectsStore((s) => s.setActive);
   const setLoading = useProjectsStore((s) => s.setLoading);
 
-  // Worker filter
-  const workerList = Array.from(
-    new Map(
-      projects
-        .filter((p) => p.worker_id)
-        .map((p) => [
-          p.worker_id!,
-          {
-            id: p.worker_id!,
-            label: p.worker_label || p.worker_id!,
-            type: p.worker_type || "claude",
-          },
-        ])
-    ).values()
-  );
+  // Worker filter list. Prefer the canonical list from the hub (every known
+  // worker, even with zero projects). Older hub builds don't send `workers`
+  // in the projects payload - fall back to deriving from projects so we
+  // don't show an empty dropdown on a stale backend.
+  const workerList = workersFromHub.length > 0
+    ? workersFromHub.map((w) => ({
+        id: w.id,
+        label: w.label,
+        type: w.type,
+        connected: w.connected,
+      }))
+    : Array.from(
+        new Map(
+          projects
+            .filter((p) => p.worker_id)
+            .map((p) => [
+              p.worker_id!,
+              {
+                id: p.worker_id!,
+                label: p.worker_label || p.worker_id!,
+                type: p.worker_type || "claude",
+                connected: true,
+              },
+            ])
+        ).values()
+      );
   const multiWorker = workerList.length > 1;
   const [workerFilter, setWorkerFilter] = useState<string | null>(null);
   const [workerDropdownOpen, setWorkerDropdownOpen] = useState(false);
@@ -173,9 +185,18 @@ export function Sidebar({
                           workerFilter === w.id
                             ? "text-white bg-gray-800"
                             : "text-gray-300 hover:bg-gray-800 hover:text-white"
-                        }`}
+                        } ${w.connected ? "" : "opacity-50"}`}
+                        title={w.connected ? `${w.label} (${w.type})` : `${w.label} (${w.type}) - not connected`}
                       >
-                        <span className="truncate">{w.label}</span>
+                        <span className="truncate flex items-center gap-1.5">
+                          {!w.connected && (
+                            <span
+                              className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0"
+                              aria-label="disconnected"
+                            />
+                          )}
+                          {w.label}
+                        </span>
                         <span className="shrink-0 text-[10px] text-gray-500 font-normal lowercase tracking-normal">
                           {w.type}
                         </span>

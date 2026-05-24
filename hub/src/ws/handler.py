@@ -77,6 +77,24 @@ async def handle_websocket(
     # a retry loop is currently waiting/attempting for that worker.
     retry_tasks: dict[str, asyncio.Task[None]] = {}
 
+    def _workers_payload() -> list[dict[str, Any]]:
+        """Serialize every known worker (connected or not) for the frontend.
+
+        Frontend sidebar uses this to render the worker filter dropdown so
+        workers with zero projects (e.g. fresh worker-copilot skeleton) are
+        still visible. `connected` mirrors the live WS connection state.
+        """
+        out: list[dict[str, Any]] = []
+        for w in workers:
+            conn = worker_conns.get(w.id)
+            out.append({
+                "id": w.id,
+                "label": w.label,
+                "type": w.type,
+                "connected": bool(conn is not None and conn.connected),
+            })
+        return out
+
     async def make_on_message(worker_id: str) -> Any:
         """Build a per-worker message handler."""
 
@@ -105,7 +123,13 @@ async def handle_websocket(
                 wtype = w_info.type if w_info else "claude"
                 raw_projects = msg.get("payload", {}).get("projects", [])
                 remapped = project_index.update_from_worker(worker_id, label, raw_projects, wtype)
-                msg = {"type": "projects", "payload": {"projects": project_index.get_all()}}
+                msg = {
+                    "type": "projects",
+                    "payload": {
+                        "projects": project_index.get_all(),
+                        "workers": _workers_payload(),
+                    },
+                }
                 try:
                     await websocket.send_json(msg)
                 except Exception:
@@ -197,7 +221,10 @@ async def handle_websocket(
         try:
             await websocket.send_json({
                 "type": "projects",
-                "payload": {"projects": project_index.get_all()},
+                "payload": {
+                    "projects": project_index.get_all(),
+                    "workers": _workers_payload(),
+                },
             })
         except Exception:
             pass
@@ -324,7 +351,10 @@ async def handle_websocket(
                 )
                 await websocket.send_json({
                     "type": "projects",
-                    "payload": {"projects": all_projects},
+                    "payload": {
+                        "projects": all_projects,
+                        "workers": _workers_payload(),
+                    },
                 })
                 continue
 

@@ -1,5 +1,16 @@
 /** WebSocket protocol types - mirror of backend src/ws messages. */
 
+/** Worker the hub knows about (from workers.json). `connected` reflects
+ * whether the hub has a live WS to it right now. Hub sends the full list
+ * with every `projects` payload so the frontend can show workers even when
+ * they have zero projects yet. */
+export type WorkerInfo = {
+  id: string;
+  label: string;
+  type: string;
+  connected: boolean;
+};
+
 export type Project = {
   id: number;
   path: string;
@@ -129,7 +140,7 @@ export type DirectoryEntry = {
 
 export type ServerMessage =
   | { type: "pong"; payload: Record<string, never> }
-  | { type: "projects"; payload: { projects: Project[] } }
+  | { type: "projects"; payload: { projects: Project[]; workers?: WorkerInfo[] } }
   | {
       type: "sessions";
       payload: { project_id: number; sessions: SessionSummary[] };

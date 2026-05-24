@@ -1,8 +1,12 @@
 import { create } from "zustand";
-import type { Project, ServerMessage, SessionSummary } from "../types";
+import type { Project, ServerMessage, SessionSummary, WorkerInfo } from "../types";
 
 type ProjectsState = {
   projects: Project[];
+  /** Workers the hub is aware of (from workers.json). Populated from the
+   * `workers` field of every `projects` payload. Independent of how many
+   * projects each worker has - lets the sidebar show empty workers too. */
+  workers: WorkerInfo[];
   sessionsByProject: Record<number, SessionSummary[]>;
   activeProjectId: number | null;
   loading: boolean;
@@ -14,6 +18,7 @@ type ProjectsState = {
 
 export const useProjectsStore = create<ProjectsState>((set) => ({
   projects: [],
+  workers: [],
   sessionsByProject: {},
   activeProjectId: null,
   loading: true,
@@ -24,7 +29,13 @@ export const useProjectsStore = create<ProjectsState>((set) => ({
   handleServerMessage: (msg) => {
     switch (msg.type) {
       case "projects":
-        set({ projects: msg.payload.projects, loading: false });
+        set((s) => ({
+          projects: msg.payload.projects,
+          // Backend may omit `workers` on older hub builds - keep prior list
+          // in that case so the dropdown doesn't blink to empty.
+          workers: msg.payload.workers ?? s.workers,
+          loading: false,
+        }));
         return;
       case "sessions":
         set((s) => ({
