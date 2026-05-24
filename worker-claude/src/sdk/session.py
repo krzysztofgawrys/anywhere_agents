@@ -335,53 +335,69 @@ class Session:
 
             # AskUserQuestion passes data as:
             #   {questions: [{question, options: [{label, description}], ...}]}
+            #   — note this list can contain MULTIPLE distinct questions, each
+            #     with its own options and expecting its own answer.
             # Other tools (ask_followup_question) use a flat structure:
             #   {question, options: [...]}
-            questions_list = tool_input.get("questions")
-            if questions_list and isinstance(questions_list, list):
-                first_q = questions_list[0] if isinstance(questions_list[0], dict) else {}
-                question = first_q.get("question", "")
-                raw_options: list[Any] = first_q.get("options") or []
+            raw_questions = tool_input.get("questions")
+            if isinstance(raw_questions, list) and raw_questions:
+                questions_list: list[dict[str, Any]] = [
+                    q for q in raw_questions if isinstance(q, dict)
+                ]
             else:
-                question = tool_input.get("question", "")
-                raw_options = (
-                    tool_input.get("options")
-                    or tool_input.get("follow_up")
-                    or tool_input.get("suggestions")
-                    or []
-                )
+                questions_list = [{
+                    "question": tool_input.get("question", ""),
+                    "options": (
+                        tool_input.get("options")
+                        or tool_input.get("follow_up")
+                        or tool_input.get("suggestions")
+                        or []
+                    ),
+                }]
 
+            # Normalize each question to {question: str, options: list[str]}.
             # Options can be plain strings or {label, description} objects.
-            options: list[str] = []
-            for opt in raw_options if isinstance(raw_options, list) else []:
-                if isinstance(opt, dict):
-                    options.append(opt.get("label") or opt.get("value") or str(opt))
-                else:
-                    options.append(str(opt))
+            normalized_questions: list[dict[str, Any]] = []
+            for q in questions_list:
+                raw_options = q.get("options") or []
+                options: list[str] = []
+                for opt in raw_options if isinstance(raw_options, list) else []:
+                    if isinstance(opt, dict):
+                        options.append(opt.get("label") or opt.get("value") or str(opt))
+                    else:
+                        options.append(str(opt))
+                normalized_questions.append({
+                    "question": q.get("question") or q.get("header") or "",
+                    "options": options,
+                })
 
-            answer = await self._permissions.request_user_input(
+            answers_list = await self._permissions.request_user_input(
                 self._send,
                 self._session_id,
                 tool_use_id,
-                question,
-                options,
+                normalized_questions,
             )
             logger.info(
                 "user_input_answered",
                 session_id=self._session_id,
                 tool=tool_name,
                 tool_input=tool_input,
-                answer=answer,
+                answers=answers_list,
             )
             # AskUserQuestion.answers is keyed by the full question text
             # (same convention as the annotations field per the tool schema).
             answers: dict[str, str] = {}
-            for q in (questions_list or []):
-                if isinstance(q, dict):
-                    key = q.get("question") or q.get("header") or ""
-                    if key:
-                        answers[key] = answer
-            updated: dict[str, Any] = {**tool_input, "answer": answer}
+            for q, ans in zip(questions_list, answers_list):
+                key = q.get("question") or q.get("header") or ""
+                if key:
+                    answers[key] = ans
+            updated: dict[str, Any] = {
+                **tool_input,
+                # Back-compat scalar `answer` for tools that take a single
+                # question (ask_followup_question / ask_user). For multi-question
+                # AskUserQuestion the per-question `answers` dict is authoritative.
+                "answer": answers_list[0] if answers_list else "",
+            }
             if answers:
                 updated["answers"] = answers
             return PermissionResultAllow(updated_input=updated)

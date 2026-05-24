@@ -381,13 +381,21 @@ async def _route(
 
     if msg_type == "user_input_response":
         tool_use_id = payload.get("tool_use_id")
-        answer = payload.get("answer", "")
         if not isinstance(tool_use_id, str):
             await _send_error(send, "bad_request", "tool_use_id required")
             return terminal
-        if not isinstance(answer, str):
-            answer = str(answer)
-        ok = sessions.resolve_user_input(tool_use_id, answer)
+        # New protocol: payload.answers is a list[str], one per question
+        # (AskUserQuestion can pose multiple questions in a single tool call).
+        # Legacy fallback: payload.answer is a single string (older clients).
+        raw_answers = payload.get("answers")
+        if isinstance(raw_answers, list):
+            answers = [a if isinstance(a, str) else str(a) for a in raw_answers]
+        else:
+            single = payload.get("answer", "")
+            if not isinstance(single, str):
+                single = str(single)
+            answers = [single]
+        ok = sessions.resolve_user_input(tool_use_id, answers)
         if not ok:
             await _send_error(send, "no_pending", "No pending user input request with that id")
         return terminal

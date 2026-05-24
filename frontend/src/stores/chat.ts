@@ -25,8 +25,11 @@ export type PendingPermission = {
 
 export type PendingUserInput = {
   toolUseId: string;
-  question: string;
-  options: string[];
+  /**
+   * One or more questions in this AskUserQuestion call. Each question gets
+   * its own answer in the UI; we submit them as a parallel string[] array.
+   */
+  questions: { question: string; options: string[] }[];
 };
 
 type ChatState = {
@@ -196,18 +199,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
         }));
         return;
 
-      case "user_input_request":
-        set((s) => ({
-          pendingUserInputs: [
-            ...s.pendingUserInputs,
-            {
-              toolUseId: msg.payload.tool_use_id,
-              question: msg.payload.question,
-              options: msg.payload.options,
-            },
-          ],
-        }));
+      case "user_input_request": {
+        // De-dupe by tool_use_id — on reconnect the backend re-sends pending
+        // questions and we don't want to stack duplicates of the same prompt.
+        const incoming: PendingUserInput = {
+          toolUseId: msg.payload.tool_use_id,
+          questions: (msg.payload.questions ?? []).map((q) => ({
+            question: q.question,
+            options: q.options ?? [],
+          })),
+        };
+        set((s) => {
+          const existingIdx = s.pendingUserInputs.findIndex(
+            (p) => p.toolUseId === incoming.toolUseId
+          );
+          if (existingIdx >= 0) {
+            const next = s.pendingUserInputs.slice();
+            next[existingIdx] = incoming;
+            return { pendingUserInputs: next };
+          }
+          return { pendingUserInputs: [...s.pendingUserInputs, incoming] };
+        });
         return;
+      }
 
       case "session_locked":
         set({

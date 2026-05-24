@@ -100,7 +100,14 @@ export type ClientMessage =
   | { type: "browse_fs"; payload: { path?: string; worker_id?: string } }
   | { type: "create_directory"; payload: { path: string; worker_id?: string } }
   | { type: "create_project"; payload: { path: string; worker_id?: string } }
-  | { type: "user_input_response"; payload: { tool_use_id: string; answer: string } }
+  | {
+      type: "user_input_response";
+      payload: {
+        tool_use_id: string;
+        /** One answer per question (AskUserQuestion can pose multiple). */
+        answers: string[];
+      };
+    }
   | { type: "terminal_open"; payload: { project_id: number; cols?: number; rows?: number } }
   | { type: "terminal_input"; payload: { data: string } }
   | { type: "terminal_resize"; payload: { cols: number; rows: number } }
@@ -248,8 +255,12 @@ export type ServerMessage =
       payload: {
         session_id: string;
         tool_use_id: string;
-        question: string;
-        options: string[];
+        /**
+         * One or more questions to ask the user in this tool call.
+         * AskUserQuestion can pose multiple distinct questions at once,
+         * each with its own options and expecting its own answer.
+         */
+        questions: { question: string; options: string[] }[];
       };
     }
   | { type: "terminal_ready"; payload: Record<string, never> }

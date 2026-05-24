@@ -47,10 +47,13 @@ class PermissionBroker:
 
     def __init__(self) -> None:
         self._pending: dict[str, asyncio.Future[PermissionResultAllow | PermissionResultDeny]] = {}
-        # Futures waiting for free-text user answers (AskUserQuestion etc.)
-        self._user_input_pending: dict[str, asyncio.Future[str]] = {}
-        # Metadata needed to re-send the question after reconnect
-        self._user_input_meta: dict[str, tuple[str, str, list[str]]] = {}
+        # Futures waiting for free-text user answers (AskUserQuestion etc.).
+        # The future resolves to a list of answers, one per question in the
+        # original request (AskUserQuestion can ask multiple questions at once).
+        self._user_input_pending: dict[str, asyncio.Future[list[str]]] = {}
+        # Metadata needed to re-send the question(s) after reconnect:
+        # (session_id, [{question, options}, ...])
+        self._user_input_meta: dict[str, tuple[str, list[dict[str, Any]]]] = {}
         # Auto-approve mode flags
         self._auto_approve: bool = False
         self._auto_approve_once: bool = False  # consumed after first tool call
@@ -120,50 +123,63 @@ class PermissionBroker:
         send: Any,
         session_id: str,
         tool_use_id: str,
-        question: str,
-        options: list[str],
-    ) -> str:
-        """Ask the WS client for a free-text answer and block until it arrives.
+        questions: list[dict[str, Any]],
+    ) -> list[str]:
+        """Ask the WS client for free-text answer(s) and block until they arrive.
+
+        ``questions`` is a list of ``{question: str, options: list[str]}`` dicts —
+        AskUserQuestion can pose multiple distinct questions in a single tool
+        call, each with its own answer.
 
         Sends a ``user_input_request`` message and waits for a matching
         ``user_input_response`` resolved via :meth:`resolve_user_input`.
-        Returns the user's answer string (empty string on cancellation).
+        Returns the list of user answers (one per question, in order). On
+        cancellation returns a list of empty strings of matching length so
+        callers can still zip with questions.
 
-        Metadata (session_id, question, options) is stored so the question can
+        Metadata (session_id, questions) is stored so the questions can
         be re-surfaced after a WS reconnect via :meth:`resend_pending_user_inputs`.
         """
         loop = asyncio.get_event_loop()
-        future: asyncio.Future[str] = loop.create_future()
+        future: asyncio.Future[list[str]] = loop.create_future()
         self._user_input_pending[tool_use_id] = future
-        self._user_input_meta[tool_use_id] = (session_id, question, options)
+        self._user_input_meta[tool_use_id] = (session_id, questions)
 
         await send({
             "type": "user_input_request",
             "payload": {
                 "session_id": session_id,
                 "tool_use_id": tool_use_id,
-                "question": question,
-                "options": options,
+                "questions": questions,
             },
         })
 
         try:
             return await future
         except asyncio.CancelledError:
-            return ""
+            return [""] * len(questions)
         finally:
             self._user_input_pending.pop(tool_use_id, None)
             self._user_input_meta.pop(tool_use_id, None)
 
-    def resolve_user_input(self, tool_use_id: str, answer: str) -> bool:
-        """Deliver a user answer to a waiting :meth:`request_user_input` call.
+    def resolve_user_input(self, tool_use_id: str, answers: list[str]) -> bool:
+        """Deliver user answers to a waiting :meth:`request_user_input` call.
+
+        ``answers`` is one string per question (in order). If the list is
+        shorter than the original questions, missing entries are treated as
+        empty strings; extra entries are ignored.
 
         Returns True if a pending request with that id existed and was resolved.
         """
         fut = self._user_input_pending.get(tool_use_id)
         if fut is None or fut.done():
             return False
-        fut.set_result(answer)
+        meta = self._user_input_meta.get(tool_use_id)
+        expected = len(meta[1]) if meta else len(answers)
+        normalized = list(answers[:expected])
+        while len(normalized) < expected:
+            normalized.append("")
+        fut.set_result(normalized)
         return True
 
     async def resend_pending_user_inputs(self, send: Any) -> None:
@@ -178,14 +194,13 @@ class PermissionBroker:
             meta = self._user_input_meta.get(tool_use_id)
             if meta is None:
                 continue
-            session_id, question, options = meta
+            session_id, questions = meta
             await send({
                 "type": "user_input_request",
                 "payload": {
                     "session_id": session_id,
                     "tool_use_id": tool_use_id,
-                    "question": question,
-                    "options": options,
+                    "questions": questions,
                 },
             })
             logger.info("user_input_resent", tool_use_id=tool_use_id)
@@ -205,9 +220,12 @@ class PermissionBroker:
     def cancel_all(self, reason: str = "Connection closed") -> None:
         """Deny every pending request — called on full session teardown."""
         self.cancel_permissions(reason)
-        for fut in list(self._user_input_pending.values()):
-            if not fut.done():
-                fut.set_result("")
+        for tool_use_id, fut in list(self._user_input_pending.items()):
+            if fut.done():
+                continue
+            meta = self._user_input_meta.get(tool_use_id)
+            expected = len(meta[1]) if meta else 1
+            fut.set_result([""] * expected)
         self._user_input_pending.clear()
         self._user_input_meta.clear()
 

@@ -59,6 +59,35 @@ function App() {
     entries: DirectoryEntry[];
   } | null>(null);
 
+  // Which AskUserQuestion panels are minimized (keyed by tool_use_id). Lifted
+  // here so the composer can be hidden whenever a panel is expanded — see
+  // anyUserInputExpanded below.
+  const [minimizedInputs, setMinimizedInputs] = useState<Set<string>>(new Set());
+  const toggleInputMinimized = useCallback((toolUseId: string) => {
+    setMinimizedInputs((prev) => {
+      const next = new Set(prev);
+      if (next.has(toolUseId)) next.delete(toolUseId);
+      else next.add(toolUseId);
+      return next;
+    });
+  }, []);
+  // Clean up stale entries when a pending input is removed (answered/dismissed).
+  useEffect(() => {
+    const live = new Set(pendingUserInputs.map((p) => p.toolUseId));
+    setMinimizedInputs((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) {
+        if (live.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [pendingUserInputs]);
+  const anyUserInputExpanded = pendingUserInputs.some(
+    (p) => !minimizedInputs.has(p.toolUseId)
+  );
+
   const activeProjectIdRef = useRef<number | null>(null);
   useEffect(() => {
     const unsub = useProjectsStore.subscribe((s) => {
@@ -674,7 +703,9 @@ function App() {
             key={p.toolUseId}
             request={p}
             send={send}
-            onAnswered={(toolUseId, _answer) => {
+            minimized={minimizedInputs.has(p.toolUseId)}
+            onToggleMinimize={() => toggleInputMinimized(p.toolUseId)}
+            onAnswered={(toolUseId, _answers) => {
               removeUserInput(toolUseId);
             }}
           />
@@ -689,7 +720,10 @@ function App() {
           />
         ))}
 
-        <div className={terminalOpen ? "hidden" : ""}>
+        {/* Composer is hidden while an AskUserQuestion panel is expanded —
+            the agent is blocked on the user's answer and the panel needs the
+            screen real estate. Minimize the panel to bring the composer back. */}
+        <div className={terminalOpen || anyUserInputExpanded ? "hidden" : ""}>
           {streamingActivity && <StreamingStatus activity={streamingActivity} />}
           <Composer
             disabled={!connected || !activeSessionId || readOnly}

@@ -189,11 +189,15 @@ class SessionManager:
         )
         return True
 
-    def resolve_user_input(self, tool_use_id: str, answer: str) -> bool:
-        """Deliver a user's answer to a pending AskUserQuestion tool call."""
+    def resolve_user_input(self, tool_use_id: str, answers: list[str]) -> bool:
+        """Deliver user answers to a pending AskUserQuestion tool call.
+
+        AskUserQuestion can pose multiple questions in one call — ``answers``
+        is one string per question, in the same order they were sent.
+        """
         if self._current is None:
             return False
-        return self._current.permissions.resolve_user_input(tool_use_id, answer)
+        return self._current.permissions.resolve_user_input(tool_use_id, answers)
 
     def resolve_permission(
         self,

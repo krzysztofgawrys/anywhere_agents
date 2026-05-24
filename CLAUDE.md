@@ -111,7 +111,7 @@ Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 - `new_session {project_id}`, `resume_session {project_id, session_id, force?}`
 - `set_auto_approve {project_id, auto_approve}`
 - `approve_tool {tool_use_id}`, `deny_tool {tool_use_id, reason?}`
-- `user_input_response {tool_use_id, answer}`
+- `user_input_response {tool_use_id, answers: string[]}` (one answer per question; legacy `{tool_use_id, answer}` still accepted)
 - `list_directory {project_id, path?}`, `read_file {project_id, path}`
 - `browse_fs {path?, worker_id?}`, `create_directory {path, worker_id?}`, `create_project {path, worker_id?}`
 - `terminal_open {project_id, cols?, rows?}`, `terminal_input {data}`, `terminal_resize {cols, rows}`, `terminal_close`
@@ -123,7 +123,7 @@ Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 - `permission_request`, `project_updated`, `project_created`
 - `directory`, `file_content`, `fs_directory`
 - `terminal_ready`, `terminal_output {data}`, `terminal_closed`
-- `user_input_request {tool_use_id, prompt}`
+- `user_input_request {tool_use_id, questions: [{question, options}]}` (AskUserQuestion may pose multiple)
 - `push_notify {title, body}` (intercepted by hub → Web Push)
 
 Hub remaps project IDs: `hub_id = worker_index * 1_000_000 + worker_project_id`
