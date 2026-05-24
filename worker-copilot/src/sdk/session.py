@@ -305,16 +305,6 @@ class Session:
 
     async def _dispatch_event(self, event: Any) -> None:
         data: SessionEventData | None = getattr(event, "data", None)
-        # Temporary debug: log every event class we see so we can confirm
-        # which tool lifecycle events the SDK actually emits in practice
-        # (ToolExecutionComplete vs ToolExecutionPartialResult vs other).
-        # Remove once the dispatcher is verified end-to-end.
-        logger.info(
-            "copilot_event",
-            session_id=self._session_id,
-            event_type=getattr(event, "type", None),
-            data_class=type(data).__name__ if data is not None else None,
-        )
         if data is None:
             return
 
