@@ -1,15 +1,24 @@
 """worker-copilot WS handler.
 
 Skeleton phase: SDK-agnostic messages (projects, files, terminal, browse_fs)
-work via shared modules. SDK-specific messages (prompt, new_session,
-resume_session, interrupt, set_model, approve_tool, deny_tool,
-user_input_response) respond with a `system` notice that Copilot integration
-is not yet implemented. Phase 4 wires in github-copilot-sdk.
+work via shared modules. SDK-specific messages emit a *valid-shaped* response
+matching the real protocol so the frontend's chat flow doesn't dead-end:
+
+- new_session / resume_session emit `session_started` (so the chat exits its
+  "Connecting..." state and the composer becomes interactive),
+- prompt emits a single text_delta with a placeholder body + a `result` event
+  so the turn ends cleanly,
+- interrupt / set_model / approve_tool / deny_tool / user_input_response are
+  no-op acks.
+
+Phase 4 replaces this stubbed turn handler with real github-copilot-sdk
+integration (CopilotClient + CopilotSession streaming events).
 """
 
 import asyncio
 import json
 import time
+import uuid
 from typing import Any
 
 import structlog
@@ -71,18 +80,12 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-# SDK-specific messages the skeleton cannot satisfy yet. Each gets a friendly
-# "not implemented" reply so the frontend doesn't hang on a pending request.
-_SDK_NOT_IMPLEMENTED = frozenset({
-    "prompt",
-    "new_session",
-    "resume_session",
-    "interrupt",
-    "set_model",
-    "approve_tool",
-    "deny_tool",
-    "user_input_response",
-})
+SKELETON_NOTICE = (
+    "_worker-copilot is a skeleton: the WS protocol is fully wired but the "
+    "github-copilot-sdk integration is not active yet (phase 4 will replace "
+    "this stub with a real CopilotClient session). Your prompt was received "
+    "but not actually sent to Copilot._"
+)
 
 
 async def handle_websocket(
@@ -97,6 +100,9 @@ async def handle_websocket(
         await manager.send(connection_id, msg)
 
     terminal: TerminalSession | None = None
+    # Per-WS skeleton session state. Phase 4 replaces this with a real
+    # SessionManager that owns a CopilotSession driving github-copilot-sdk.
+    skeleton_session: dict[str, Any] = {"id": None, "cwd": None, "auto_approve": False}
 
     try:
         while True:
@@ -116,7 +122,9 @@ async def handle_websocket(
             msg_type = message.get("type")
             payload = message.get("payload") or {}
             try:
-                terminal = await _route(msg_type, payload, send, connection_id, terminal)
+                terminal = await _route(
+                    msg_type, payload, send, connection_id, terminal, skeleton_session
+                )
             except Exception as route_err:
                 logger.error("route_error", msg_type=msg_type, error=str(route_err), exc_info=True)
                 await send({
@@ -146,12 +154,17 @@ async def _route(
     send: Any,
     connection_id: str,
     terminal: TerminalSession | None = None,
+    skeleton_session: dict[str, Any] | None = None,
 ) -> TerminalSession | None:
     """Dispatch WS messages to handlers.
 
     SDK-agnostic messages (projects, files, terminal, browse_fs) are fully
-    wired through worker_shared. SDK-specific messages return a friendly stub.
+    wired through worker_shared. SDK-specific messages emit valid protocol
+    shapes so the frontend chat flow proceeds; real SDK behavior lands in
+    phase 4.
     """
+    if skeleton_session is None:
+        skeleton_session = {"id": None, "cwd": None, "auto_approve": False}
 
     if msg_type == "ping":
         manager.touch(connection_id)
@@ -415,23 +428,86 @@ async def _route(
             terminal = None
         return terminal
 
-    # ── SDK-specific: not yet implemented in this skeleton ─────────────────
-    if msg_type in _SDK_NOT_IMPLEMENTED:
+    # ── SDK-specific: skeleton stubs (phase 4 replaces with real SDK) ──────
+
+    if msg_type == "new_session":
+        project_id = payload.get("project_id")
+        if not isinstance(project_id, int):
+            await _send_error(send, "bad_request", "project_id required")
+            return terminal
+        project = await get_project(db, project_id)
+        if not project:
+            await _send_error(send, "not_found", f"project {project_id} not found")
+            return terminal
+        sid = str(uuid.uuid4())
+        skeleton_session["id"] = sid
+        skeleton_session["cwd"] = project["path"]
+        skeleton_session["auto_approve"] = project["auto_approve"]
         await send({
-            "type": "system",
+            "type": "session_started",
             "payload": {
-                "session_id": "",
-                "subtype": "copilot_not_implemented",
-                "data": {
-                    "message_type": msg_type,
-                    "message": (
-                        "worker-copilot skeleton: github-copilot-sdk integration is "
-                        "wired up but not implemented yet. This message type "
-                        "(" + str(msg_type) + ") will work after phase 4."
-                    ),
-                },
+                "session_id": sid,
+                "cwd": project["path"],
+                "resumed": False,
+                "auto_approve": project["auto_approve"],
             },
         })
+        return terminal
+
+    if msg_type == "resume_session":
+        project_id = payload.get("project_id")
+        session_id = payload.get("session_id")
+        if not isinstance(project_id, int) or not isinstance(session_id, str):
+            await _send_error(send, "bad_request", "project_id and session_id required")
+            return terminal
+        project = await get_project(db, project_id)
+        if not project:
+            await _send_error(send, "not_found", f"project {project_id} not found")
+            return terminal
+        skeleton_session["id"] = session_id
+        skeleton_session["cwd"] = project["path"]
+        skeleton_session["auto_approve"] = project["auto_approve"]
+        await send({
+            "type": "session_started",
+            "payload": {
+                "session_id": session_id,
+                "cwd": project["path"],
+                "resumed": True,
+                "auto_approve": project["auto_approve"],
+                "is_busy": False,
+            },
+        })
+        return terminal
+
+    if msg_type == "prompt":
+        # Echo a single text_delta with a placeholder body then emit `result`
+        # so the turn ends cleanly. Phase 4 will route the prompt into a real
+        # CopilotSession and stream actual SDK events instead.
+        sid = skeleton_session.get("id") or ""
+        if not sid:
+            await _send_error(send, "no_session", "Start a session before sending prompts")
+            return terminal
+        await send({
+            "type": "text_delta",
+            "payload": {"session_id": sid, "text": SKELETON_NOTICE},
+        })
+        await send({
+            "type": "result",
+            "payload": {
+                "session_id": sid,
+                "subtype": "success",
+                "duration_ms": 0,
+                "total_cost_usd": 0.0,
+                "num_turns": 1,
+                "is_error": False,
+            },
+        })
+        return terminal
+
+    # No-op acks for the remaining session-bound messages. They don't have
+    # meaningful behavior without a real SDK loop in the background; phase 4
+    # wires them through SessionManager / PermissionBroker like worker-claude.
+    if msg_type in ("interrupt", "set_model", "approve_tool", "deny_tool", "user_input_response"):
         return terminal
 
     await _send_error(
