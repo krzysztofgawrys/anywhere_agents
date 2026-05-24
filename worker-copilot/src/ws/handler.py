@@ -1,24 +1,14 @@
 """worker-copilot WS handler.
 
-Skeleton phase: SDK-agnostic messages (projects, files, terminal, browse_fs)
-work via shared modules. SDK-specific messages emit a *valid-shaped* response
-matching the real protocol so the frontend's chat flow doesn't dead-end:
-
-- new_session / resume_session emit `session_started` (so the chat exits its
-  "Connecting..." state and the composer becomes interactive),
-- prompt emits a single text_delta with a placeholder body + a `result` event
-  so the turn ends cleanly,
-- interrupt / set_model / approve_tool / deny_tool / user_input_response are
-  no-op acks.
-
-Phase 4 replaces this stubbed turn handler with real github-copilot-sdk
-integration (CopilotClient + CopilotSession streaming events).
+Same routing surface as worker-claude. SDK-agnostic messages (projects,
+files, terminal, browse_fs) go through `worker_shared`. SDK-specific
+messages route through `SessionManager`, which owns a `Session` wrapping
+a `CopilotSession` from `github-copilot-sdk`.
 """
 
 import asyncio
 import json
 import time
-import uuid
 from typing import Any
 
 import structlog
@@ -41,6 +31,7 @@ from worker_shared.projects.service import (
 )
 from worker_shared.terminal.session import TerminalSession
 
+from src.sdk.manager import SessionManager
 from src.sessions.reader import get_session_messages, list_sessions
 
 logger = structlog.get_logger()
@@ -80,14 +71,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-SKELETON_NOTICE = (
-    "_worker-copilot is a skeleton: the WS protocol is fully wired but the "
-    "github-copilot-sdk integration is not active yet (phase 4 will replace "
-    "this stub with a real CopilotClient session). Your prompt was received "
-    "but not actually sent to Copilot._"
-)
-
-
 async def handle_websocket(
     websocket: WebSocket,
     connection_id: str,
@@ -99,10 +82,12 @@ async def handle_websocket(
     async def send(msg: dict[str, Any]) -> None:
         await manager.send(connection_id, msg)
 
+    sessions = SessionManager(
+        send=send,
+        connection_id=connection_id,
+        device_label=device_label,
+    )
     terminal: TerminalSession | None = None
-    # Per-WS skeleton session state. Phase 4 replaces this with a real
-    # SessionManager that owns a CopilotSession driving github-copilot-sdk.
-    skeleton_session: dict[str, Any] = {"id": None, "cwd": None, "auto_approve": False}
 
     try:
         while True:
@@ -123,7 +108,7 @@ async def handle_websocket(
             payload = message.get("payload") or {}
             try:
                 terminal = await _route(
-                    msg_type, payload, send, connection_id, terminal, skeleton_session
+                    msg_type, payload, sessions, send, connection_id, terminal
                 )
             except Exception as route_err:
                 logger.error("route_error", msg_type=msg_type, error=str(route_err), exc_info=True)
@@ -141,6 +126,7 @@ async def handle_websocket(
     finally:
         if terminal is not None:
             await terminal.stop()
+        await sessions.stop()
         manager.disconnect(connection_id)
 
 
@@ -151,20 +137,12 @@ async def _send_error(send: Any, code: str, message: str) -> None:
 async def _route(
     msg_type: str | None,
     payload: dict[str, Any],
+    sessions: SessionManager,
     send: Any,
     connection_id: str,
     terminal: TerminalSession | None = None,
-    skeleton_session: dict[str, Any] | None = None,
 ) -> TerminalSession | None:
-    """Dispatch WS messages to handlers.
-
-    SDK-agnostic messages (projects, files, terminal, browse_fs) are fully
-    wired through worker_shared. SDK-specific messages emit valid protocol
-    shapes so the frontend chat flow proceeds; real SDK behavior lands in
-    phase 4.
-    """
-    if skeleton_session is None:
-        skeleton_session = {"id": None, "cwd": None, "auto_approve": False}
+    """Dispatch WS messages to handlers."""
 
     if msg_type == "ping":
         manager.touch(connection_id)
@@ -428,7 +406,7 @@ async def _route(
             terminal = None
         return terminal
 
-    # ── SDK-specific: skeleton stubs (phase 4 replaces with real SDK) ──────
+    # ── SDK-specific: route through SessionManager ─────────────────────────
 
     if msg_type == "new_session":
         project_id = payload.get("project_id")
@@ -439,24 +417,17 @@ async def _route(
         if not project:
             await _send_error(send, "not_found", f"project {project_id} not found")
             return terminal
-        sid = str(uuid.uuid4())
-        skeleton_session["id"] = sid
-        skeleton_session["cwd"] = project["path"]
-        skeleton_session["auto_approve"] = project["auto_approve"]
-        await send({
-            "type": "session_started",
-            "payload": {
-                "session_id": sid,
-                "cwd": project["path"],
-                "resumed": False,
-                "auto_approve": project["auto_approve"],
-            },
-        })
+        await sessions.new_session(
+            cwd=project["path"],
+            auto_approve=project["auto_approve"],
+            model=payload.get("model") or None,
+        )
         return terminal
 
     if msg_type == "resume_session":
         project_id = payload.get("project_id")
         session_id = payload.get("session_id")
+        force = bool(payload.get("force"))
         if not isinstance(project_id, int) or not isinstance(session_id, str):
             await _send_error(send, "bad_request", "project_id and session_id required")
             return terminal
@@ -464,50 +435,87 @@ async def _route(
         if not project:
             await _send_error(send, "not_found", f"project {project_id} not found")
             return terminal
-        skeleton_session["id"] = session_id
-        skeleton_session["cwd"] = project["path"]
-        skeleton_session["auto_approve"] = project["auto_approve"]
+        await sessions.resume_session(
+            cwd=project["path"],
+            session_id=session_id,
+            force=force,
+            auto_approve=project["auto_approve"],
+            model=payload.get("model") or None,
+        )
+        return terminal
+
+    if msg_type == "set_model":
+        model = payload.get("model") or None
+        await sessions.set_model(model)
         await send({
-            "type": "session_started",
-            "payload": {
-                "session_id": session_id,
-                "cwd": project["path"],
-                "resumed": True,
-                "auto_approve": project["auto_approve"],
-                "is_busy": False,
-            },
+            "type": "system",
+            "payload": {"subtype": "model_changed", "data": {"model": model}},
         })
         return terminal
 
     if msg_type == "prompt":
-        # Echo a single text_delta with a placeholder body then emit `result`
-        # so the turn ends cleanly. Phase 4 will route the prompt into a real
-        # CopilotSession and stream actual SDK events instead.
-        sid = skeleton_session.get("id") or ""
-        if not sid:
-            await _send_error(send, "no_session", "Start a session before sending prompts")
+        text = payload.get("text", "")
+        raw_images = payload.get("images") or []
+        images: list[dict[str, str]] = []
+        if isinstance(raw_images, list):
+            for it in raw_images:
+                if not isinstance(it, dict):
+                    continue
+                mt = it.get("media_type")
+                data = it.get("data_b64")
+                if isinstance(mt, str) and isinstance(data, str):
+                    images.append({"media_type": mt, "data_b64": data})
+        if not text and not images:
+            await _send_error(send, "empty_prompt", "Prompt text or images required")
             return terminal
-        await send({
-            "type": "text_delta",
-            "payload": {"session_id": sid, "text": SKELETON_NOTICE},
-        })
-        await send({
-            "type": "result",
-            "payload": {
-                "session_id": sid,
-                "subtype": "success",
-                "duration_ms": 0,
-                "total_cost_usd": 0.0,
-                "num_turns": 1,
-                "is_error": False,
-            },
-        })
+        auto_once = bool(payload.get("auto_approve"))
+        stream = bool(payload.get("stream"))
+        await sessions.send_prompt(
+            text, auto_approve_once=auto_once, images=images, stream=stream
+        )
         return terminal
 
-    # No-op acks for the remaining session-bound messages. They don't have
-    # meaningful behavior without a real SDK loop in the background; phase 4
-    # wires them through SessionManager / PermissionBroker like worker-claude.
-    if msg_type in ("interrupt", "set_model", "approve_tool", "deny_tool", "user_input_response"):
+    if msg_type == "interrupt":
+        await sessions.interrupt()
+        return terminal
+
+    if msg_type == "user_input_response":
+        tool_use_id = payload.get("tool_use_id")
+        if not isinstance(tool_use_id, str):
+            await _send_error(send, "bad_request", "tool_use_id required")
+            return terminal
+        raw_answers = payload.get("answers")
+        if isinstance(raw_answers, list):
+            answers = [a if isinstance(a, str) else str(a) for a in raw_answers]
+        else:
+            single = payload.get("answer", "")
+            if not isinstance(single, str):
+                single = str(single)
+            answers = [single]
+        ok = sessions.resolve_user_input(tool_use_id, answers)
+        if not ok:
+            await _send_error(send, "no_pending", "No pending user input request with that id")
+        return terminal
+
+    if msg_type == "approve_tool":
+        tool_use_id = payload.get("tool_use_id")
+        if not isinstance(tool_use_id, str):
+            await _send_error(send, "bad_request", "tool_use_id required")
+            return terminal
+        ok = sessions.resolve_permission(tool_use_id, allow=True)
+        if not ok:
+            await _send_error(send, "no_pending", "No pending request with that id")
+        return terminal
+
+    if msg_type == "deny_tool":
+        tool_use_id = payload.get("tool_use_id")
+        reason = payload.get("reason", "")
+        if not isinstance(tool_use_id, str):
+            await _send_error(send, "bad_request", "tool_use_id required")
+            return terminal
+        ok = sessions.resolve_permission(tool_use_id, allow=False, reason=reason)
+        if not ok:
+            await _send_error(send, "no_pending", "No pending request with that id")
         return terminal
 
     await _send_error(

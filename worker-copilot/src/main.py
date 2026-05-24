@@ -17,6 +17,7 @@ from worker_shared.db import db
 from worker_shared.sdk.registry import registry
 
 from src.projects.scanner import scan_and_register
+from src.sdk.client import stop_client
 from src.ws.handler import handle_websocket
 
 structlog.configure(
@@ -36,12 +37,14 @@ WORKER_SECRET = os.getenv("WORKER_SECRET", "")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Init DB + scan projects on startup."""
+    """Init DB + scan projects on startup. CopilotClient starts lazily on
+    first session (via src.sdk.client.get_client), stops on shutdown."""
     await db.init()
     count = await scan_and_register(db)
     logger.info("worker_startup_complete", projects_registered=count)
     yield
     await registry.stop_all()
+    await stop_client()
 
 
 app = FastAPI(title="Claude Web Worker (Copilot)", version="0.1.0", lifespan=lifespan)
