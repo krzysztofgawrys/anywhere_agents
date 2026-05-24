@@ -61,7 +61,15 @@ class LockManager:
             existing = self._locks.get(session_id)
             prior_other: LockEntry | None = None
             if existing and existing.connection_id != connection_id:
-                if not force:
+                # WS-reconnect race: the old connection's WS may still be
+                # waiting on its heartbeat timeout before the worker tears it
+                # down and releases the lock. If the new requester is the same
+                # logical client (same `email @ device` label) we treat it as
+                # a silent takeover rather than surfacing the "Take over"
+                # dialog to the user - it's the same person on the same device
+                # reclaiming their own session.
+                same_client = existing.device_label == device_label
+                if not force and not same_client:
                     return False, existing
                 prior_other = existing
                 logger.info(
@@ -69,6 +77,7 @@ class LockManager:
                     session_id=session_id,
                     from_connection=existing.connection_id,
                     to_connection=connection_id,
+                    reason="reconnect" if same_client else "force",
                 )
                 try:
                     await existing.notify({
