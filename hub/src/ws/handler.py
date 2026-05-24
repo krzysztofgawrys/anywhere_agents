@@ -29,7 +29,7 @@ _PROJECT_BOUND = frozenset({
 
 # Message types that route to the active worker (session-bound, no project_id)
 _SESSION_BOUND = frozenset({
-    "prompt", "interrupt", "approve_tool", "deny_tool",
+    "prompt", "interrupt", "approve_tool", "deny_tool", "set_model",
     "user_input_response", "terminal_input", "terminal_resize", "terminal_close",
 })
 

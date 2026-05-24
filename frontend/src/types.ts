@@ -83,6 +83,7 @@ export type ClientMessage =
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
+  | { type: "set_model"; payload: { model: string | null } }
   | {
       type: "prompt";
       payload: {

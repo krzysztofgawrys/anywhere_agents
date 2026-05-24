@@ -233,6 +233,15 @@ async def _route(
         })
         return terminal
 
+    if msg_type == "set_model":
+        model = payload.get("model") or None
+        await sessions.set_model(model)
+        await send({
+            "type": "system",
+            "payload": {"subtype": "model_changed", "data": {"model": model}},
+        })
+        return terminal
+
     if msg_type == "prompt":
         text = payload.get("text", "")
         raw_images = payload.get("images") or []

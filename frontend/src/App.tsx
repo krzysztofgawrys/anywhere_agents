@@ -448,15 +448,19 @@ function App() {
           break;
         case "model opus":
           useChatStore.getState().setModel("claude-opus-4-6");
+          send({ type: "set_model", payload: { model: "claude-opus-4-6" } });
           break;
         case "model sonnet":
           useChatStore.getState().setModel("claude-sonnet-4-6");
+          send({ type: "set_model", payload: { model: "claude-sonnet-4-6" } });
           break;
         case "model haiku":
           useChatStore.getState().setModel("claude-haiku-4-5-20251001");
+          send({ type: "set_model", payload: { model: "claude-haiku-4-5-20251001" } });
           break;
         case "model default":
           useChatStore.getState().setModel(null);
+          send({ type: "set_model", payload: { model: null } });
           break;
         case "plan":
           setPlanMode(true);

@@ -225,6 +225,10 @@ class SessionManager:
         if self._current is not None:
             self._current.set_auto_approve(value)
 
+    async def set_model(self, model: str | None) -> None:
+        if self._current is not None:
+            await self._current.set_model(model)
+
     async def interrupt(self) -> None:
         if self._current is not None:
             await self._current.interrupt()

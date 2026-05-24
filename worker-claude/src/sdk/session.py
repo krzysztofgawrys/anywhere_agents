@@ -290,6 +290,21 @@ class Session:
     def set_auto_approve(self, value: bool) -> None:
         self._permissions.set_auto_approve(value)
 
+    async def set_model(self, model: str | None) -> None:
+        """Change the model mid-session via the SDK's set_model method."""
+        if self._client is None:
+            return
+        try:
+            await self._client.set_model(model or "")
+            self._model = model
+            logger.info("model_changed", model=model, session_id=self._session_id)
+        except Exception as e:
+            logger.warning("set_model_failed", error=str(e))
+            await self._send({
+                "type": "error",
+                "payload": {"code": "set_model_failed", "message": str(e)},
+            })
+
     def rebind(self, send: SendFn, *, parked: bool = False) -> None:
         """Re-attach a new WS send function after client reconnect / park.
 
