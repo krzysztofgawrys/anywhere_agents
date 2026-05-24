@@ -5,9 +5,9 @@
 #   docker compose up -d   # build + start
 #   docker compose logs -f # follow logs
 #
-# Hub:           frontend proxy + auth + push notifications
-# worker-claude: Claude SDK, project scanning, terminal, file browser
-#                (additional workers - e.g. worker-copilot - added as separate services)
+# Hub:            frontend proxy + auth + push notifications
+# worker-claude:  Anthropic Claude SDK, project scanning, terminal, file browser
+# worker-copilot: GitHub Copilot SDK (skeleton; phase 4 wires the real SDK)
 
 services:
   hub:
@@ -38,6 +38,11 @@ services:
     depends_on:
       worker-claude:
         condition: service_healthy
+      # Hub tries to connect to worker-copilot on every client WS handshake.
+      # service_started (not _healthy) so a Copilot worker hiccup never blocks
+      # hub startup - hub already handles unreachable workers gracefully.
+      worker-copilot:
+        condition: service_started
 
   worker-claude:
     build:
@@ -66,6 +71,34 @@ services:
       # Mount at the SAME absolute path as on host so that cwd recorded in
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
+      - ${HOME}/code:${HOME}/code
+
+  worker-copilot:
+    build:
+      context: .
+      dockerfile: docker/worker-copilot.Dockerfile
+    container_name: claude-web-worker-copilot
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      - HUB_URL=${HUB_URL:-http://hub:8001}
+      - COPILOT_HOME=/home/app/.copilot
+      # Separate SQLite from worker-claude so each worker has an independent
+      # project list (different scanners, different on-disk sources).
+      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
+    volumes:
+      # Copilot auth + session state (host must have run `copilot` to log in)
+      - ${HOME}/.copilot:/home/app/.copilot
+      # Worker DB (separate file, see CLAUDE_WEB_DB_PATH above)
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Git credentials
+      - ${HOME}/.ssh:/home/app/.ssh
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      # ── Project roots ──────────────────────────────────────────────────
+      # Same absolute-path convention as worker-claude so workspace_path
+      # recorded by Copilot in ~/.copilot/session-state resolves correctly.
       - ${HOME}/code:${HOME}/code
 
   cloudflared:

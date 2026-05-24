@@ -1,0 +1,43 @@
+# Claude Web Worker (GitHub Copilot SDK) - standalone compose for remote machines
+#
+# Deployment steps:
+#   1. Clone the repo on the remote machine
+#   2. Run `copilot` on the host once to authenticate (creates ~/.copilot/config.json)
+#   3. Create .env with UID, GID, and WORKER_SECRET matching hub's workers.json
+#   4. Edit volume mounts below for your project directories
+#   5. docker compose -f worker-copilot-compose.yml up -d --build
+#
+# Hub connects to this worker via the URL configured in workers.json.
+# Worker port (default 8003) must be reachable from hub.
+
+services:
+  worker-copilot:
+    build:
+      context: .
+      dockerfile: docker/worker-copilot.Dockerfile
+    container_name: claude-web-worker-copilot
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${WORKER_COPILOT_PORT:-8003}:8003"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      - COPILOT_HOME=/home/app/.copilot
+      # Separate SQLite from worker-claude to keep each worker's project list
+      # independent (different scanners, different on-disk sources).
+      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
+    volumes:
+      # Copilot auth + session state (from `copilot` login on host)
+      - ${HOME}/.copilot:/home/app/.copilot
+      # Worker DB (projects index, separate from worker-claude) - create
+      # the dir first: mkdir -p ~/.claude-web
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Git credentials
+      - ${HOME}/.ssh:/home/app/.ssh
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      # ── Project roots ──────────────────────────────────────────────────
+      # Mount at the SAME absolute path as on host so workspace_path recorded
+      # by Copilot inside ~/.copilot/session-state/.../workspace.* resolves
+      # correctly inside the container.
+      - ${HOME}/code:${HOME}/code

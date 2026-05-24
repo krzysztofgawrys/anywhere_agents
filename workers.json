@@ -2,8 +2,15 @@
   {
     "id": "local",
     "type": "claude",
-    "label": "Laptop",
+    "label": "Laptop (Claude)",
     "url": "ws://worker-claude:8002/ws",
+    "secret": "changeme"
+  },
+  {
+    "id": "local-copilot",
+    "type": "copilot",
+    "label": "Laptop (Copilot)",
+    "url": "ws://worker-copilot:8003/ws",
     "secret": "changeme"
   },
   {
