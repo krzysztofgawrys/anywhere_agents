@@ -100,6 +100,11 @@ function App() {
   // SDK hadn't flushed to JSONL yet at the time of our initial history fetch.
   // Cleared once we refetch (or after a fallback timeout).
   const pendingHistoryRefreshRef = useRef(false);
+  // Last `prompt` message the user submitted - retained so we can auto-resend
+  // when a worker restart drops its in-memory session and the next prompt
+  // bounces back with `no_session`. Cleared after a successful resend attempt
+  // so a second `no_session` doesn't loop.
+  const lastPromptRef = useRef<ClientMessage | null>(null);
   useEffect(() => {
     const unsub = useProjectsStore.subscribe((s) => {
       activeProjectIdRef.current = s.activeProjectId;
@@ -133,6 +138,30 @@ function App() {
 
   const onServerMessage = useCallback(
     (msg: ServerMessage) => {
+      if (msg.type === "error" && msg.payload.code === "no_session") {
+        // Worker lost its in-memory session (typically: worker container was
+        // restarted, the parked-session registry was wiped). Our WS to the
+        // hub is still healthy and the project routing is intact, so a simple
+        // resume_session re-attaches via the SDK slow path (replay from
+        // JSONL on disk), then we re-send the user's prompt so they don't
+        // have to retype it.
+        const sessionId = useChatStore.getState().activeSessionId;
+        const projectId = activeProjectIdRef.current;
+        const pending = lastPromptRef.current;
+        if (sessionId && projectId !== null && pending) {
+          // Drop the pending payload first so a second no_session bounce
+          // doesn't loop us.
+          lastPromptRef.current = null;
+          sendRef.current?.({
+            type: "resume_session",
+            payload: { project_id: projectId, session_id: sessionId },
+          });
+          sendRef.current?.(pending);
+          // Swallow the error - the user shouldn't see a red banner for a
+          // condition we recovered from automatically.
+          return;
+        }
+      }
       if (msg.type === "result" && !msg.payload.is_error) {
         // First result ever → good moment to ask for notification permission,
         // the user just saw Claude finish something and understands why.
@@ -444,7 +473,7 @@ function App() {
         ? `[PLAN MODE - read-only, do NOT execute any changes]\n${text}`
         : text;
       appendUserPrompt(text, images);
-      send({
+      const promptMsg: ClientMessage = {
         type: "prompt",
         payload: {
           text: promptText,
@@ -452,7 +481,9 @@ function App() {
           stream: streamTokens,
           ...(images.length > 0 ? { images } : {}),
         },
-      });
+      };
+      lastPromptRef.current = promptMsg;
+      send(promptMsg);
     },
     [send, appendUserPrompt, planMode]
   );

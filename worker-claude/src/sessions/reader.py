@@ -277,6 +277,24 @@ def get_session_messages(
             if not blocks:
                 continue
 
+        # Skip assistant messages with no visible content. The SDK can write
+        # stub assistant entries to the JSONL (e.g. text="" placeholder while
+        # streaming, or a partial message left behind when the worker was
+        # killed mid-turn). Without this filter they render as empty grey
+        # bubbles in the chat. A message is considered visible if it has at
+        # least one tool/task/image block, or a text/thinking block with
+        # non-whitespace content.
+        if etype == "assistant":
+            def _has_content(b: dict[str, Any]) -> bool:
+                kind = b.get("kind")
+                if kind in ("tool", "task", "image"):
+                    return True
+                if kind in ("text", "thinking"):
+                    return bool((b.get("text") or "").strip())
+                return False
+            if not any(_has_content(b) for b in blocks):
+                continue
+
         messages.append({
             "id": entry.get("uuid", ""),
             "role": etype,
