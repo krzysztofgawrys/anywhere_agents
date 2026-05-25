@@ -88,6 +88,14 @@ async def handle_websocket(
     # Per-worker background retry tasks. Keyed by worker id; entry exists iff
     # a retry loop is currently waiting/attempting for that worker.
     retry_tasks: dict[str, asyncio.Task[None]] = {}
+    # Set to True by the WS handler's `finally` block before closing worker
+    # connections so that the stray `on_disconnect` callback fired by each
+    # `conn.close()` does NOT schedule fresh retry tasks. Without this guard
+    # every frontend WS shutdown leaks N orphan retry coroutines (one per
+    # worker) that keep dialing the workers from the dead handler's closure -
+    # over a flaky network this stacks up into a retry storm that drowns the
+    # logs and produces phantom worker_conns the new handler can never reach.
+    shutting_down = False
     # Cache of each worker's available models. Seeded with the type default
     # immediately on (re)connect; a background `list_models` query refreshes
     # it once the worker responds.
@@ -249,6 +257,12 @@ async def handle_websocket(
             # reconnect succeeds.
             worker_conns.pop(worker_id, None)
             logger.warning("worker_disconnected", worker=worker_id)
+            # Skip the reconnect entirely when the WS handler is tearing down.
+            # The `finally` block closes every worker conn, each of those
+            # closes fires this callback, and without this guard we'd spawn
+            # one orphan retry task per worker on every frontend WS shutdown.
+            if shutting_down:
+                return
             # Schedule a reconnect unless one is already in flight. Look up
             # current config from `workers` (the snapshot for this WS session) -
             # if the entry was removed from workers.json between WS connects,
@@ -502,15 +516,18 @@ async def handle_websocket(
     except Exception as e:
         logger.error("ws_error", connection_id=connection_id, error=str(e), exc_info=True)
     finally:
+        # Flip the shutdown flag BEFORE touching anything else. The closure
+        # `make_on_disconnect` reads this to skip the retry-scheduling branch
+        # when conn.close() below fires the per-worker on_disconnect callback.
+        shutting_down = True
         # Cancel any in-flight retry tasks first so they don't try to push a
         # `projects` payload to an already-closed WS.
         for task in list(retry_tasks.values()):
             task.cancel()
         retry_tasks.clear()
         # Snapshot conn list - conn.close triggers on_disconnect which mutates
-        # worker_conns. Also pop each entry so a stray on_disconnect that
-        # arrives during shutdown can't re-spawn a retry task (retry_tasks
-        # was just cleared but make_on_disconnect may try to add to it).
+        # worker_conns. shutting_down guards against spawning new retry tasks
+        # from those callbacks.
         for conn in list(worker_conns.values()):
             await conn.close()
         worker_conns.clear()

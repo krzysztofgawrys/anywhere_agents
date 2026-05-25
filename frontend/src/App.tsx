@@ -490,6 +490,21 @@ function App() {
 
   const onInterrupt = useCallback(() => {
     send({ type: "interrupt", payload: {} });
+    // Force-clear local streaming state immediately. The backend may not
+    // respond (session lost on worker restart, WS half-open, hub state
+    // diverged) and in that case the user is left staring at a frozen
+    // "Thinking..." with no way to unstick the UI. Treat the interrupt
+    // click as authoritative locally: stop showing streaming indicators,
+    // mark any in-flight assistant message as finished. If the backend
+    // does respond later with a `result` it's idempotent.
+    useChatStore.setState((s) => ({
+      status: "idle",
+      streamingActivity: null,
+      currentAssistantId: null,
+      messages: s.messages.map((m) =>
+        !m.finished ? { ...m, finished: true } : m
+      ),
+    }));
   }, [send]);
 
   // Dynamic /model autocomplete entries sourced from the active worker's
