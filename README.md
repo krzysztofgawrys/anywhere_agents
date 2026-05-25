@@ -1,4 +1,4 @@
-# Claude Web
+# Agents Anywhere
 
 Web interface for local agent CLIs (Claude Code, GitHub Copilot CLI). Mobile +
 desktop, accessed via Cloudflare Tunnel. Installable as a PWA on Android/iOS.
