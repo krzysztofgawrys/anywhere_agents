@@ -295,6 +295,22 @@ def get_session_messages(
             if not any(_has_content(b) for b in blocks):
                 continue
 
+        # Merge consecutive assistant entries into a single bubble. Live
+        # streaming groups every tool_call / text / thinking event from the
+        # same agent turn under one `currentAssistantId` until ResultMessage
+        # arrives, so the chat shows one assistant bubble per turn. The SDK
+        # writes each tool_use to its own JSONL entry though (with a
+        # tool_result user entry in between, which the loop above strips),
+        # so without this merge a turn with N tool calls splits into N+1
+        # separate bubbles on history reload. Mirror the live grouping.
+        if (
+            etype == "assistant"
+            and messages
+            and messages[-1].get("role") == "assistant"
+        ):
+            messages[-1]["blocks"].extend(blocks)
+            continue
+
         messages.append({
             "id": entry.get("uuid", ""),
             "role": etype,
