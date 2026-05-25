@@ -268,6 +268,15 @@ class Session:
         self, request: PermissionRequest, invocation: dict[str, str]
     ) -> PermissionRequestResult:
         """Forward Copilot's permission decision to our PermissionBroker."""
+        # Push notification before blocking on user approval - the agent is
+        # idle until the user comes back to the app. Skip when auto_approve
+        # is on (request() returns immediately, no blocking).
+        if not self._permissions.is_auto_approve:
+            tool_name = (invocation or {}).get("name") or getattr(request, "tool_name", "tool")
+            await self._emit_push_notify(
+                title="Copilot needs permission",
+                body=f"Approve {tool_name}?",
+            )
         return await self._permissions.request(self._send, self._session_id, request)
 
     async def _on_user_input_request(self, request: Any, invocation: dict[str, str]) -> Any:
@@ -287,6 +296,13 @@ class Session:
             else:
                 options.append(str(opt))
         tool_use_id = getattr(request, "request_id", None) or f"input_{id(request)}"
+        # Push before blocking on user reply - the agent is now idle waiting
+        # for human input, exactly when we need to pull the user back into
+        # the app if it's backgrounded.
+        await self._emit_push_notify(
+            title="Copilot is asking",
+            body=prompt_text[:140] if prompt_text else "Tap to answer",
+        )
         answers = await self._permissions.request_user_input(
             self._send,
             self._session_id,

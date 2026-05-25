@@ -390,6 +390,16 @@ class Session:
                     "options": options,
                 })
 
+            # Fire a push BEFORE blocking on the user. The agent is now idle
+            # waiting on a human reply - exactly the moment the user needs
+            # to be pulled back into the app if it's backgrounded. Same
+            # HTTP-out-of-band path as the result push so it works whether
+            # the WS is connected, parked, or torn down entirely.
+            first_q = normalized_questions[0].get("question", "") if normalized_questions else ""
+            await self._emit_push_notify(
+                title="Claude is asking",
+                body=first_q[:140] if first_q else "Tap to answer",
+            )
             answers_list = await self._permissions.request_user_input(
                 self._send,
                 self._session_id,
@@ -421,6 +431,15 @@ class Session:
                 updated["answers"] = answers
             return PermissionResultAllow(updated_input=updated)
 
+        # Push when the agent is about to block on a permission decision.
+        # request() returns immediately when auto_approve is on, so guard
+        # the push behind the same check to avoid spamming when the user
+        # has approved everything for the project.
+        if not self._permissions.is_auto_approve:
+            await self._emit_push_notify(
+                title="Claude needs permission",
+                body=f"Approve {tool_name}?",
+            )
         return await self._permissions.request(
             self._send, self._session_id, tool_name, tool_input, ctx
         )
