@@ -126,7 +126,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Don't downgrade from "streaming" - if session_started just told us the
       // backend is mid-turn, preserve that state. Otherwise clear to "idle".
       status: s.status === "streaming" ? ("streaming" as const) : ("idle" as const),
-      currentAssistantId: s.status === "streaming" ? s.currentAssistantId : null,
+      // Always clear currentAssistantId: the prior value was a frontend-
+      // generated id (`Date.now()-rand`) attached to a live-streamed bubble
+      // we just replaced. Disk-loaded messages use the JSONL entry uuid, so
+      // the old id has no match in the new messages array. Without this
+      // clear, subsequent stream events from a still-active backend turn
+      // call `ensureAssistantMessage` → get the stale id → `appendBlock`
+      // can't find it → events silently dropped until the user hits the
+      // interrupt button (which clears the id and lets a new bubble form).
+      currentAssistantId: null,
       lastError: null,
       hasMore,
       oldestUuid,
