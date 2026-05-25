@@ -339,6 +339,15 @@ function App() {
   const onConnect = useCallback(() => {
     // Fires only on the first WS connection of this page load (e.g. user tapped
     // a push notification and opened a fresh tab). Resume from localStorage.
+    // Arm the same post-result history refetch as onReconnect: a fresh page
+    // load can land on a session that's still mid-turn on the backend
+    // (worker parked it across a previous WS death and the agent kept
+    // producing events). The initial session_history payload only sees
+    // what the SDK has flushed to JSONL so far; once `result` fires we
+    // refetch to pick up the rest. Without arming this here, full-app
+    // restarts mid-turn left the late events stuck in a phantom bubble
+    // that the reader's merge logic never got a chance to collapse.
+    pendingHistoryRefreshRef.current = true;
     resumeLastSession();
   }, [resumeLastSession]);
 
