@@ -206,10 +206,31 @@ class Session:
         self._busy = True
         self._idle_event.clear()
         self._turn_started_at = time.monotonic()
-        # NOTE: images / attachments mapping to Copilot's Attachment shape is
-        # left for a follow-up; text-only is enough for the phase-4 happy path.
+        # Map our {media_type, data_b64} blobs to Copilot's BlobAttachment
+        # TypedDict ({type: "blob", data: <base64>, mimeType, displayName}).
+        # GPT-5.3-Codex caps at max_prompt_images=1 per model_capabilities;
+        # we pass whatever the user attached and let the SDK reject overflow
+        # so the user gets a clear error rather than silent drop.
+        attachments: list[dict[str, str]] | None = None
+        if images:
+            allowed = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+            built: list[dict[str, str]] = []
+            for idx, img in enumerate(images):
+                mt = img.get("media_type", "")
+                data = img.get("data_b64", "")
+                if mt not in allowed or not data:
+                    continue
+                ext = mt.split("/", 1)[1] if "/" in mt else "bin"
+                built.append({
+                    "type": "blob",
+                    "data": data,
+                    "mimeType": mt,
+                    "displayName": f"image-{idx + 1}.{ext}",
+                })
+            if built:
+                attachments = built
         try:
-            await self._copilot_session.send(text)
+            await self._copilot_session.send(text, attachments=attachments)
         except Exception as e:
             logger.error("copilot_send_failed", error=str(e), exc_info=True)
             self._busy = False

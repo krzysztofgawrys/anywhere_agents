@@ -317,8 +317,8 @@ export function Composer({
               disabled
                 ? "Connecting…"
                 : isTouch
-                  ? "Message Claude - tap ➤ to send. Paste / drop images."
-                  : "Message Claude (Enter to send, Shift+Enter for newline). Paste / drop images."
+                  ? "Message agent - tap ➤ to send. Paste / drop images."
+                  : "Message agent (Enter to send, Shift+Enter for newline). Paste / drop images."
             }
             rows={4}
             className="flex-1 min-w-0 resize-none rounded-lg bg-gray-800 border border-gray-700 px-3 py-2 text-sm md:text-base focus:outline-none focus:border-blue-500 disabled:opacity-50 min-h-[112px] max-h-60 overflow-y-auto"

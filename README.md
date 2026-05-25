@@ -1,29 +1,43 @@
 # Claude Web
 
-Web interface for local Claude Code. Mobile + desktop, accessed via Cloudflare Tunnel.
-Installable as a PWA on Android/iOS.
+Web interface for local agent CLIs (Claude Code, GitHub Copilot CLI). Mobile +
+desktop, accessed via Cloudflare Tunnel. Installable as a PWA on Android/iOS.
 
 ## Architecture
 
-Hub + Workers architecture running in Docker:
+Hub + multi-agent workers architecture running in Docker:
 
-- **Hub**: FastAPI - frontend proxy, Cloudflare Access auth, WebSocket router to workers, push notifications
-- **Workers**: FastAPI - agent SDK runtime, project scanning, terminal, file browser, session management.
-  Each worker is specialized for one agent SDK; currently `worker-claude` (Claude SDK). Future: `worker-copilot`, etc.
-- **Frontend**: React + Vite + Tailwind, builds to `frontend-dist/`
-- **Tunnel**: cloudflared (external)
-- **Auth**: Cloudflare Access JWT verified on WS handshake (dev bypass if unconfigured)
+- **Hub**: FastAPI - frontend proxy, Cloudflare Access auth, WebSocket router to
+  workers, push notifications, model registry per worker.
+- **Workers**: FastAPI - one per agent SDK family. Each worker handles project
+  scanning, terminal, file browser, session management, and routes prompts into
+  its SDK's session loop. Shipped today:
+  - `worker-claude` - Anthropic `claude-agent-sdk`
+  - `worker-copilot` - `github-copilot-sdk` (GitHub Copilot CLI)
+- **Shared**: `shared/worker_shared/` - SDK-agnostic modules (db, files,
+  terminal, locks, projects service, session registry) consumed by every
+  worker via a uv path source.
+- **Frontend**: React + Vite + Tailwind, builds to `frontend-dist/`.
+- **Tunnel**: cloudflared (external).
+- **Auth**: Cloudflare Access JWT verified on WS handshake (dev bypass if
+  unconfigured).
 
 ```
-┌─────────────┐     ┌─────────────┐
-│   Browser   │────▶│     Hub     │──┬──▶ worker-claude (local/Docker)
-│  (PWA/Web)  │ WS  │  (Docker)   │  ├──▶ worker-claude (big-worker/remote)
-└─────────────┘     └─────────────┘  └──▶ worker-claude (small-worker/remote)
+┌─────────────┐     ┌─────────────┐  ┌──▶ worker-claude   (Claude SDK)
+│   Browser   │────▶│     Hub     │──┤
+│  (PWA/Web)  │ WS  │  (Docker)   │  └──▶ worker-copilot  (Copilot SDK)
+└─────────────┘     └─────────────┘
 ```
 
-Workers are configured in `workers.json`. Hub connects to all workers on
-frontend WS connect, fans out project lists, and routes messages to the
-correct worker based on project ID.
+Workers are configured in `workers.json` (id, type, label, url, secret). Hub
+re-reads `workers.json` on every frontend WS connect (no hub restart needed
+to add a worker) and keeps trying to connect to any worker that isn't reachable
+yet via a per-WS retry loop (default 30s). When a worker (re)appears, hub
+pushes a fresh `projects` payload to the frontend automatically.
+
+Each project carries a `worker_id` + `worker_type`; routing is by project ID
+so prompts go to the worker that owns the conversation. Active session is
+the worker of the most recent `new_session` / `resume_session`.
 
 ## Quick Start
 
@@ -67,7 +81,12 @@ docker compose up -d --build hub
   - `/compact` - summarize conversation to save context
   - `/new` - start a new session in current project
   - `/plan`, `/act` - toggle plan mode (prepends read-only instruction to prompt)
-  - `/model opus|sonnet|haiku|default` - switch model mid-session
+  - `/model <id>` - switch model mid-session; the autocomplete list is
+    populated per active worker. Claude entries come from a hub-side default
+    (`claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`);
+    Copilot entries are pulled live from `CopilotClient.list_models()`
+    (`auto`, `gpt-5.3-codex`, `gpt-4.1`, plus anything new GitHub ships).
+    `/model default` always available - clears the per-session override.
 - Image upload via file picker, clipboard paste, or drag-and-drop (PNG/JPEG/GIF/WEBP)
   with thumbnail preview strip
 - Voice input via Web Speech API (mic button in overflow menu)
@@ -186,15 +205,31 @@ shared/worker_shared/        (path-installed in every worker via uv sources)
 └── sdk/registry.py      Session parking registry (keeps sessions alive after
                          WS disconnect) - typed against a structural Protocol
 
-worker-claude/src/           (Claude SDK-specific runtime)
+worker-claude/src/           (Anthropic Claude SDK runtime)
 ├── main.py              FastAPI app, WS endpoint with shared secret auth
 ├── projects/scanner.py  walk ~/.claude/projects/, register in DB
 ├── sessions/reader.py   parse .jsonl, list sessions, paginated history
 ├── sdk/
 │   ├── session.py       ClaudeSDKClient wrapper (streaming, model switch, push)
 │   ├── manager.py       SessionManager - owns active session per WS
-│   └── permissions.py   PermissionBroker - gated tool-use approvals
+│   ├── permissions.py   PermissionBroker - gated tool-use approvals
+│   └── registry.py      Session parking after WS disconnect
 └── ws/handler.py        WS routing + heartbeat
+
+worker-copilot/src/          (GitHub Copilot SDK runtime - mirrors worker-claude)
+├── main.py              FastAPI app, lifespan starts/stops CopilotClient
+├── projects/scanner.py  walk ~/.copilot/session-state/, group by workspace_path
+├── sessions/reader.py   parse events.jsonl (Copilot raw camelCase), build
+│                        ChatMessage[] with tool blocks attached by toolCallId
+├── sdk/
+│   ├── client.py        Singleton CopilotClient (bundled CLI subprocess)
+│   ├── session.py       CopilotSession wrapper - event mapping
+│   │                    (AssistantMessageDelta -> text_delta, ToolExecutionStart
+│   │                    -> tool_call, SessionIdle -> result, etc.)
+│   ├── manager.py       SessionManager - owns active session per WS
+│   └── permissions.py   PermissionBroker - bridges to SDK's
+│                        on_permission_request callback
+└── ws/handler.py        WS routing + heartbeat + list_models endpoint
 
 frontend/src/
 ├── App.tsx              Main app shell, WS message dispatch, search
@@ -220,8 +255,10 @@ frontend/src/
 │   ├── UserInputPrompt.tsx  Multi-question panel with minimize
 │   ├── NewProjectBrowser.tsx  Modal FS browser for new projects
 │   └── PermissionPrompt.tsx   Inline Allow/Deny above composer
+├── commands.ts          Slash command definitions + matchCommands() (model
+│                        autocomplete entries are injected dynamically per
+│                        active worker, see App.tsx modelCommands useMemo)
 ├── utils/
-│   ├── commands.ts      Slash command definitions + matchCommands()
 │   └── image.ts         Image resize/compress/base64 utilities
 └── public/
     └── sw.js            Service worker (push, fetch, notification click)
@@ -231,14 +268,24 @@ frontend/src/
 
 ```
 docker/
-├── hub.Dockerfile           Multi-stage: node (frontend) - uv (deps) - python:3.13-slim
-├── worker-claude.Dockerfile Multi-stage: uv (deps) - python:3.13-slim + Node.js + Claude CLI
-└── entrypoint.sh            Injects user into /etc/passwd (fixes "I have no name!")
+├── hub.Dockerfile             Multi-stage: node (frontend) - uv (deps) - python:3.13-slim
+├── worker-claude.Dockerfile   Multi-stage: uv (deps) - python:3.13-slim + Node.js + Claude CLI
+├── worker-copilot.Dockerfile  Multi-stage: uv (deps) - python:3.13-slim
+│                              (github-copilot-sdk wheel bundles the Copilot CLI binary
+│                              so no separate Node install)
+└── entrypoint.sh              Injects user into /etc/passwd (fixes "I have no name!")
 ```
 
-- `compose.yml` - hub + local worker-claude (laptop)
+- `compose.yml` - hub + local worker-claude + local worker-copilot (laptop)
 - `worker-claude-compose.yml` - standalone worker-claude for remote machines
-- `workers.json` - worker registry (id, label, url, secret)
+- `worker-copilot-compose.yml` - standalone worker-copilot for remote machines
+- `workers.json` - worker registry (one entry per worker):
+  ```json
+  {"id": "local-copilot", "type": "copilot", "label": "Laptop",
+   "url": "ws://worker-copilot:8003/ws", "secret": "changeme"}
+  ```
+  `type` is free-form (`claude`, `copilot`, ...); frontend renders it as a
+  per-project badge and uses it to pick the right model list for `/model`.
 
 Volume mounts use same absolute paths as host so Claude session history
 (~/.claude/projects/*.jsonl) resolves correctly inside containers.
@@ -255,6 +302,9 @@ Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 - `new_session {project_id, model?}`, `resume_session {project_id, session_id, force?, model?}`
 - `set_auto_approve {project_id, auto_approve}`
 - `set_model {model}`, `set_plan_mode {plan_mode}`
+- `list_models` (hub queries each worker on connect; worker-copilot returns
+  `CopilotClient.list_models()`, worker-claude doesn't implement so hub falls
+  back to a hardcoded type-default - see hub `_DEFAULT_MODELS_BY_TYPE`)
 - `approve_tool {tool_use_id}`, `deny_tool {tool_use_id, reason?}`
 - `user_input_response {tool_use_id, answers: string[]}` (one answer per question; legacy `{tool_use_id, answer}` still accepted)
 - `list_directory {project_id, path?}`, `read_file {project_id, path}`, `write_file {project_id, path, content}`
@@ -263,7 +313,10 @@ Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 
 **Worker - Hub - Client:**
 - `pong`, `text_delta`, `thinking`, `tool_call`, `tool_result`, `result`, `system`, `error`
-- `projects`, `sessions`, `session_history` (with has_more/oldest_uuid)
+- `projects` payload now carries `{projects, workers}` where each worker has
+  `{id, label, type, connected, models: [{id, name}]}` so the sidebar can
+  render the worker filter and `/model` autocomplete without extra round-trips
+- `sessions`, `session_history` (with has_more/oldest_uuid)
 - `session_started` (with cwd, session_id, resumed, auto_approve, is_busy)
 - `session_locked`, `lock_revoked`
 - `permission_request`, `project_updated`, `project_created`
@@ -273,6 +326,7 @@ Frontend build output (`frontend-dist/`) is volume-mounted into hub at
 - `push_notify {title, body}` (intercepted by hub - Web Push, or out-of-band via HTTP)
 - `model_changed {model}` (system subtype, shown as info banner in chat)
 - `task_event` (Monitor/TaskCreate tick events parsed from XML in UserMessage)
+- `models` (worker-copilot's reply to `list_models`; hub-internal)
 
 Hub remaps project IDs: `hub_id = worker_index * 1_000_000 + worker_project_id`
 
