@@ -356,3 +356,7 @@ bound to host-only ports, etc.
 ```bash
 cd worker-claude && uv run pytest
 ```
+
+## License
+
+This project is licensed under the [GNU Affero General Public License v3.0](LICENSE).
