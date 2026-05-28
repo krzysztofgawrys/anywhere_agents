@@ -141,6 +141,30 @@ def list_sessions(cwd: str, projects_root: Path = PROJECTS_ROOT) -> list[dict[st
     return sessions
 
 
+# Cap tool results at 20 KB in session_history responses. Large outputs
+# (e.g. multi-hundred-KB git log, file contents) would balloon the WS payload
+# to 10+ MB for a single page of 30 messages, triggering a websockets library
+# drain assertion crash. The frontend already shows "output truncated" when
+# results are huge - this just enforces it server-side so the WS survives.
+_MAX_TOOL_RESULT_SIZE = 20_000  # characters
+
+
+def _truncate_content(content: Any) -> Any:
+    """Cap tool-result content so it doesn't blow up the WS frame."""
+    if isinstance(content, str) and len(content) > _MAX_TOOL_RESULT_SIZE:
+        return content[:_MAX_TOOL_RESULT_SIZE] + f"\n\n... (truncated, {len(content)} chars total)"
+    if isinstance(content, list):
+        total = sum(len(str(c)) for c in content)
+        if total > _MAX_TOOL_RESULT_SIZE:
+            # Flatten to a single truncated string for safety
+            flat = "".join(
+                c.get("text", str(c)) if isinstance(c, dict) else str(c)
+                for c in content
+            )
+            return flat[:_MAX_TOOL_RESULT_SIZE] + f"\n\n... (truncated, {len(flat)} chars total)"
+    return content
+
+
 def _convert_block(block: Any) -> dict[str, Any] | None:
     """Convert a content block from .jsonl to ChatBlock-like dict."""
     if not isinstance(block, dict):
@@ -162,7 +186,7 @@ def _convert_block(block: Any) -> dict[str, Any] | None:
         return {
             "kind": "tool_result",
             "tool_use_id": block.get("tool_use_id", ""),
-            "content": block.get("content"),
+            "content": _truncate_content(block.get("content")),
             "is_error": bool(block.get("is_error", False)),
         }
     return None
