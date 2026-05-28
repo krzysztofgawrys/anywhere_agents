@@ -7,8 +7,20 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
-from fastapi import Body, FastAPI, Header, HTTPException, Request, WebSocket, status
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    status,
+)
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -111,6 +123,105 @@ async def internal_push(
         body.get("body", ""),
     )
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/upload")
+async def upload_proxy(
+    request: Request,
+    file: UploadFile = File(...),  # noqa: B008
+    worker_id: str = Form(...),
+    project_path: str = Form(...),
+    path: str = Form(""),
+    filename: str | None = Form(None),
+    on_conflict: str = Form("error"),
+) -> JSONResponse:
+    """Multipart file upload - CF Access auth, forwards to selected worker.
+
+    Why not WebSocket (the original implementation): WS frames are capped at
+    16 MiB by uvicorn (`ws_max_size`), and after base64 inflation the cap
+    falls to ~12 MiB of raw content. A 13 MiB file silently failed for the
+    user. HTTP multipart has no analogous frame limit. Mobile PWAs also
+    survive backgrounding better with fetch than with WS.
+
+    Auth path: same CF Access JWT as the WS endpoint, sent here as either
+    the standard header or a cookie (CF Access sets both). Fail-closed in
+    prod, dev-bypass otherwise (handled inside `verify_cf_access_token`).
+    """
+    token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get(
+        "CF_Authorization"
+    )
+    claims = await verify_cf_access_token(token)
+    if claims is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    workers = load_workers()
+    worker = next((w for w in workers if w.id == worker_id), None)
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"unknown worker {worker_id}")
+
+    # Worker URL in workers.json is the WS URL ("ws://host:port/ws"). Derive
+    # the corresponding HTTP base by swapping the scheme and stripping the
+    # WS path.
+    http_base = worker.url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
+    if http_base.endswith("/ws"):
+        http_base = http_base[: -len("/ws")]
+    upload_url = f"{http_base}/internal/upload"
+
+    # Stream the file body to the worker via httpx multipart. `file.read()`
+    # buffers in memory - acceptable for dev/single-user usage; for
+    # multi-tenant production we'd switch to chunked streaming. The user
+    # explicitly opted into "no limits" so this stays simple.
+    content = await file.read()
+    files = {
+        "file": (
+            filename or file.filename or "upload.bin",
+            content,
+            file.content_type or "application/octet-stream",
+        ),
+    }
+    data = {
+        "project_path": project_path,
+        "path": path,
+        "on_conflict": on_conflict,
+    }
+    if filename:
+        data["filename"] = filename
+
+    logger.info(
+        "upload_proxy_forward",
+        worker_id=worker_id,
+        project_path=project_path,
+        rel_dir=path,
+        filename=data.get("filename") or file.filename,
+        size=len(content),
+        email=claims.get("email"),
+    )
+
+    # No client-side timeout cap: large files over slow connections need
+    # the worker's full processing window. The hub itself runs on a single
+    # node + LAN to the worker so the only real failure modes are worker
+    # crash and the user closing the tab.
+    async with httpx.AsyncClient(timeout=None) as client:
+        try:
+            resp = await client.post(
+                upload_url,
+                files=files,
+                data=data,
+                headers={"X-Worker-Secret": worker.secret},
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("upload_proxy_worker_unreachable", worker_id=worker_id, error=str(exc))
+            raise HTTPException(
+                status_code=502, detail=f"worker {worker_id} unreachable"
+            ) from exc
+
+    # Pass the worker's status + JSON body through verbatim so the frontend
+    # can distinguish file_exists (409) from other errors.
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {"code": "bad_gateway", "message": resp.text[:200]}
+    return JSONResponse(status_code=resp.status_code, content=body)
 
 
 @app.websocket("/ws")

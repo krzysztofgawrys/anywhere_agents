@@ -72,6 +72,8 @@ services:
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
       - ${HOME}/code:${HOME}/code
+      - ${HOME}/elec:${HOME}/elec
+      - ${HOME}/insp:${HOME}/insp
 
   worker-copilot:
     build:

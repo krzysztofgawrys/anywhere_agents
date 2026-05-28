@@ -7,7 +7,6 @@ from typing import Any
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
-
 from worker_shared.db import db
 from worker_shared.files import (
     FileBrowserError,

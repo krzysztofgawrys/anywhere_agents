@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMessage, DirectoryEntry } from "../types";
 import { useFilesStore } from "../stores/files";
+import { useUploadsStore, type UploadItem } from "../stores/uploads";
 
 type Props = {
   send: (msg: ClientMessage) => boolean;
@@ -23,6 +24,20 @@ export function FileBrowser({ send }: Props) {
   const cancelEdit = useFilesStore((s) => s.cancelEdit);
   const setEditContent = useFilesStore((s) => s.setEditContent);
   const beginSave = useFilesStore((s) => s.beginSave);
+
+  // Uploads pipeline is global (see stores/uploads.ts + UploadOverlay). We
+  // only need to enqueue here and observe the tick so the browser re-lists
+  // its directory after each successful upload.
+  const enqueueUploads = useUploadsStore((s) => s.enqueue);
+  const uploadedTick = useUploadsStore((s) => s.uploadedTick);
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Counter for the drag overlay: dragenter/dragleave fire for every child
+  // element on the way through, so a boolean flicks on/off. A depth counter
+  // (incremented on enter, decremented on leave) stays stable across the
+  // drag.
+  const dragDepthRef = useRef(0);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // First-open: ask the server for the project root.
   // Guard on `directory || file`, NOT on `loading` - open() leaves loading=false
@@ -62,6 +77,95 @@ export function FileBrowser({ send }: Props) {
       type: "write_file",
       payload: { project_id: project.id, path: file.path, content: editContent },
     });
+  };
+
+  // ── Uploads ──────────────────────────────────────────────────────────────
+  // Enqueue selected files into the GLOBAL uploads store. The pump
+  // (App-level useUploadPump) drives the actual HTTP requests so it
+  // continues after the browser is closed.
+  //
+  // We capture project.id / workerId / path AT ENQUEUE TIME via closure -
+  // not at upload time - so navigating to a different directory or
+  // closing the browser does not redirect an in-flight upload.
+  const addFiles = useCallback(
+    (files: FileList | File[]) => {
+      if (!project) return;
+      const list = Array.from(files);
+      if (list.length === 0) return;
+      // Without worker_id the hub can't route the upload. This is only
+      // missing for ProjectRefs constructed before the workerId field was
+      // added - real flows from App.tsx always include it.
+      if (!project.workerId) {
+        console.warn("FileBrowser: project.workerId missing; upload not enqueued");
+        return;
+      }
+      const dirPath = directory?.path ?? "";
+      const items: UploadItem[] = list.map((f) => ({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${f.name}`,
+        workerId: project.workerId!,
+        projectPath: project.path,
+        dirPath,
+        filename: f.name,
+        file: f,
+        sizeBytes: f.size,
+      }));
+      enqueueUploads(items);
+    },
+    [project, directory?.path, enqueueUploads],
+  );
+
+  // Refresh the listing after each successful upload so the file shows up
+  // without manual reload. `uploadedTick` increments globally; we only act
+  // when this browser is open AND positioned in the directory the upload
+  // landed in (other directories' listings are stale already, and that's
+  // fine - they'll refresh when revisited).
+  const lastTickRef = useRef(uploadedTick);
+  useEffect(() => {
+    if (uploadedTick === lastTickRef.current) return;
+    lastTickRef.current = uploadedTick;
+    if (!project) return;
+    if (file) return; // Viewing a file, not the listing - don't disturb.
+    send({
+      type: "list_directory",
+      payload: { project_id: project.id, path: directory?.path ?? "" },
+    });
+  }, [uploadedTick, project, file, directory?.path, send]);
+
+  const onPickFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      addFiles(e.target.files);
+      // Reset so re-selecting the SAME file re-fires onChange.
+      e.target.value = "";
+    }
+  };
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (file) return;
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (file) return;
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (file) return;
+    e.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  };
+  const onDrop = (e: React.DragEvent) => {
+    if (file) return;
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+    if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      addFiles(e.dataTransfer.files);
+    }
   };
 
   if (!project) return null;
@@ -153,6 +257,16 @@ export function FileBrowser({ send }: Props) {
               </button>
             </>
           )}
+          {!file && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="text-xs text-gray-300 hover:text-white px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
+              title="Upload files into this directory"
+            >
+              Upload
+            </button>
+          )}
           <button
             type="button"
             onClick={close}
@@ -162,8 +276,21 @@ export function FileBrowser({ send }: Props) {
           </button>
         </div>
       </header>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        onChange={onPickFiles}
+        className="hidden"
+      />
 
-      <div className="flex-1 overflow-y-auto">
+      <div
+        className="relative flex-1 overflow-y-auto"
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
         {error && (
           <div className="m-3 p-3 rounded bg-red-950/40 border border-red-800 text-sm text-red-300">
             {error}
@@ -196,7 +323,19 @@ export function FileBrowser({ send }: Props) {
             saving={saving}
           />
         )}
+
+        {/* Drag overlay - only over the listing area, only when not viewing a
+            single file. Pointer-events allow drop while making clear the
+            target is the whole area. */}
+        {isDragOver && !file && (
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-blue-950/50 border-2 border-dashed border-blue-400 rounded-sm">
+            <div className="text-blue-100 text-base md:text-lg font-medium px-4 py-3 rounded bg-blue-900/70 shadow">
+              Drop files to upload to <span className="font-mono">{directory?.path || project.name}</span>
+            </div>
+          </div>
+        )}
       </div>
+
     </div>
   );
 }

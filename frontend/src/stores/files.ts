@@ -1,7 +1,15 @@
 import { create } from "zustand";
 import type { DirectoryEntry, ServerMessage } from "../types";
 
-export type ProjectRef = { id: number; name: string; path: string };
+export type ProjectRef = {
+  id: number;
+  name: string;
+  path: string;
+  /** Worker the project lives on - needed by the global uploads pipeline so
+   *  it can target the right hub→worker route. May be undefined for older
+   *  callers that haven't been updated to pass it. */
+  workerId?: string;
+};
 
 export type DirectoryView = {
   path: string;
@@ -16,6 +24,10 @@ export type FileView = {
   encoding: "utf-8" | "base64" | null;
   content: string | null;
 };
+
+// Upload state lives in stores/uploads.ts (global) so it survives closing
+// the file browser. This store is just for the browser's directory/file
+// viewing + editing state.
 
 type FilesState = {
   /** Non-null when the browser modal is open. */
@@ -170,8 +182,10 @@ export const useFilesStore = create<FilesState>((set, get) => ({
       return;
     }
 
-    if (msg.type === "error" && (state.loading || state.saving)) {
-      set({ error: msg.payload.message, loading: false, saving: false });
+    if (msg.type === "error") {
+      if (state.loading || state.saving) {
+        set({ error: msg.payload.message, loading: false, saving: false });
+      }
       return;
     }
   },

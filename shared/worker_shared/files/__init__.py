@@ -6,6 +6,7 @@ from worker_shared.files.browser import (
     list_absolute_directory,
     list_directory,
     read_file,
+    upload_file,
     write_file,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "list_absolute_directory",
     "list_directory",
     "read_file",
+    "upload_file",
     "write_file",
 ]

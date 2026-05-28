@@ -10,7 +10,9 @@ import { UserInputPrompt } from "./components/UserInputPrompt";
 import { Sidebar } from "./components/Sidebar";
 import { StreamingStatus } from "./components/StreamingStatus";
 import { TypingIndicator } from "./components/TypingIndicator";
+import { UploadOverlay } from "./components/UploadOverlay";
 import { usePushNotifications } from "./hooks/usePushNotifications";
+import { useUploadPump } from "./hooks/useUploadPump";
 import { useVisibilityNotify } from "./hooks/useVisibilityNotify";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -114,6 +116,10 @@ function App() {
 
   const notifyIfHidden = useVisibilityNotify();
   const { requestSubscription, hasPushSubscription } = usePushNotifications();
+
+  // Drives the global uploads queue. Mounted here (App-level) so uploads
+  // continue when the user closes FileBrowser, navigates the sidebar, etc.
+  useUploadPump();
 
   const streaming = status === "streaming";
   useWakeLock(streaming);
@@ -289,7 +295,12 @@ function App() {
 
   const onBrowseFiles = useCallback(
     (project: Project) => {
-      openFiles({ id: project.id, name: project.name, path: project.path });
+      openFiles({
+        id: project.id,
+        name: project.name,
+        path: project.path,
+        workerId: project.worker_id,
+      });
     },
     [openFiles]
   );
@@ -916,6 +927,11 @@ function App() {
       )}
 
       <FileBrowser send={send} />
+
+      {/* Global upload progress bar + conflict modal + completion toast.
+          Rendered here (NOT inside FileBrowser) so it survives across
+          closing the file browser and any other navigation. */}
+      <UploadOverlay />
 
       <NewProjectBrowser
         send={send}

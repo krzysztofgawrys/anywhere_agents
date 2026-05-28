@@ -252,6 +252,120 @@ def read_file(project_path: str, rel_path: str) -> dict[str, Any]:
     }
 
 
+def upload_file(
+    project_path: str,
+    rel_dir: str,
+    filename: str,
+    content: bytes,
+    on_conflict: str = "error",
+) -> dict[str, Any]:
+    """Upload a binary file into a directory inside the project.
+
+    Args:
+        project_path: project root (absolute, host filesystem).
+        rel_dir: directory relative to project root (e.g. "src/data" or "").
+        filename: basename to write; must not contain slashes or backslashes.
+        content: raw file bytes (no encoding - decoded by the caller if needed).
+        on_conflict: "error" (raise FileBrowserError with code "file_exists"),
+            "overwrite" (replace existing), or "rename" (pick a unique name by
+            appending " (1)", " (2)", ... before the extension).
+
+    Returns: { path, size, renamed }
+        - path: final relative path of the written file (post-rename if any)
+        - renamed: True iff the on-disk basename differs from the input
+
+    Intentionally does NOT enforce MAX_FILE_BYTES - upload is for arbitrary
+    binary assets and the user opted into dev-mode "no limits". With HTTP
+    multipart there is no practical per-request limit beyond available RAM
+    on the worker (the file is read fully into memory before write).
+    """
+    if not isinstance(content, bytes | bytearray):
+        raise FileBrowserError("bad_request", "content must be bytes")
+    if not filename or "/" in filename or "\\" in filename:
+        raise FileBrowserError("bad_request", "filename must be a basename")
+    if filename in (".", ".."):
+        raise FileBrowserError("bad_request", "invalid filename")
+    if on_conflict not in ("error", "overwrite", "rename"):
+        raise FileBrowserError(
+            "bad_request",
+            f"on_conflict must be error|overwrite|rename, got {on_conflict!r}",
+        )
+
+    raw = bytes(content)
+
+    root = Path(project_path)
+    if not root.exists() or not root.is_dir():
+        raise FileBrowserError("not_found", "Project root not found")
+
+    # Resolve the target directory (sandboxed, ".." rejected upstream).
+    target_dir = _resolve_within(root, rel_dir or "")
+    # Allow creating the directory on the fly if missing - matches the UX
+    # of dropping files into a folder you just navigated to.
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError as exc:
+        raise FileBrowserError("forbidden", "Permission denied") from exc
+    except OSError as exc:
+        raise FileBrowserError("io_error", str(exc)) from exc
+    if not target_dir.is_dir():
+        raise FileBrowserError("not_directory", "Target is not a directory")
+
+    final_name = filename
+    target = target_dir / final_name
+    renamed = False
+
+    if target.exists() or target.is_symlink():
+        if on_conflict == "error":
+            raise FileBrowserError(
+                "file_exists",
+                f"File already exists: {filename}",
+            )
+        if on_conflict == "rename":
+            final_name = _unique_name(target_dir, filename)
+            target = target_dir / final_name
+            renamed = True
+        # overwrite: fall through; refuse to overwrite through a symlink
+        elif target.is_symlink():
+            raise FileBrowserError("forbidden", "Cannot overwrite a symlink")
+
+    try:
+        tmp = target.with_suffix(target.suffix + ".tmp-upload")
+        tmp.write_bytes(raw)
+        tmp.replace(target)
+    except PermissionError as exc:
+        raise FileBrowserError("forbidden", "Permission denied") from exc
+    except OSError as exc:
+        raise FileBrowserError("io_error", str(exc)) from exc
+
+    clean_dir = (rel_dir or "").strip("/")
+    rel_out = f"{clean_dir}/{final_name}" if clean_dir else final_name
+    return {"path": rel_out, "size": len(raw), "renamed": renamed}
+
+
+def _unique_name(directory: Path, filename: str) -> str:
+    """Return a basename that does not yet exist in `directory`.
+
+    Strategy: split on the LAST dot to preserve compound extensions reasonably
+    (foo.tar.gz -> foo.tar (1).gz is wrong but rare; we accept that trade-off
+    for simplicity). Increments " (N)" until a free slot is found.
+    """
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        stem, ext = filename, ""
+        suffix_ext = ""
+    else:
+        suffix_ext = f".{ext}"
+    n = 1
+    while True:
+        candidate = f"{stem} ({n}){suffix_ext}"
+        if not (directory / candidate).exists():
+            return candidate
+        n += 1
+        if n > 9999:
+            # Pathological case - give up and let the caller see io_error.
+            raise FileBrowserError("io_error", "Too many name collisions")
+
+
 def write_file(project_path: str, rel_path: str, content: str) -> dict[str, Any]:
     """Write UTF-8 text to a file inside the project, sandbox-checked.
 
