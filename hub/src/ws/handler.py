@@ -496,6 +496,14 @@ async def handle_websocket(
             # by the worker to the browser via the default forward path).
             if msg_type in ("auth_provided", "auth_cancel"):
                 target = payload.get("worker_id")
+                request_id = payload.get("request_id")
+                logger.info(
+                    "auth_route_received",
+                    msg_type=msg_type,
+                    target=target,
+                    request_id=request_id,
+                    target_connected=isinstance(target, str) and target in worker_conns,
+                )
                 if not isinstance(target, str) or target not in worker_conns:
                     await websocket.send_json({
                         "type": "error",

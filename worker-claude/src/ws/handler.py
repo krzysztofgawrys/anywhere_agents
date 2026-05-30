@@ -158,6 +158,11 @@ async def _route(
         from worker_shared.sdk.bootstrap import resolve_auth
         request_id = payload.get("request_id")
         credentials = payload.get("credentials") or {}
+        logger.info(
+            "auth_provided_received",
+            request_id=request_id,
+            has_credentials=isinstance(credentials, dict) and bool(credentials),
+        )
         if isinstance(request_id, str) and isinstance(credentials, dict):
             if not resolve_auth(request_id, credentials):
                 await _send_error(

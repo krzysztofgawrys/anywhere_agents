@@ -159,6 +159,9 @@ class Session:
         # True while the session is parked in the registry (WS disconnected).
         # Set by rebind(parked=True), cleared by rebind(parked=False).
         self._is_parked = False
+        # Background task for the bootstrap-auth-then-init flow. None
+        # when credentials were already on disk (synchronous start path).
+        self._bootstrap_task: asyncio.Task[None] | None = None
 
     @property
     def session_id(self) -> str:
@@ -176,18 +179,44 @@ class Session:
         if self._client is not None:
             return
 
-        # Make sure the SDK has something to authenticate with. Order:
-        #   1. ANTHROPIC_API_KEY already in env  -> SDK reads it directly.
-        #   2. Persisted bootstrap credentials   -> hydrate env var.
-        #   3. ~/.claude/.credentials.json       -> SDK reads it directly.
-        # If none are present, kick off the bootstrap auth flow: emit an
-        # `auth_needed` WS message, block until the user supplies an API
-        # key through the hub's modal, persist it, then proceed.
-        if not await self._ensure_credentials():
-            # Bootstrap failed (timeout / cancel / error). _ensure_credentials
-            # already surfaced an error to the WS; nothing left to do.
+        # Fast path: credentials already on disk (or in env). Init the
+        # SDK synchronously so the caller's await completes only after
+        # session_started has been emitted - same contract as before
+        # bootstrap auth was a thing.
+        if self._has_credentials():
+            await self._sdk_init()
             return
 
+        # Slow path: no credentials. Kick off the bootstrap flow in the
+        # background and return immediately. Critical: if we awaited the
+        # bootstrap future here, the worker's WS handle loop would block
+        # on session.start() and NEVER read the incoming auth_provided
+        # message that's supposed to resolve the future - classic
+        # deadlock. Spawning lets the main loop keep dispatching WS
+        # messages while bootstrap waits on the user.
+        self._bootstrap_task = asyncio.create_task(self._bootstrap_and_init())
+
+    async def _bootstrap_and_init(self) -> None:
+        """Background task: run bootstrap auth, then init the SDK."""
+        try:
+            if not await self._ensure_credentials():
+                return
+            await self._sdk_init()
+        except Exception as e:
+            logger.error("bootstrap_init_failed", error=str(e), exc_info=True)
+            try:
+                await self._send({
+                    "type": "error",
+                    "payload": {
+                        "code": "bootstrap_init_failed",
+                        "message": str(e),
+                    },
+                })
+            except Exception:
+                pass
+
+    async def _sdk_init(self) -> None:
+        """Actual ClaudeSDKClient construction + initial session_started emit."""
         # We always use 'default' permission mode and rely on can_use_tool to
         # gate or auto-approve. This gives us per-prompt override capability.
         # include_partial_messages=True turns on real token-by-token streaming:
@@ -227,6 +256,22 @@ class Session:
         # prompt is sent.
         self._stream_task = asyncio.create_task(self._consume_stream())
 
+    def _has_credentials(self) -> bool:
+        """True when Claude SDK has something to authenticate with."""
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return True
+        if (Path.home() / ".claude" / ".credentials.json").exists():
+            return True
+        stored = load_credentials(_AGENT_TYPE)
+        if stored is not None:
+            data = stored.get("data") or {}
+            api_key = data.get("api_key") if isinstance(data, dict) else None
+            if isinstance(api_key, str) and api_key:
+                # Hydrate env so the SDK picks it up at construction.
+                os.environ["ANTHROPIC_API_KEY"] = api_key
+                return True
+        return False
+
     async def stop(self) -> None:
         # Cancel all live tail tasks first so they don't try to send into a
         # disconnected WS after the SDK shuts down.
@@ -238,6 +283,14 @@ class Session:
             except (asyncio.CancelledError, Exception):
                 pass
         self._task_tails.clear()
+
+        if self._bootstrap_task and not self._bootstrap_task.done():
+            self._bootstrap_task.cancel()
+            try:
+                await self._bootstrap_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._bootstrap_task = None
 
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()

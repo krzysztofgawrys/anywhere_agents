@@ -11,12 +11,13 @@
  * Cancel emits `auth_cancel` so the worker stops waiting.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthStore } from "../stores/auth";
 import type { ClientMessage } from "../types";
 
 interface Props {
-  send: (msg: ClientMessage) => void;
+  /** WS sender - returns false when the socket is not OPEN. */
+  send: (msg: ClientMessage) => boolean;
 }
 
 export function AuthBootstrapModal({ send }: Props) {
@@ -26,6 +27,17 @@ export function AuthBootstrapModal({ send }: Props) {
   const dismiss = useAuthStore((s) => s.dismiss);
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  // Reset transient submit state whenever the worker emits a new status
+  // (e.g. server flipped to "polling" or "failed"). Done before any
+  // early returns so hook order stays stable across renders.
+  const currentState = pending[modalFor ?? ""]?.state;
+  useEffect(() => {
+    if (currentState && currentState !== "pending") {
+      setSubmitting(false);
+    }
+  }, [currentState]);
 
   if (!modalFor) return null;
   const entry = pending[modalFor];
@@ -45,8 +57,9 @@ export function AuthBootstrapModal({ send }: Props) {
     if (entry.flow !== "api_key") return;
     const trimmed = apiKey.trim();
     if (!trimmed) return;
+    setSendError(null);
     setSubmitting(true);
-    send({
+    const ok = send({
       type: "auth_provided",
       payload: {
         worker_id: entry.worker_id,
@@ -54,9 +67,20 @@ export function AuthBootstrapModal({ send }: Props) {
         credentials: { api_key: trimmed },
       },
     });
-    // We keep the modal open; auth_status will close it on completed.
-    // If the worker rejects we'll see state=failed and the entry stays
-    // visible with the error message.
+    if (!ok) {
+      // WS isn't OPEN right now (mobile PWA reconnect cycle, network
+      // blip, etc.). Tell the user; they can hit Save again once the
+      // socket comes back. Without this they'd stare at "Sending..."
+      // forever because the message never left the browser.
+      setSubmitting(false);
+      setSendError(
+        "Connection to hub is reconnecting. Wait a moment and try again."
+      );
+      return;
+    }
+    // We keep the modal open and `submitting` true; auth_status from
+    // the worker will close it on completed, or surface state=failed
+    // with an error message in the existing entry.error path.
   };
 
   return (
@@ -100,6 +124,9 @@ export function AuthBootstrapModal({ send }: Props) {
               </label>
               {entry.state === "failed" && entry.error && (
                 <div className="text-xs text-red-400">{entry.error}</div>
+              )}
+              {sendError && (
+                <div className="text-xs text-red-400">{sendError}</div>
               )}
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button
