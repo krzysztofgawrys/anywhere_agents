@@ -1,0 +1,23 @@
+[
+  {
+    "id": "local",
+    "type": "claude",
+    "label": "Laptop",
+    "url": "ws://worker-claude:8002/ws",
+    "secret": "changeme"
+  },
+  {
+    "id": "remote-copilot",
+    "type": "copilot",
+    "label": "Remote copilot (reverse)",
+    "mode": "inbound",
+    "secret": "changeme"
+  },
+  {
+    "id": "remote-claude",
+    "type": "claude",
+    "label": "Remote claude (reverse)",
+    "mode": "inbound",
+    "secret": "changeme"
+  }
+]
