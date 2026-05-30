@@ -223,6 +223,13 @@ class HubDialer:
             ping_interval=20,
             ping_timeout=60,
             close_timeout=5,
+            # Default is 1 MiB (websockets library), which silently drops
+            # any larger frame with close code 1009. Hub sends upload
+            # commands containing base64-encoded files over the data
+            # channel, so we need to match (or exceed) uvicorn's
+            # ws_max_size on the hub. 32 MiB leaves headroom over the
+            # 12 MiB raw upload limit + base64 + JSON envelope.
+            max_size=32 * 1024 * 1024,
         ) as ws:
             await ws.send(json.dumps({
                 "type": "register",
@@ -282,6 +289,9 @@ class HubDialer:
                 ping_interval=20,
                 ping_timeout=60,
                 close_timeout=5,
+                # See max_size note in _run_once. Data channel carries
+                # the actual upload payloads so this is the critical one.
+                max_size=32 * 1024 * 1024,
             ) as ws:
                 adapter = _ClientWSAdapter(ws)
                 # Reuse session_id as the connection_id for log correlation;

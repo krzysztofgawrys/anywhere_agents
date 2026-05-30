@@ -175,6 +175,11 @@ class WorkerConnection:
             ping_interval=20,
             ping_timeout=60,
             close_timeout=5,
+            # Default in websockets library is 1 MiB; any larger frame
+            # silently closes the connection with code 1009. Match (or
+            # exceed) uvicorn's ws_max_size on the worker side so large
+            # WS messages in either direction survive.
+            max_size=32 * 1024 * 1024,
         )
         self._transport = _OutboundTransport(ws)
         self._reader_task = asyncio.create_task(self._read_loop())
