@@ -240,6 +240,67 @@ The `auth_needed` / `auth_status` events ARE broadcast (so a user
 with multiple browser tabs sees the prompt everywhere); only the
 `auth_provided` payload travels through the WS and is unicast.
 
+## When NOT to use bootstrap (env-var bypass)
+
+The bootstrap flow is the right answer for **interactive** deployments:
+a human runs `docker run`, the user opens the hub in a browser, pastes
+a key in the modal. For **headless / CI / orchestrated** deployments
+(GitHub Actions, Kubernetes with secrets, Vault, AWS Secrets Manager)
+it's often simpler to just inject the agent's API key as an env var
+at container start and skip the whole modal dance.
+
+Each worker checks for its agent-specific env var **before** the
+bootstrap flow. If the var is set, the worker:
+
+- never emits `auth_needed`
+- never shows the "needs auth" banner in the sidebar
+- boots straight into a working session on the first prompt
+
+Mapping:
+
+| Worker | Bypass env var | SDK behavior |
+| --- | --- | --- |
+| `worker-claude` | `ANTHROPIC_API_KEY` | Claude SDK reads it directly; subscription OAuth is skipped (pay-as-you-go billing). |
+| `worker-codex` | `OPENAI_API_KEY` | Codex SDK reads it directly; ChatGPT subscription auth is skipped. |
+| `worker-copilot` | `COPILOT_GITHUB_TOKEN` | A GitHub PAT with Copilot scope; CLI subprocess uses it instead of `copilot` login state. |
+
+Example - no-bootstrap, no host-side CLI install, single `docker run`:
+
+```bash
+docker run -d \
+  -e WORKER_MODE=inbound \
+  -e HUB_PUBLIC_URL=https://hub.example.com \
+  -e WORKER_ID=remote-claude \
+  -e WORKER_SECRET=xxx \
+  -e CF_ACCESS_CLIENT_ID=yyy \
+  -e CF_ACCESS_CLIENT_SECRET=zzz \
+  -e ANTHROPIC_API_KEY=sk-ant-...        # ← bootstrap bypassed
+  -v worker-claude-data:/home/app \
+  ghcr.io/.../anywhere-agents-worker-claude:latest
+```
+
+Compose template (Kubernetes-style secret injection):
+
+```yaml
+services:
+  worker-claude:
+    image: ghcr.io/.../anywhere-agents-worker-claude:latest
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}   # from .env or k8s secret
+      # ... rest of WORKER_MODE / WORKER_ID / etc.
+```
+
+When this env var is unset OR empty, the bootstrap flow takes over -
+so the same container image works for both interactive ("I'll click
+through the browser") and automated ("inject my Vault secret")
+deployments without rebuilding.
+
+Both paths persist credentials the same way - bootstrap saves to
+`~/.claude-web/credentials/<agent>.json` so the worker survives a
+restart without re-prompting; env-var-bypass relies on the env var
+being re-injected at every container start (which is how secret
+managers normally work).
+
 ## Extending to other flows
 
 Adding `flow=device_code` for worker-codex:

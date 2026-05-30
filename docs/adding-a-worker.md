@@ -448,6 +448,31 @@ Then in that copy, change:
 - Any SDK-specific startup or shutdown hook (worker-copilot's
   `stop_client()` for example).
 
+### 10b. (Optional) env-var-bypass for headless deployments
+
+For CI / Kubernetes / Vault deployments, expose an agent-specific
+API key env var that lets users skip both the host-side login and
+the bootstrap browser modal. Pattern:
+
+```python
+# in your worker's sdk/session.py or sdk/client.py
+def my_has_credentials() -> bool:
+    if os.environ.get("MY_AGENT_API_KEY"):
+        return True
+    # ... fall through to persisted bootstrap blob, host login, etc.
+```
+
+```yaml
+# worker-<name>-compose.yml
+environment:
+  - MY_AGENT_API_KEY=${MY_AGENT_API_KEY:-}
+```
+
+Document the env var name in `docs/bootstrap-auth-protocol.md`'s
+"When NOT to use bootstrap" table. Same container image then works
+for interactive (modal flow) AND headless (just-inject-env) deployments
+without rebuilding.
+
 ### 11. Dockerfile
 
 Mirror `docker/worker-copilot.Dockerfile`. Key per-worker decisions:
