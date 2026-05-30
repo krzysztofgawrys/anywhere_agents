@@ -107,14 +107,24 @@ class PermissionBroker:
             self._pending.pop(tool_use_id, None)
 
     def resolve(
-        self,
-        tool_use_id: str,
-        result: PermissionResultAllow | PermissionResultDeny,
+        self, tool_use_id: str, *, allow: bool, reason: str = ""
     ) -> bool:
-        """Resolve a pending request. Returns True if it matched."""
+        """Resolve a pending request. Returns True if it matched.
+
+        Uniform (allow, reason) signature shared with other workers
+        (see worker_shared.sdk.base.PermissionsProtocol). The
+        conversion to claude_agent_sdk's PermissionResult types
+        happens here so the shared SessionManager doesn't need to
+        import the SDK.
+        """
         fut = self._pending.get(tool_use_id)
         if fut is None or fut.done():
             return False
+        result: PermissionResultAllow | PermissionResultDeny = (
+            PermissionResultAllow()
+            if allow
+            else PermissionResultDeny(message=reason or "Denied by user")
+        )
         fut.set_result(result)
         return True
 

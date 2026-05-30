@@ -105,8 +105,18 @@ class PermissionBroker:
         finally:
             self._pending.pop(tool_use_id, None)
 
-    def resolve(self, tool_use_id: str, *, allow: bool) -> bool:
-        """Resolve a pending permission. Returns True if it matched."""
+    def resolve(
+        self, tool_use_id: str, *, allow: bool, reason: str = ""
+    ) -> bool:
+        """Resolve a pending permission. Returns True if it matched.
+
+        Uniform (allow, reason) signature shared with other workers
+        (see worker_shared.sdk.base.PermissionsProtocol). `reason` is
+        currently unused on this side - the github-copilot-sdk's
+        PermissionRequestResult doesn't have a free-text deny message
+        field. Kept for protocol parity.
+        """
+        del reason  # unused on copilot side
         fut = self._pending.get(tool_use_id)
         if fut is None or fut.done():
             return False

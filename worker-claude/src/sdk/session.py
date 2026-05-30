@@ -10,7 +10,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-import httpx
 import structlog
 from claude_agent_sdk import (
     AssistantMessage,
@@ -28,6 +27,8 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+
+from worker_shared.sdk.push_notify import emit_push_notify
 
 from src.sdk.permissions import PermissionBroker, _fallback_id
 
@@ -785,32 +786,11 @@ class Session:
         # AssistantMessage carries the fully assembled tool input.
 
     async def _emit_push_notify(self, *, title: str, body: str) -> None:
-        """Deliver a push notification to the hub out-of-band over HTTP.
+        """Delegate to the shared push-notify helper.
 
-        Independent of the client WS - works whether the session is parked
-        or actively connected. Best-effort: swallow all errors and just log
-        them, since failing to push must never disrupt the agent loop.
+        Kept as a method for the existing call sites in this file.
         """
-        hub_url = os.environ.get("HUB_URL", "").rstrip("/")
-        secret = os.environ.get("WORKER_SECRET", "")
-        if not hub_url or not secret:
-            logger.debug("push_notify_skipped_no_hub_config")
-            return
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{hub_url}/api/internal/push",
-                    json={"title": title, "body": body},
-                    headers={"X-Worker-Secret": secret},
-                )
-                if resp.status_code != 200:
-                    logger.warning(
-                        "push_notify_http_non_200",
-                        status=resp.status_code,
-                        body=resp.text[:200],
-                    )
-        except Exception as e:
-            logger.warning("push_notify_http_failed", error=str(e))
+        await emit_push_notify(title=title, body=body)
 
 
 def _iter_blocks(content: Any) -> AsyncIterator[Any] | list[Any]:

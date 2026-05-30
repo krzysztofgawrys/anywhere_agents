@@ -34,7 +34,6 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-import httpx
 import structlog
 from copilot import CopilotSession
 from copilot.generated.session_events import (
@@ -51,7 +50,7 @@ from copilot.generated.session_events import (
     ToolExecutionStartData,
 )
 from copilot.session import PermissionRequest, PermissionRequestResult
-import os as _os
+from worker_shared.sdk.push_notify import emit_push_notify
 
 from src.sdk.client import get_client
 from src.sdk.permissions import PermissionBroker
@@ -491,23 +490,5 @@ class Session:
         # with worker-claude's Monitor/TaskCreate handling.
 
     async def _emit_push_notify(self, *, title: str, body: str) -> None:
-        """Out-of-band push notification, identical to worker-claude."""
-        hub_url = _os.environ.get("HUB_URL", "").rstrip("/")
-        secret = _os.environ.get("WORKER_SECRET", "")
-        if not hub_url or not secret:
-            return
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{hub_url}/api/internal/push",
-                    json={"title": title, "body": body},
-                    headers={"X-Worker-Secret": secret},
-                )
-                if resp.status_code != 200:
-                    logger.warning(
-                        "push_notify_http_non_200",
-                        status=resp.status_code,
-                        body=resp.text[:200],
-                    )
-        except Exception as e:
-            logger.warning("push_notify_http_failed", error=str(e))
+        """Delegate to the shared push-notify helper."""
+        await emit_push_notify(title=title, body=body)
