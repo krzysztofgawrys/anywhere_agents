@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClientMessage, Project, SessionSummary } from "../types";
 import { useProjectsStore } from "../stores/projects";
+import { AuthBootstrapBanner } from "./AuthBootstrapBanner";
 
 type Props = {
   send: (msg: ClientMessage) => boolean;
@@ -269,6 +270,7 @@ export function Sidebar({
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
+          <AuthBootstrapBanner />
           {loading && (
             <div className="flex items-center gap-2.5 px-3 py-6 justify-center">
               <span className="flex items-center gap-1 text-gray-400">

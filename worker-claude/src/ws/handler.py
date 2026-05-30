@@ -149,6 +149,35 @@ async def _route(
         await send({"type": "pong", "payload": {}})
         return terminal
 
+    # ── Bootstrap auth: resolve pending request_credentials() ─────────
+    # The hub forwards `auth_provided` from the browser after the user
+    # submitted the modal form. Match request_id to a pending future in
+    # worker_shared.sdk.bootstrap so the blocked session.start() can
+    # continue. `auth_cancel` lets the user dismiss the prompt.
+    if msg_type == "auth_provided":
+        from worker_shared.sdk.bootstrap import resolve_auth
+        request_id = payload.get("request_id")
+        credentials = payload.get("credentials") or {}
+        if isinstance(request_id, str) and isinstance(credentials, dict):
+            if not resolve_auth(request_id, credentials):
+                await _send_error(
+                    send,
+                    "no_pending_auth",
+                    f"No pending bootstrap for request_id={request_id}",
+                )
+        else:
+            await _send_error(
+                send, "bad_request", "auth_provided requires request_id and credentials"
+            )
+        return terminal
+
+    if msg_type == "auth_cancel":
+        from worker_shared.sdk.bootstrap import cancel_auth
+        request_id = payload.get("request_id")
+        if isinstance(request_id, str):
+            cancel_auth(request_id, "User cancelled the bootstrap")
+        return terminal
+
     if msg_type == "list_projects":
         projects = await list_projects(db)
         await send({"type": "projects", "payload": {"projects": projects}})

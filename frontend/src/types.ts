@@ -141,7 +141,21 @@ export type ClientMessage =
   | { type: "terminal_open"; payload: { project_id: number; cols?: number; rows?: number } }
   | { type: "terminal_input"; payload: { data: string } }
   | { type: "terminal_resize"; payload: { cols: number; rows: number } }
-  | { type: "terminal_close"; payload: Record<string, never> };
+  | { type: "terminal_close"; payload: Record<string, never> }
+  | {
+      // Bootstrap auth: browser supplies credentials to a worker that
+      // asked for them via auth_needed. See docs/bootstrap-auth-protocol.md.
+      type: "auth_provided";
+      payload: {
+        worker_id: string;
+        request_id: string;
+        credentials: Record<string, string>;
+      };
+    }
+  | {
+      type: "auth_cancel";
+      payload: { worker_id: string; request_id: string };
+    };
 
 export type DirectoryEntry = {
   name: string;
@@ -276,6 +290,31 @@ export type ServerMessage =
       };
     }
   | { type: "error"; payload: { code: string; message: string } }
+  | {
+      // Bootstrap auth: worker tells the user it needs credentials.
+      type: "auth_needed";
+      payload: {
+        worker_id: string;
+        agent_type: string;
+        flow: "api_key" | "device_code";
+        request_id: string;
+        instructions: string;
+        expires_at: number;
+        // device_code flow only
+        device_code?: string;
+        verification_url?: string;
+        verification_url_complete?: string;
+      };
+    }
+  | {
+      type: "auth_status";
+      payload: {
+        worker_id: string;
+        request_id: string;
+        state: "polling" | "completed" | "failed" | "expired";
+        error?: string;
+      };
+    }
   | {
       type: "fs_directory";
       payload: {

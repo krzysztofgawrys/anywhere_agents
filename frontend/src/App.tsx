@@ -7,6 +7,7 @@ import { NewProjectBrowser } from "./components/NewProjectBrowser";
 import { PermissionPrompt } from "./components/PermissionPrompt";
 import { Terminal } from "./components/Terminal";
 import { UserInputPrompt } from "./components/UserInputPrompt";
+import { AuthBootstrapModal } from "./components/AuthBootstrapModal";
 import { Sidebar } from "./components/Sidebar";
 import { StreamingStatus } from "./components/StreamingStatus";
 import { TypingIndicator } from "./components/TypingIndicator";
@@ -16,6 +17,7 @@ import { useUploadPump } from "./hooks/useUploadPump";
 import { useVisibilityNotify } from "./hooks/useVisibilityNotify";
 import { useWakeLock } from "./hooks/useWakeLock";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { useAuthStore } from "./stores/auth";
 import { useChatStore } from "./stores/chat";
 import { useFilesStore } from "./stores/files";
 import { useProjectsStore } from "./stores/projects";
@@ -57,6 +59,7 @@ function App() {
   const workersList = useProjectsStore((s) => s.workers);
   const handleFilesMsg = useFilesStore((s) => s.handleServerMessage);
   const openFiles = useFilesStore((s) => s.open);
+  const handleAuthMsg = useAuthStore((s) => s.handleServerMessage);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [newProjectWorkerId, setNewProjectWorkerId] = useState<string | undefined>();
@@ -202,6 +205,11 @@ function App() {
       }
       handleProjectsMsg(msg);
       handleFilesMsg(msg);
+      handleAuthMsg(msg);
+      if (msg.type === "auth_needed" || msg.type === "auth_status") {
+        // Handled by the auth store; don't push into chat history.
+        return;
+      }
       if (msg.type === "directory" || msg.type === "file_content" || msg.type === "file_written") {
         // Already handled by the files store - don't push into chat.
         return;
@@ -283,6 +291,7 @@ function App() {
       handleChatMsg,
       handleProjectsMsg,
       handleFilesMsg,
+      handleAuthMsg,
       setHistory,
       prependHistory,
       setPendingLock,
@@ -925,6 +934,8 @@ function App() {
           onCancel={() => setPendingLock(null)}
         />
       )}
+
+      <AuthBootstrapModal send={send} />
 
       <FileBrowser send={send} />
 
