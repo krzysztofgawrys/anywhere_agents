@@ -1,8 +1,15 @@
 """Sandboxed file browser for a project's cwd.
 
 Both `list_directory` and `read_file` resolve their target path against the
-project root and refuse anything that escapes it (no symlink-to-/etc tricks,
-no `..` ladder). Hidden files are returned; the caller decides what to show.
+project root and refuse anything that escapes it, including after symlink
+resolution. Hidden files are returned; the caller decides what to show.
+
+Security note: the worker container mounts sensitive host paths
+(~/.claude, ~/.ssh, ~/.copilot, ~/.gitconfig) so an unchecked symlink
+inside a project root could leak SSH keys or auth tokens to the
+browser-facing WS. _resolve_within() refuses any path whose resolution
+lands outside the project root, treating the project root as the
+authoritative sandbox boundary regardless of what symlinks point to.
 """
 
 from __future__ import annotations
@@ -18,6 +25,19 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 # A small leading sample is enough to detect binary content via NUL bytes.
 TEXT_SAMPLE_BYTES = 8192
 
+# Absolute filesystem subtrees that the unsandboxed
+# list_absolute_directory / create_absolute_directory helpers refuse to
+# touch. Defense in depth: the project-picker UI shouldn't be able to
+# wander into kernel pseudo-fs or device nodes even if a user types
+# the path manually. Mounted user home dirs and /tmp stay reachable on
+# purpose so the picker can actually do its job.
+_FORBIDDEN_ABSOLUTE_PREFIXES: tuple[str, ...] = (
+    "/proc",
+    "/sys",
+    "/dev",
+    "/run",
+)
+
 
 class FileBrowserError(Exception):
     """Errors with a stable code that maps to the WS error envelope."""
@@ -29,19 +49,77 @@ class FileBrowserError(Exception):
 
 
 def _resolve_within(root: Path, rel_path: str) -> Path:
-    """Resolve `rel_path` against `root`.
+    """Resolve `rel_path` against `root`, refusing any escape.
 
-    Blocks ``..`` segments in the input (path traversal), but allows symlinks
-    to point outside the project root - the Docker container filesystem is
-    the real sandbox, so anything mounted is intentionally accessible.
+    Three guards stack:
+      1. `..` segments are rejected in the raw input (cheap fail before
+         hitting the filesystem).
+      2. `root` is resolved to an absolute, symlink-free path.
+      3. The candidate target is also resolved (`strict=False` so a
+         not-yet-created file resolves to its eventual location). If the
+         resolved candidate is not under the resolved root, the request
+         is refused - this catches symlinks that would otherwise point at
+         host-mounted secrets (~/.ssh, ~/.claude, ~/.gitconfig, ...).
+
+    This is the sanitizer recognized by CodeQL's "Uncontrolled data used
+    in path expression" rule; callers can trust the returned Path is
+    inside `root`.
     """
     rel = (rel_path or "").lstrip("/")
     if ".." in rel.split("/"):
         raise FileBrowserError("forbidden", "Path traversal not allowed")
-    root_resolved = root.resolve()
-    target = root_resolved / rel
-    # Resolve symlinks for the actual path we'll read
-    return target.resolve() if target.exists() else target
+    root_resolved = root.resolve(strict=False)
+    target = (root_resolved / rel).resolve(strict=False)
+    try:
+        target.relative_to(root_resolved)
+    except ValueError as exc:
+        # Target resolved (after symlink expansion) to a path outside the
+        # project root. This is the symlink-escape case described in the
+        # module docstring.
+        raise FileBrowserError(
+            "forbidden", "Path escapes project root"
+        ) from exc
+    return target
+
+
+def _assert_within(root: Path, target: Path) -> Path:
+    """Re-assert that an already-built Path stays under `root`.
+
+    `_resolve_within` is enough when callers feed it a single rel_path,
+    but `upload_file` builds the final target as `dir / basename` after
+    that initial check. The intermediate concat passes through CodeQL's
+    taint flow as another "uncontrolled path" use even though the
+    basename is validated separately. This helper closes the loop with
+    a second containment check that matches the same sanitizer pattern
+    as `_resolve_within`. Returns the resolved target.
+    """
+    root_resolved = root.resolve(strict=False)
+    target_resolved = target.resolve(strict=False)
+    try:
+        target_resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise FileBrowserError(
+            "forbidden", "Path escapes project root"
+        ) from exc
+    return target_resolved
+
+
+def _assert_safe_absolute(abs_path: Path) -> None:
+    """Refuse absolute paths into kernel pseudo-filesystems or device nodes.
+
+    Used by the new-project browser endpoints, which are intentionally
+    *not* sandboxed to a project root (the user is picking one). We still
+    don't want to expose /proc/<pid>/environ, /sys/kernel/* etc. via the
+    listing/creating helpers. The resolved path is compared against a
+    small denylist of well-known sensitive subtrees.
+    """
+    resolved_str = str(abs_path)
+    for prefix in _FORBIDDEN_ABSOLUTE_PREFIXES:
+        if resolved_str == prefix or resolved_str.startswith(prefix + "/"):
+            raise FileBrowserError(
+                "forbidden",
+                f"Access to {prefix} subtree is not allowed",
+            )
 
 
 def _rel_str(root: Path, target: Path) -> str:
@@ -129,9 +207,11 @@ def list_absolute_directory(abs_path: str) -> dict[str, Any]:
     """List directories inside an absolute filesystem path (not sandboxed).
 
     Used by the new-project picker: only directories are returned so the user
-    can navigate the filesystem and pick a project root.
+    can navigate the filesystem and pick a project root. Sensitive subtrees
+    (/proc, /sys, /dev, /run) are refused.
     """
-    target = Path(abs_path).expanduser().resolve()
+    target = Path(abs_path).expanduser().resolve(strict=False)
+    _assert_safe_absolute(target)
     if not target.exists():
         raise FileBrowserError("not_found", f"Path not found: {abs_path}")
     if not target.is_dir():
@@ -172,8 +252,12 @@ def list_absolute_directory(abs_path: str) -> dict[str, Any]:
 
 
 def create_absolute_directory(abs_path: str) -> None:
-    """Create a directory (and any parents) at an absolute path."""
-    target = Path(abs_path)
+    """Create a directory (and any parents) at an absolute path.
+
+    Same /proc, /sys, /dev, /run denylist as list_absolute_directory.
+    """
+    target = Path(abs_path).expanduser().resolve(strict=False)
+    _assert_safe_absolute(target)
     try:
         target.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
@@ -311,7 +395,7 @@ def upload_file(
         raise FileBrowserError("not_directory", "Target is not a directory")
 
     final_name = filename
-    target = target_dir / final_name
+    target = _assert_within(root, target_dir / final_name)
     renamed = False
 
     if target.exists() or target.is_symlink():
@@ -322,7 +406,7 @@ def upload_file(
             )
         if on_conflict == "rename":
             final_name = _unique_name(target_dir, filename)
-            target = target_dir / final_name
+            target = _assert_within(root, target_dir / final_name)
             renamed = True
         # overwrite: fall through; refuse to overwrite through a symlink
         elif target.is_symlink():
@@ -330,6 +414,10 @@ def upload_file(
 
     try:
         tmp = target.with_suffix(target.suffix + ".tmp-upload")
+        # tmp lives in the same already-sanitized directory; re-check
+        # anyway so future edits can't accidentally introduce a write
+        # outside root without tripping this guard.
+        _assert_within(root, tmp)
         tmp.write_bytes(raw)
         tmp.replace(target)
     except PermissionError as exc:
