@@ -7,8 +7,12 @@ control. No vendor in the data path. Your code never leaves your
 infrastructure.
 
 Installable as a PWA on Android / iOS. Exposed to the public internet
-(optionally) via Cloudflare Tunnel + Cloudflare Access JWT auth, or kept
-fully air-gapped on an internal network.
+(optionally) via Cloudflare Tunnel + Cloudflare Access JWT auth, or
+kept entirely on a private network reached only over VPN/intranet
+(no public ingress). True air-gap is not possible because the
+underlying agent SDKs call out to their hosted LLM APIs - any
+deployment that needs zero outbound traffic would also need a local
+model backend, which is out of scope here.
 
 ---
 
@@ -75,7 +79,7 @@ verified on WS handshake, key rotation handled automatically). Workers
 listen on private subnets, only the hub can reach them, only their
 shared `WORKER_SECRET` lets the hub in. Code never leaves the VPC.
 
-### 4. Cross-account / regulated (enterprise, air-gap optional)
+### 4. Cross-account / regulated (enterprise, no public ingress)
 
 ```
    Workstation ─▶ Hub (VPC-A, behind internal ALB + corporate SSO)
@@ -85,10 +89,15 @@ shared `WORKER_SECRET` lets the hub in. Code never leaves the VPC.
 ```
 
 Sessions are segregated by worker. Each worker only sees the project roots
-mounted into its container. Anthropic / GitHub API egress is the only
-outbound traffic, and you can lock it to specific endpoints with a security
-group or HTTP egress proxy. Hub and all workers can run entirely inside
-your network with no internet exposure.
+mounted into its container. The Anthropic / GitHub API endpoints are the
+only outbound destinations, and you can lock egress to those specific
+hostnames with a security group or HTTP egress proxy. Nothing in the
+deployment needs to accept connections from the public internet -
+browser access goes through corporate VPN/SSO terminating at the hub,
+and workers are reachable only from the hub's VPC (or via reverse
+mode for boxes that can't accept ingress at all). Not air-gap (the
+agents need their LLM APIs) but the smallest network surface area
+short of swapping in a local model backend.
 
 ---
 
