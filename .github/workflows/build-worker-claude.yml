@@ -1,0 +1,128 @@
+# Build + push worker-claude to GitHub Container Registry.
+#
+# Image: ghcr.io/<owner>/anywhere-agents-worker-claude
+#
+# Tags pushed:
+#   latest      - every push to master
+#   sha-<7>     - every push (master AND PR validation builds)
+#   v<semver>   - every git tag matching v*
+#
+# Multi-arch: linux/amd64 + linux/arm64 (covers x86 servers + Raspberry Pi
+# + Apple Silicon dev boxes). Build is parallel inside one job thanks to
+# buildx; cache shared across architectures.
+#
+# Uses the workflow's built-in GITHUB_TOKEN (with packages: write
+# permission below). No PAT needed. The token is scoped to this single
+# workflow run.
+
+name: build-worker-claude
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+    paths:
+      - "worker-claude/**"
+      - "shared/**"
+      - "docker/worker-claude.Dockerfile"
+      - ".github/workflows/build-worker-claude.yml"
+  pull_request:
+    paths:
+      - "worker-claude/**"
+      - "shared/**"
+      - "docker/worker-claude.Dockerfile"
+      - ".github/workflows/build-worker-claude.yml"
+  workflow_dispatch:
+
+# Cancel an in-flight build when a newer commit lands on the same ref.
+# Cheap UX win - no more "latest" tagged from a commit two pushes ago.
+concurrency:
+  group: build-worker-claude-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push to ghcr.io with the built-in GITHUB_TOKEN.
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU lets us cross-build arm64 on the amd64 runner. Without it
+      # the arm64 step would fail with "exec format error" when the
+      # Dockerfile tries to run a native binary at RUN time.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only log in when we'll actually push (i.e. NOT for PRs from forks
+        # which don't have packages:write). PRs from the same repo still
+        # build but skip the push step.
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compute tags + labels from the ref. docker/metadata-action handles
+      # the full matrix: branch name, sha, semver - we only need to tell
+      # it which patterns to emit.
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # Image name MUST be lowercase per OCI spec. ${{ github.repository_owner }}
+          # is whatever-case the user has on GitHub, so we explicitly lowercase
+          # via the repo expression below.
+          images: ghcr.io/${{ github.repository_owner }}/anywhere-agents-worker-claude
+          tags: |
+            # latest only on master pushes (NOT on tag pushes - we don't
+            # want a v1.2.3 tag to also stamp latest unless it's the most
+            # recent master commit, which the master-branch path already
+            # handles)
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            # short sha for every push (useful for "pin to a known good
+            # build" deployments)
+            type=sha,prefix=sha-,format=short
+            # semver triples for tags (v1.2.3 -> 1.2.3, 1.2, 1)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=Anywhere Agents - worker-claude
+            org.opencontainers.image.description=Reverse-mode-capable Claude Code worker for Anywhere Agents
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          # Build context is the repo root, NOT worker-claude/. The
+          # Dockerfile copies both shared/ and worker-claude/ from
+          # the build context root.
+          context: .
+          file: docker/worker-claude.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          # Push only on master / tag / dispatch. PRs build but don't
+          # push (no packages:write for forked PRs anyway).
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Buildx cache stored in the GHA cache. Roughly halves cold-build
+          # time for subsequent runs (uv/pip layer cache, apt layer cache).
+          cache-from: type=gha,scope=worker-claude
+          cache-to: type=gha,scope=worker-claude,mode=max
+          # Embed provenance + SBOM for supply-chain transparency.
+          # provenance:mode=max produces a SLSA attestation; sbom=true
+          # generates a CycloneDX BOM. Both visible on the GHCR page.
+          provenance: mode=max
+          sbom: true
