@@ -459,7 +459,6 @@ async def _route(
         return terminal
 
     if msg_type == "browse_fs":
-        import os
         path = payload.get("path", "") or ""
         if not isinstance(path, str):
             await _send_error(send, "bad_request", "path must be a string")
@@ -503,7 +502,6 @@ async def _route(
         return terminal
 
     if msg_type == "create_project":
-        import os
         path = payload.get("path", "") or ""
         if not isinstance(path, str) or not path:
             await _send_error(send, "bad_request", "path required")
