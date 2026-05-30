@@ -45,6 +45,34 @@ _BOOTSTRAP_INSTRUCTIONS = (
     "in the worker's local volume - the agent SDK rotates from there."
 )
 
+
+def claude_has_credentials() -> bool:
+    """Module-level helper: True iff Claude SDK can authenticate now.
+
+    Side effect when bootstrap-persisted creds are found: hydrates the
+    ANTHROPIC_API_KEY env var so the next SDK init picks it up. Pure
+    check otherwise.
+
+    Order: env var -> persistent bootstrap blob -> ~/.claude/.credentials.json
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    stored = load_credentials(_AGENT_TYPE)
+    if stored is not None:
+        data = stored.get("data") or {}
+        api_key = data.get("api_key") if isinstance(data, dict) else None
+        if isinstance(api_key, str) and api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+            return True
+    if (Path.home() / ".claude" / ".credentials.json").exists():
+        return True
+    return False
+
+
+def claude_bootstrap_instructions() -> str:
+    """Used by the WS handler's preflight notice as well as session.start()."""
+    return _BOOTSTRAP_INSTRUCTIONS
+
 logger = structlog.get_logger()
 
 
@@ -257,20 +285,12 @@ class Session:
         self._stream_task = asyncio.create_task(self._consume_stream())
 
     def _has_credentials(self) -> bool:
-        """True when Claude SDK has something to authenticate with."""
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            return True
-        if (Path.home() / ".claude" / ".credentials.json").exists():
-            return True
-        stored = load_credentials(_AGENT_TYPE)
-        if stored is not None:
-            data = stored.get("data") or {}
-            api_key = data.get("api_key") if isinstance(data, dict) else None
-            if isinstance(api_key, str) and api_key:
-                # Hydrate env so the SDK picks it up at construction.
-                os.environ["ANTHROPIC_API_KEY"] = api_key
-                return True
-        return False
+        """Thin wrapper around the module-level helper.
+
+        Shared with the WS handler's preflight check (so the banner
+        can light up before session.start() is ever called).
+        """
+        return claude_has_credentials()
 
     async def stop(self) -> None:
         # Cancel all live tail tasks first so they don't try to send into a
