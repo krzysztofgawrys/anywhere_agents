@@ -1,14 +1,57 @@
-# Claude Web Worker (Claude SDK) - standalone compose for remote machines (PC1, PC2)
+# Claude Web Worker (Claude SDK) - standalone compose for remote machines
 #
-# Deployment steps:
-#   1. Clone the repo on the remote machine
-#   2. Copy this file or use directly
-#   3. Create .env with UID, GID, and WORKER_SECRET matching hub's workers.json
-#   4. Edit volume mounts below for your project directories
-#   5. docker compose -f worker-claude-compose.yml up -d --build
+# Two deployment modes. Pick ONE by setting WORKER_MODE in .env:
 #
-# Hub connects to this worker via the URL configured in workers.json.
-# Worker port must be reachable from hub (LAN, SSH tunnel, or Cloudflare tunnel).
+# ── server (default, classic) ───────────────────────────────────────────
+#   Worker listens on port 8002. Hub dials it via the URL in workers.json.
+#   Use this when hub can reach the worker (LAN, Tailscale, VPC routing,
+#   etc.).
+#
+#   Setup:
+#     1. Clone repo on remote machine.
+#     2. Run `claude login` on host once (creates ~/.claude/).
+#     3. Create .env with UID, GID, WORKER_SECRET matching hub.
+#     4. Edit volume mounts for your project directories.
+#     5. docker compose -f worker-claude-compose.yml up -d --build
+#
+#   Hub's workers.json entry:
+#     {
+#       "id": "remote-claude", "type": "claude", "label": "Remote",
+#       "url": "ws://<this-machine>:8002/ws", "secret": "..."
+#     }
+#
+# ── inbound (reverse mode) ──────────────────────────────────────────────
+#   Worker dials OUT to the hub. No inbound port needed. Use this when
+#   the worker is in a closed VPC, behind a NAT, or in a corporate
+#   network where only egress 443 is allowed.
+#
+#   Set in .env:
+#     WORKER_MODE=inbound
+#     HUB_PUBLIC_URL=https://hub.example.com    (publicly reachable hub URL,
+#                                                used for control + data WS)
+#     WORKER_ID=remote-claude            (must match workers.json entry)
+#     WORKER_LABEL=Remote                (cosmetic)
+#     WORKER_SECRET=...                  (same as hub)
+#
+#   If the hub is behind Cloudflare Access with service-token policies
+#   on /worker-register and /worker-data, also set:
+#     CF_ACCESS_CLIENT_ID=<service token client id>
+#     CF_ACCESS_CLIENT_SECRET=<service token client secret>
+#
+#   Hub's workers.json entry (note: no "url" needed):
+#     {
+#       "id": "remote-claude", "type": "claude", "label": "Remote",
+#       "mode": "inbound", "secret": "..."
+#     }
+#
+#   In inbound mode the `ports:` block below can be removed - the worker
+#   doesn't need a listening port at all. Leaving it exposes /health for
+#   liveness checks but the /ws endpoint will actively refuse connections.
+#
+#   Known limitation in inbound mode: /internal/upload (HTTP multipart
+#   file upload) is mounted but the hub has no way to reach it (worker
+#   dial-out only). Browser-side upload will fail at the hub proxy layer
+#   for inbound workers. Use git/scp/etc. to move files for now.
 
 services:
   worker-claude:
@@ -19,6 +62,10 @@ services:
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:
+      # Only meaningful in server mode. In inbound mode the /ws endpoint
+      # refuses connections (logged on startup); /health stays available
+      # for liveness probes. Comment this out for a fully closed-ingress
+      # inbound deployment.
       - "${WORKER_PORT:-8002}:8002"
     environment:
       - HOME=/home/app
@@ -27,6 +74,15 @@ services:
       # MUST be reachable from this worker (LAN, VPN, or reverse tunnel).
       # Leave unset to disable push from this worker.
       - HUB_URL=${HUB_URL:-}
+      # ── Reverse (inbound) mode (uncomment to enable) ────────────────
+      # - WORKER_MODE=inbound
+      # - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://hub.example.com}
+      # - WORKER_ID=${WORKER_ID:-remote-claude}
+      # - WORKER_LABEL=${WORKER_LABEL:-Remote}
+      # - WORKER_TYPE=claude
+      # ── Optional: hub behind Cloudflare Access with service tokens ─
+      # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
     volumes:
       # Claude auth (claude login), settings, project session history
       - ${HOME}/.claude:/home/app/.claude
