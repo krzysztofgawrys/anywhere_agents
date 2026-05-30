@@ -85,11 +85,25 @@ services:
     environment:
       - HOME=/home/app
       - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      # Internal hub URL for out-of-band push notifications (worker -> hub
+      # HTTP POST to /api/internal/push). Stays as docker-internal hostname
+      # since push doesn't need to traverse CF Access.
       - HUB_URL=${HUB_URL:-http://hub:8001}
       - COPILOT_HOME=/home/app/.copilot
       # Separate SQLite from worker-claude so each worker has an independent
       # project list (different scanners, different on-disk sources).
       - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
+      # ── Reverse (inbound) mode ──────────────────────────────────────
+      # Worker dials OUT to the hub via the public URL (through CF Tunnel
+      # + CF Access). This is the full production data path - latency
+      # adds a CF hop, but it validates the whole stack end-to-end.
+      - WORKER_MODE=${WORKER_MODE:-server}
+      - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://claude.gawrys.cloud}
+      - WORKER_ID=${WORKER_ID:-remote-copilot}
+      - WORKER_LABEL=${WORKER_LABEL:-Remote}
+      - WORKER_TYPE=copilot
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
     volumes:
       # Copilot auth + session state (host must have run `copilot` to log in)
       - ${HOME}/.copilot:/home/app/.copilot

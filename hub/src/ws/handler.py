@@ -20,6 +20,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from src.push.manager import push_manager
 from src.workers.connection import WorkerConnection
+from src.workers.inbound import inbound_registry
 from src.workers.project_index import ProjectIndex
 from src.workers.registry import WorkerInfo, load_workers
 
@@ -274,7 +275,17 @@ async def handle_websocket(
         return on_disconnect
 
     async def _try_connect(w: WorkerInfo) -> bool:
-        """Open one WS connection to a worker. Returns True on success."""
+        """Open one WS connection to a worker. Returns True on success.
+
+        Branches on w.mode:
+          - outbound: hub dials worker_url (classic).
+          - inbound: hub asks InboundRegistry to open a data channel by
+            sending a command over the worker's pre-registered control WS;
+            adopts the resulting server-accepted WS into a WorkerConnection.
+
+        Both paths return the same WorkerConnection wrapper so the rest of
+        the handler (routing, on_disconnect, retry) is mode-agnostic.
+        """
         conn = WorkerConnection(
             worker_url=w.url,
             worker_secret=w.secret,
@@ -283,9 +294,17 @@ async def handle_websocket(
             on_disconnect=make_on_disconnect(w.id),
         )
         try:
-            await conn.connect()
+            if w.mode == "inbound":
+                # Will raise LookupError if no control channel yet (worker
+                # hasn't dialed in, or its control disconnected). The
+                # caller schedules a retry in that case, same as for a
+                # refused TCP connect on the outbound path.
+                ws = await inbound_registry.open_session(w.id)
+                await conn.adopt(ws)
+            else:
+                await conn.connect()
         except Exception as e:
-            logger.warning("worker_connect_failed", worker=w.id, error=str(e))
+            logger.warning("worker_connect_failed", worker=w.id, mode=w.mode, error=str(e))
             return False
         worker_conns[w.id] = conn
         # Seed the model cache with the type default so the frontend has

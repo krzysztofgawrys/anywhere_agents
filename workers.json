@@ -5,5 +5,12 @@
     "label": "Laptop",
     "url": "ws://worker-claude:8002/ws",
     "secret": "changeme"
+  },
+  {
+    "id": "remote-copilot",
+    "type": "copilot",
+    "label": "Remote (reverse)",
+    "mode": "inbound",
+    "secret": "changeme"
   }
 ]

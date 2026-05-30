@@ -1,14 +1,52 @@
 # Claude Web Worker (GitHub Copilot SDK) - standalone compose for remote machines
 #
-# Deployment steps:
-#   1. Clone the repo on the remote machine
-#   2. Run `copilot` on the host once to authenticate (creates ~/.copilot/config.json)
-#   3. Create .env with UID, GID, and WORKER_SECRET matching hub's workers.json
-#   4. Edit volume mounts below for your project directories
-#   5. docker compose -f worker-copilot-compose.yml up -d --build
+# Two deployment modes. Pick ONE by setting WORKER_MODE in .env:
 #
-# Hub connects to this worker via the URL configured in workers.json.
-# Worker port (default 8003) must be reachable from hub.
+# ── server (default, classic) ───────────────────────────────────────────
+#   Worker listens on port 8003. Hub dials it via the URL in workers.json.
+#   Use this when hub can reach the worker (LAN, Tailscale, VPC routing,
+#   etc.).
+#
+#   Setup:
+#     1. Clone repo on remote machine.
+#     2. Run `copilot` on host once to authenticate (creates ~/.copilot/).
+#     3. Create .env with UID, GID, WORKER_SECRET matching hub.
+#     4. Edit volume mounts for your project directories.
+#     5. docker compose -f worker-copilot-compose.yml up -d --build
+#
+#   Hub's workers.json entry:
+#     {
+#       "id": "remote-copilot", "type": "copilot", "label": "Remote",
+#       "url": "ws://<this-machine>:8003/ws", "secret": "..."
+#     }
+#
+# ── inbound (reverse mode) ──────────────────────────────────────────────
+#   Worker dials OUT to the hub. No inbound port needed. Use this when
+#   the worker is in a closed VPC, behind a NAT, or in a corporate
+#   network where only egress 443 is allowed.
+#
+#   Set in .env:
+#     WORKER_MODE=inbound
+#     HUB_PUBLIC_URL=https://hub.example.com    (publicly reachable hub URL,
+#                                                used for control + data WS)
+#     WORKER_ID=remote-copilot           (must match workers.json entry)
+#     WORKER_LABEL=Remote                (cosmetic)
+#     WORKER_SECRET=...                  (same as hub)
+#
+#   If the hub is behind Cloudflare Access with service-token policies
+#   on /worker-register and /worker-data, also set:
+#     CF_ACCESS_CLIENT_ID=<service token client id>
+#     CF_ACCESS_CLIENT_SECRET=<service token client secret>
+#
+#   Hub's workers.json entry (note: no "url" needed):
+#     {
+#       "id": "remote-copilot", "type": "copilot", "label": "Remote",
+#       "mode": "inbound", "secret": "..."
+#     }
+#
+#   In inbound mode the `ports:` block below can be removed - the worker
+#   doesn't need a listening port at all. Leaving it exposes /health for
+#   liveness checks but the /ws endpoint will actively refuse connections.
 
 services:
   worker-copilot:
@@ -19,6 +57,10 @@ services:
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     ports:
+      # Only meaningful in server mode. In inbound mode the /ws endpoint
+      # refuses connections (logged on startup); /health stays available
+      # for liveness probes. Comment this out for a fully closed-ingress
+      # inbound deployment.
       - "${WORKER_COPILOT_PORT:-8003}:8003"
     environment:
       - HOME=/home/app
@@ -27,6 +69,15 @@ services:
       # Separate SQLite from worker-claude to keep each worker's project list
       # independent (different scanners, different on-disk sources).
       - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
+      # ── Reverse mode (uncomment to enable) ──────────────────────────
+      # - WORKER_MODE=inbound
+      # - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://hub.example.com}
+      # - WORKER_ID=${WORKER_ID:-remote-copilot}
+      # - WORKER_LABEL=${WORKER_LABEL:-Remote}
+      # - WORKER_TYPE=copilot
+      # ── Optional: hub behind Cloudflare Access with service tokens ─
+      # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
     volumes:
       # Copilot auth + session state (from `copilot` login on host)
       - ${HOME}/.copilot:/home/app/.copilot

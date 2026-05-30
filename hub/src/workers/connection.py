@@ -1,15 +1,29 @@
-"""WebSocket client connection to a single worker."""
+"""WebSocket connection to a single worker.
+
+Two transport flavors:
+
+  - OutboundTransport: hub dials the worker (classic mode). Used when the
+    worker runs an HTTP server reachable from the hub.
+  - InboundTransport: hub holds a server-accepted WS that the worker dialed
+    in (reverse mode). Used when the worker sits in a closed network and
+    cannot accept inbound connections.
+
+Both flavors expose the same minimal contract (send/recv/close/alive) so
+`WorkerConnection` doesn't care which one it wraps. Public API of
+`WorkerConnection` stays identical for callers in ws/handler.py.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import quote
 
 import structlog
 import websockets
+from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import ClientConnection
 
 logger = structlog.get_logger()
@@ -17,11 +31,117 @@ logger = structlog.get_logger()
 OnMessageFn = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
+class _Transport(Protocol):
+    """Minimal contract a transport must satisfy for WorkerConnection."""
+
+    async def send_text(self, data: str) -> None: ...
+
+    async def recv_text(self) -> str: ...
+
+    async def close(self) -> None: ...
+
+    @property
+    def alive(self) -> bool: ...
+
+
+class _OutboundTransport:
+    """Hub-dialed websockets.asyncio ClientConnection wrapper."""
+
+    def __init__(self, ws: ClientConnection) -> None:
+        self._ws = ws
+
+    async def send_text(self, data: str) -> None:
+        await self._ws.send(data)
+
+    async def recv_text(self) -> str:
+        # websockets yields str|bytes - we always send str so the cast is safe
+        msg = await self._ws.recv()
+        return msg if isinstance(msg, str) else msg.decode("utf-8", errors="replace")
+
+    async def close(self) -> None:
+        try:
+            await self._ws.close()
+        except Exception:
+            pass
+
+    @property
+    def alive(self) -> bool:
+        return self._ws.protocol.state.name == "OPEN"
+
+
+class _InboundTransport:
+    """Server-accepted FastAPI WebSocket wrapper for reverse mode.
+
+    The WS is already accepted (by the /worker-data endpoint that handed
+    it to us). We just need to read/write text frames and close cleanly.
+    """
+
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+        # FastAPI doesn't expose a clean "is open" predicate; we track it
+        # ourselves by flipping on disconnect.
+        self._alive = True
+
+    async def send_text(self, data: str) -> None:
+        if not self._alive:
+            return
+        try:
+            await self._ws.send_text(data)
+        except (WebSocketDisconnect, RuntimeError):
+            self._alive = False
+            self._signal_done()
+
+    async def recv_text(self) -> str:
+        try:
+            return await self._ws.receive_text()
+        except WebSocketDisconnect:
+            self._alive = False
+            self._signal_done()
+            raise websockets.exceptions.ConnectionClosed(None, None) from None
+        except RuntimeError as e:
+            # Starlette raises RuntimeError("WebSocket is not connected.")
+            # when receive_text is called after the peer closed. Normalize
+            # to the same exception type the outbound path raises so the
+            # read loop catches one thing.
+            self._alive = False
+            self._signal_done()
+            raise websockets.exceptions.ConnectionClosed(None, None) from e
+
+    async def close(self) -> None:
+        if not self._alive:
+            return
+        self._alive = False
+        try:
+            await self._ws.close()
+        except Exception:
+            pass
+        self._signal_done()
+
+    def _signal_done(self) -> None:
+        # Unblock the /worker-data endpoint coroutine so FastAPI can
+        # finalize the request properly. The endpoint attaches an
+        # asyncio.Event to ws.state.inbound_done before handing the WS to
+        # the WorkerConnection; setting it lets the endpoint return.
+        # Called from any path that observes the WS becoming dead.
+        done = getattr(getattr(self._ws, "state", None), "inbound_done", None)
+        if done is not None:
+            done.set()
+
+    @property
+    def alive(self) -> bool:
+        return self._alive
+
+
 class WorkerConnection:
     """Manages a WS connection to one worker for one frontend client.
 
-    Lifecycle: create → connect() → forward messages → close().
+    Lifecycle: create -> connect()/adopt() -> forward messages -> close().
     One instance per (frontend WS connection, worker).
+
+    For outbound workers: caller invokes connect() which dials worker_url
+    and starts the read loop. For inbound workers: caller invokes adopt(ws)
+    with an already-accepted FastAPI WebSocket (handed over by the
+    /worker-data endpoint after pairing with a control-channel request).
     """
 
     def __init__(
@@ -37,34 +157,43 @@ class WorkerConnection:
         self._device_label = device_label
         self._on_message = on_message
         self._on_disconnect = on_disconnect
-        self._ws: ClientConnection | None = None
+        self._transport: _Transport | None = None
         self._reader_task: asyncio.Task[None] | None = None
-        # Request/response correlation: response_type → Future
+        # Request/response correlation: response_type -> Future
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     async def connect(self) -> None:
-        """Open WS to worker with auth header and device label."""
+        """Outbound mode: open WS to worker with auth header and device label."""
         headers = {}
         if self._secret:
             headers["Authorization"] = f"Bearer {self._secret}"
 
         url = f"{self._url}?device_label={quote(self._device_label)}"
-        self._ws = await websockets.connect(
+        ws = await websockets.connect(
             url,
             additional_headers=headers,
             ping_interval=20,
             ping_timeout=60,
             close_timeout=5,
         )
+        self._transport = _OutboundTransport(ws)
         self._reader_task = asyncio.create_task(self._read_loop())
-        logger.info("worker_connected", url=self._url)
+        logger.info("worker_connected", url=self._url, mode="outbound")
+
+    async def adopt(self, ws: WebSocket) -> None:
+        """Inbound mode: wrap an already-accepted server WS handed to us by
+        the /worker-data endpoint after pairing with a control-channel
+        open_data_channel request. The WS is already accept()ed."""
+        self._transport = _InboundTransport(ws)
+        self._reader_task = asyncio.create_task(self._read_loop())
+        logger.info("worker_connected", url=self._url, mode="inbound")
 
     async def send(self, message: dict[str, Any]) -> None:
         """Send a message to the worker (fire-and-forget)."""
-        if self._ws is None:
+        if self._transport is None:
             return
         try:
-            await self._ws.send(json.dumps(message))
+            await self._transport.send_text(json.dumps(message))
         except websockets.exceptions.ConnectionClosed:
             logger.warning("worker_send_failed_closed")
 
@@ -76,7 +205,7 @@ class WorkerConnection:
     ) -> dict[str, Any]:
         """Send a message and wait for a specific response type.
 
-        Used for request/response pairs like list_projects → projects.
+        Used for request/response pairs like list_projects -> projects.
         The response is intercepted before the on_message callback.
         """
         loop = asyncio.get_event_loop()
@@ -103,22 +232,20 @@ class WorkerConnection:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):
                 pass
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
+        if self._transport is not None:
+            await self._transport.close()
+            self._transport = None
 
     @property
     def connected(self) -> bool:
-        return self._ws is not None and self._ws.protocol.state.name == "OPEN"
+        return self._transport is not None and self._transport.alive
 
     async def _read_loop(self) -> None:
-        """Read messages from worker and dispatch via on_message callback."""
-        assert self._ws is not None
+        """Read messages from the transport and dispatch via on_message."""
+        assert self._transport is not None
         try:
-            async for raw in self._ws:
+            while True:
+                raw = await self._transport.recv_text()
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:

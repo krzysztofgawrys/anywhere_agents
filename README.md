@@ -92,6 +92,118 @@ your network with no internet exposure.
 
 ---
 
+## Network setup (how the hub reaches workers)
+
+Out of the box, the hub talks to workers via WebSocket. Two directions are
+supported. Pick one per worker - workers.json `mode` field switches
+between them.
+
+### Option A: outbound mode (default) - hub dials worker
+
+Worker runs a WS server (port 8002 for claude, 8003 for copilot). Hub
+reaches it at the URL you put in `workers.json`. Requires the worker port
+to be reachable from the hub: same machine, same LAN, VPN, Tailscale, or
+VPC peering.
+
+Easiest enabler: **Tailscale** (free for personal use, up to 6 users with
+unlimited devices). Each box gets a stable `100.x.x.x` address; put that
+in `workers.json` and forget about NAT and firewalls.
+
+```json
+{
+  "id": "vpc-worker", "type": "claude", "label": "VPC",
+  "mode": "outbound",
+  "url": "ws://100.64.1.5:8002/ws", "secret": "..."
+}
+```
+
+Headscale (self-hosted Tailscale coordination server) works the same way
+if you don't want a vendor anywhere in the loop.
+
+### Option B: inbound (reverse) mode - worker dials hub
+
+Worker has no inbound port. It dials a long-lived control WS to the hub
+at `/worker-register`, identifies itself by `WORKER_ID`, and reacts to
+`open_data_channel` commands by dialing a fresh data WS per browser
+session. Use this when the worker sits in a closed VPC, behind a NAT, or
+in a corporate network where only egress 443 is allowed.
+
+Worker side env vars:
+
+```bash
+WORKER_MODE=inbound
+HUB_PUBLIC_URL=https://hub.example.com  # publicly reachable hub URL (CF Tunnel)
+WORKER_ID=remote-copilot                # must match workers.json on hub
+WORKER_LABEL=Remote                     # cosmetic
+WORKER_SECRET=...                       # same as hub's WORKER_SECRET
+```
+
+(`HUB_URL`, used by the worker for out-of-band HTTP push to
+`hub/api/internal/push`, is a separate variable that should stay as the
+internal docker / VPN address. `HUB_PUBLIC_URL` is only used for the
+reverse-mode control + data WS handshake which must traverse CF Access.)
+
+Hub side `workers.json` entry (no `url` needed):
+
+```json
+{
+  "id": "remote-copilot", "type": "copilot", "label": "Remote",
+  "mode": "inbound", "secret": "..."
+}
+```
+
+Auth: shared secret + (optional) Cloudflare Access service tokens.
+
+### Cloudflare Access service tokens for inbound mode
+
+If the hub sits behind Cloudflare Access, browser sessions go through
+SSO (email allowlist) - but workers can't do SSO. CF Access supports
+service tokens for exactly this M2M case.
+
+Setup in CF Dashboard:
+
+1. `Zero Trust` -> `Access` -> `Service Auth` -> `Service Tokens`.
+   Create one (e.g. `worker-remote-copilot`). Copy Client ID + Secret
+   (secret shown once).
+
+2. `Zero Trust` -> `Access` -> `Applications` -> `Add an application` ->
+   `Self-hosted`. Application domain `hub.example.com`, **path
+   `/worker-register`**. Policy: Allow + Service Token = the one above.
+   Repeat for path `/worker-data` (or use a single app with path glob).
+
+3. Pass to worker:
+
+   ```bash
+   CF_ACCESS_CLIENT_ID=<client id>
+   CF_ACCESS_CLIENT_SECRET=<client secret>
+   ```
+
+Now the worker passes both CF Access (service token check at the edge)
+and the hub's `WORKER_SECRET` check (in-app handshake). Two independent
+layers; compromise of one is not enough.
+
+### Option C: outbound mode + per-worker Cloudflare Tunnel
+
+Hybrid for users who want each worker reachable from anywhere without
+running a VPN. Worker box runs its own `cloudflared` (outbound only),
+hub dials `wss://worker-x.example.com/ws`. Same auth layering as Option
+B works here (service token sent by hub when dialing the worker URL).
+
+Trade-off: Cloudflare is in the data path of every worker. Latency hop
+of ~50-100ms per direction; for streaming and tool calls this is fine,
+for the xterm.js terminal you may notice typing lag.
+
+### Comparison
+
+| Aspect | Outbound (LAN/Tailscale) | Outbound (CF Tunnel per worker) | Inbound (reverse) |
+| --- | --- | --- | --- |
+| Worker needs ingress? | Yes (via VPN/mesh) | No | No |
+| Vendor in data path of worker? | No (or Tailscale coordination only) | Yes (CF) | No |
+| Per-worker public hostname? | No | Yes | No |
+| Setup per worker | Tailscale up | cloudflared + DNS | Env vars |
+| Latency | Direct mesh | +50-100ms hop | Direct TCP |
+| Code changes required | None | None | None (already shipped) |
+
 ## Architecture
 
 Hub + multi-agent workers running in Docker.

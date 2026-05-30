@@ -1,5 +1,7 @@
 """Hub entry point - frontend proxy, auth, worker routing."""
 
+import asyncio
+import json
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -19,6 +21,7 @@ from fastapi import (
     Request,
     UploadFile,
     WebSocket,
+    WebSocketDisconnect,
     status,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -26,6 +29,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.auth.cf_access import verify_cf_access_token
 from src.push.manager import push_manager
+from src.workers.inbound import inbound_registry
 from src.workers.registry import WorkerInfo, load_workers
 from src.ws.handler import handle_websocket
 
@@ -222,6 +226,167 @@ async def upload_proxy(
     except ValueError:
         body = {"code": "bad_gateway", "message": resp.text[:200]}
     return JSONResponse(status_code=resp.status_code, content=body)
+
+
+@app.websocket("/worker-register")
+async def worker_register_endpoint(websocket: WebSocket) -> None:
+    """Reverse-mode control channel.
+
+    A worker in `mode: "inbound"` dials this once at startup and keeps the
+    connection open for its lifetime. The hub uses it to signal
+    "open a data channel for browser session X" (see InboundRegistry).
+
+    Auth: shared secret in Authorization header (same WORKER_SECRET as the
+    outbound path uses, just on the other end of the wire). When the hub
+    itself sits behind Cloudflare Access, that gate is applied at the CF
+    edge using a service token; this endpoint just sees the resulting
+    authenticated request like any other.
+
+    Handshake: first frame must be {type: "register", payload: {id, type?,
+    label?, models?}}. id must match a workers.json entry with
+    mode=="inbound" (other entries are rejected to avoid stray
+    registrations from misconfigured workers stomping on outbound slots).
+    """
+    expected = os.environ.get("WORKER_SECRET", "")
+    auth = websocket.headers.get("authorization", "")
+    if expected and (not auth.startswith("Bearer ") or auth[7:] != expected):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning("worker_register_auth_rejected", client=websocket.client)
+        return
+
+    await websocket.accept()
+
+    # First frame: register handshake. Bound time so a misbehaving worker
+    # that never sends doesn't leak the slot forever.
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=10.0)
+        handshake = json.loads(raw)
+    except (TimeoutError, json.JSONDecodeError, WebSocketDisconnect):
+        await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+        logger.warning("worker_register_bad_handshake")
+        return
+
+    if handshake.get("type") != "register":
+        await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+        logger.warning("worker_register_bad_handshake_type", got=handshake.get("type"))
+        return
+
+    payload = handshake.get("payload") or {}
+    worker_id = payload.get("id")
+    if not isinstance(worker_id, str) or not worker_id:
+        await websocket.close(code=status.WS_1003_UNSUPPORTED_DATA)
+        logger.warning("worker_register_missing_id")
+        return
+
+    # Check this worker_id is one we expect in inbound mode. Reject silent
+    # registrations from workers not in the config so a stolen secret can't
+    # be used to inject an unconfigured worker.
+    cfg = next((w for w in load_workers() if w.id == worker_id), None)
+    if cfg is None or cfg.mode != "inbound":
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning(
+            "worker_register_unknown_or_wrong_mode",
+            worker_id=worker_id,
+            configured=cfg is not None,
+            configured_mode=cfg.mode if cfg else None,
+        )
+        return
+
+    entry = inbound_registry.register_control(
+        worker_id=worker_id,
+        ws=websocket,
+        worker_type=payload.get("type") or cfg.type,
+        label=payload.get("label") or cfg.label,
+        models=payload.get("models") or [],
+    )
+
+    # Send ack so the worker knows registration succeeded and can start
+    # reacting to commands.
+    try:
+        await websocket.send_text(json.dumps({"type": "registered", "payload": {}}))
+    except Exception:
+        inbound_registry.drop_control(worker_id, websocket)
+        return
+
+    # Hold the control channel open. We don't expect message traffic from
+    # the worker on this channel (data goes over per-session data channels)
+    # except for occasional acks/heartbeats. Drop on disconnect or any
+    # I/O error - the worker will reconnect with backoff.
+    try:
+        while True:
+            try:
+                raw = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            # The only inbound message we currently care about is a heartbeat
+            # ping; everything else is logged for debugging and ignored.
+            if msg.get("type") == "ping":
+                try:
+                    await websocket.send_text(json.dumps({"type": "pong", "payload": {}}))
+                except Exception:
+                    break
+            else:
+                logger.debug("worker_control_unknown_msg", worker_id=worker_id, msg_type=msg.get("type"))
+    finally:
+        inbound_registry.drop_control(worker_id, websocket)
+
+
+@app.websocket("/worker-data")
+async def worker_data_endpoint(
+    websocket: WebSocket,
+    worker_id: str,
+    session_id: str,
+) -> None:
+    """Reverse-mode per-session data channel.
+
+    The worker dials this in response to an `open_data_channel` command
+    sent over its control WS. The pairing is done by `session_id` (a UUID
+    minted by InboundRegistry.open_session()).
+
+    Auth: same WORKER_SECRET as /worker-register. Plus a check that the
+    declared worker_id has a live control channel - otherwise a leaked
+    secret alone wouldn't be enough to inject a data WS.
+    """
+    expected = os.environ.get("WORKER_SECRET", "")
+    auth = websocket.headers.get("authorization", "")
+    if expected and (not auth.startswith("Bearer ") or auth[7:] != expected):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning("worker_data_auth_rejected", client=websocket.client)
+        return
+
+    if not inbound_registry.has_control(worker_id):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning("worker_data_no_control", worker_id=worker_id, session_id=session_id)
+        return
+
+    await websocket.accept()
+
+    # Attach a "done" event that the InboundTransport.close() will set
+    # when WorkerConnection finishes with this WS. We then return from
+    # this endpoint coroutine, which lets FastAPI/Starlette finalize the
+    # WS lifecycle cleanly.
+    done_event: asyncio.Event = asyncio.Event()
+    websocket.state.inbound_done = done_event  # type: ignore[attr-defined]
+
+    if not inbound_registry.register_data(session_id, websocket):
+        # Stale session_id (waiter timed out, worker dialed too late, or
+        # spurious connection). Close cleanly so the worker can log it.
+        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+        logger.warning("worker_data_no_waiter", worker_id=worker_id, session_id=session_id)
+        return
+
+    # Block until the WorkerConnection that adopted this WS is done. The
+    # InboundTransport.close() path sets done_event after closing the WS;
+    # if the worker side closes first, the read loop catches the
+    # disconnect and calls close() which also sets the event.
+    try:
+        await done_event.wait()
+    except asyncio.CancelledError:
+        pass
 
 
 @app.websocket("/ws")
