@@ -41,7 +41,12 @@ Both are <1000 LOC each since most of the heavy lifting is shared.
 
 ---
 
-## Walkthrough: hypothetical `worker-codex`
+## Walkthrough: real `worker-codex`
+
+> `worker-codex/` ships in the repo as the first concrete implementation
+> built off the shared SDK base. Use it as a reference adapter when
+> writing your own. The walkthrough below describes what each file in
+> that worker does and why.
 
 ### 1. Package skeleton
 

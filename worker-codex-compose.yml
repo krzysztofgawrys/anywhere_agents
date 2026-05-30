@@ -1,0 +1,106 @@
+# Claude Web Worker (OpenAI Codex SDK) - standalone compose for remote machines
+#
+# Two deployment modes. Pick ONE by setting WORKER_MODE in .env:
+#
+# ── server (default, classic) ───────────────────────────────────────────
+#   Worker listens on port 8004. Hub dials it via the URL in workers.json.
+#   Use this when hub can reach the worker (LAN, Tailscale, VPC routing,
+#   etc.).
+#
+#   Setup:
+#     1. Clone repo on remote machine.
+#     2. Install Codex CLI on the host and run `codex login` once
+#        (creates ~/.codex/auth.json that gets bind-mounted into the
+#        container).
+#     3. Create .env with UID, GID, WORKER_SECRET matching hub.
+#     4. Edit volume mounts for your project directories.
+#     5. docker compose -f worker-codex-compose.yml up -d --build
+#
+#   Hub's workers.json entry:
+#     {
+#       "id": "remote-codex", "type": "codex", "label": "Remote",
+#       "url": "ws://<this-machine>:8004/ws", "secret": "..."
+#     }
+#
+# ── inbound (reverse mode) ──────────────────────────────────────────────
+#   Worker dials OUT to the hub. No inbound port needed. Use when the
+#   worker is in a closed VPC, behind NAT, or in a corporate network
+#   where only egress 443 is allowed.
+#
+#   Set in .env:
+#     WORKER_MODE=inbound
+#     HUB_PUBLIC_URL=https://hub.example.com    (publicly reachable hub URL,
+#                                                used for control + data WS)
+#     WORKER_ID=remote-codex             (must match workers.json entry)
+#     WORKER_LABEL=Remote                (cosmetic)
+#     WORKER_SECRET=...                  (same as hub)
+#
+#   If the hub is behind Cloudflare Access with service-token policies
+#   on /worker-register and /worker-data, also set:
+#     CF_ACCESS_CLIENT_ID=<service token client id>
+#     CF_ACCESS_CLIENT_SECRET=<service token client secret>
+#
+#   Hub's workers.json entry (note: no "url" needed):
+#     {
+#       "id": "remote-codex", "type": "codex", "label": "Remote",
+#       "mode": "inbound", "secret": "..."
+#     }
+#
+# ── Caveats specific to worker-codex ────────────────────────────────────
+# - Permission UI: openai-codex-sdk does not expose a per-tool-call
+#   approval callback. Codex CLI's approval policy from
+#   ~/.codex/config.json applies; the hub's Allow / Deny prompts do not
+#   fire for Codex tool calls. Configure approvals via Codex CLI directly.
+# - Token-by-token streaming: the SDK emits whole text blocks at
+#   item.completed boundaries (not per-token deltas). The frontend
+#   `stream` flag is accepted but has no observable effect.
+# - Session history: the on-disk transcript layout under
+#   ~/.codex/sessions/ is undocumented; the file browser and project
+#   sidebar work, but the historical chat view is a placeholder until
+#   the SDK ships a documented reader.
+
+services:
+  worker-codex:
+    build:
+      context: .
+      dockerfile: docker/worker-codex.Dockerfile
+    container_name: claude-web-worker-codex
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      # Only meaningful in server mode. In inbound mode the /ws endpoint
+      # refuses connections (logged on startup); /health stays available
+      # for liveness probes. Comment this out for a fully closed-ingress
+      # inbound deployment.
+      - "${WORKER_CODEX_PORT:-8004}:8004"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      # Internal hub URL for push notifications (worker -> hub HTTP).
+      - HUB_URL=${HUB_URL:-}
+      - CODEX_HOME=/home/app/.codex
+      # Separate SQLite from worker-claude / worker-copilot so each
+      # worker's project index is independent.
+      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-codex.sqlite
+      # ── Reverse mode (uncomment to enable) ──────────────────────────
+      # - WORKER_MODE=inbound
+      # - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://hub.example.com}
+      # - WORKER_ID=${WORKER_ID:-remote-codex}
+      # - WORKER_LABEL=${WORKER_LABEL:-Remote}
+      # - WORKER_TYPE=codex
+      # ── Optional: hub behind Cloudflare Access with service tokens ─
+      # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
+    volumes:
+      # Codex auth + thread state (from `codex login` on host).
+      - ${HOME}/.codex:/home/app/.codex
+      # Worker DB (separate file, see CLAUDE_WEB_DB_PATH above).
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Git credentials.
+      - ${HOME}/.ssh:/home/app/.ssh
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      # ── Project roots ──────────────────────────────────────────────────
+      # Mount at the SAME absolute path as on host so the cwd Codex
+      # records in its session state resolves correctly inside the
+      # container.
+      - ${HOME}/code:${HOME}/code

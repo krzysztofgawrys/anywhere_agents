@@ -185,6 +185,32 @@ services:
       # recorded by Copilot in ~/.copilot/session-state resolves correctly.
       - ${HOME}/code:${HOME}/code
 
+  # worker-codex (OpenAI Codex CLI). Off-by-default behind a profile
+  # because it needs `codex login` on the host (~/.codex/auth.json) and
+  # the Codex CLI binary - both absent until the operator opts in.
+  # Launch alongside the rest of the stack with:
+  #   docker compose --profile codex up -d --build worker-codex
+  worker-codex:
+    profiles: ["codex"]
+    build:
+      context: .
+      dockerfile: docker/worker-codex.Dockerfile
+    container_name: claude-web-worker-codex
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      - HUB_URL=${HUB_URL:-http://hub:8001}
+      - CODEX_HOME=/home/app/.codex
+      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-codex.sqlite
+    volumes:
+      - ${HOME}/.codex:/home/app/.codex
+      - ${HOME}/.claude-web:/home/app/.claude-web
+      - ${HOME}/.ssh:/home/app/.ssh
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      - ${HOME}/code:${HOME}/code
+
   cloudflared:
     image: cloudflare/cloudflared:latest
     container_name: claude-web-tunnel

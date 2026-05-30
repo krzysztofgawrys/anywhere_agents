@@ -19,5 +19,12 @@
     "label": "Remote claude (reverse)",
     "mode": "inbound",
     "secret": "changeme"
+  },
+  {
+    "id": "local-codex",
+    "type": "codex",
+    "label": "Laptop (Codex)",
+    "url": "ws://worker-codex:8004/ws",
+    "secret": "changeme"
   }
 ]
