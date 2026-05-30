@@ -1,6 +1,14 @@
 # Build + push worker-claude to GitHub Container Registry.
 #
-# Image: ghcr.io/<owner>/anywhere-agents-worker-claude
+# Image: ghcr.io/<owner>/anywhere-agents/worker-claude
+#
+# Note the slash: GHCR (like Docker Hub) accepts arbitrary `/` segments
+# in the image name. Putting all 4 future images (hub + 3 workers)
+# under a shared `anywhere-agents/` parent gives a clean URL namespace:
+#   ghcr.io/<owner>/anywhere-agents/hub
+#   ghcr.io/<owner>/anywhere-agents/worker-claude
+#   ghcr.io/<owner>/anywhere-agents/worker-copilot
+#   ghcr.io/<owner>/anywhere-agents/worker-codex
 #
 # Tags pushed:
 #   latest      - every push to master
@@ -83,7 +91,7 @@ jobs:
           # Image name MUST be lowercase per OCI spec. ${{ github.repository_owner }}
           # is whatever-case the user has on GitHub, so we explicitly lowercase
           # via the repo expression below.
-          images: ghcr.io/${{ github.repository_owner }}/anywhere-agents-worker-claude
+          images: ghcr.io/${{ github.repository_owner }}/anywhere-agents/worker-claude
           tags: |
             # latest only on master pushes (NOT on tag pushes - we don't
             # want a v1.2.3 tag to also stamp latest unless it's the most
