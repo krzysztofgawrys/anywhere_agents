@@ -28,9 +28,50 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from worker_shared.sdk.bootstrap import (
+    BootstrapError,
+    request_credentials,
+)
+from worker_shared.sdk.credentials_store import load_credentials
 from worker_shared.sdk.push_notify import emit_push_notify
 
 from src.sdk.permissions import PermissionBroker, _fallback_id
+
+_AGENT_TYPE = "claude"
+_BOOTSTRAP_INSTRUCTIONS = (
+    "This worker has no Claude credentials. Generate an API key at "
+    "https://console.anthropic.com/keys, paste it below, and click Save. "
+    "The key is sent through this hub to the worker once and persists "
+    "in the worker's local volume - the agent SDK rotates from there."
+)
+
+
+def claude_has_credentials() -> bool:
+    """Module-level helper: True iff Claude SDK can authenticate now.
+
+    Side effect when bootstrap-persisted creds are found: hydrates the
+    ANTHROPIC_API_KEY env var so the next SDK init picks it up. Pure
+    check otherwise.
+
+    Order: env var -> persistent bootstrap blob -> ~/.claude/.credentials.json
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return True
+    stored = load_credentials(_AGENT_TYPE)
+    if stored is not None:
+        data = stored.get("data") or {}
+        api_key = data.get("api_key") if isinstance(data, dict) else None
+        if isinstance(api_key, str) and api_key:
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+            return True
+    if (Path.home() / ".claude" / ".credentials.json").exists():
+        return True
+    return False
+
+
+def claude_bootstrap_instructions() -> str:
+    """Used by the WS handler's preflight notice as well as session.start()."""
+    return _BOOTSTRAP_INSTRUCTIONS
 
 logger = structlog.get_logger()
 
@@ -146,6 +187,9 @@ class Session:
         # True while the session is parked in the registry (WS disconnected).
         # Set by rebind(parked=True), cleared by rebind(parked=False).
         self._is_parked = False
+        # Background task for the bootstrap-auth-then-init flow. None
+        # when credentials were already on disk (synchronous start path).
+        self._bootstrap_task: asyncio.Task[None] | None = None
 
     @property
     def session_id(self) -> str:
@@ -163,6 +207,44 @@ class Session:
         if self._client is not None:
             return
 
+        # Fast path: credentials already on disk (or in env). Init the
+        # SDK synchronously so the caller's await completes only after
+        # session_started has been emitted - same contract as before
+        # bootstrap auth was a thing.
+        if self._has_credentials():
+            await self._sdk_init()
+            return
+
+        # Slow path: no credentials. Kick off the bootstrap flow in the
+        # background and return immediately. Critical: if we awaited the
+        # bootstrap future here, the worker's WS handle loop would block
+        # on session.start() and NEVER read the incoming auth_provided
+        # message that's supposed to resolve the future - classic
+        # deadlock. Spawning lets the main loop keep dispatching WS
+        # messages while bootstrap waits on the user.
+        self._bootstrap_task = asyncio.create_task(self._bootstrap_and_init())
+
+    async def _bootstrap_and_init(self) -> None:
+        """Background task: run bootstrap auth, then init the SDK."""
+        try:
+            if not await self._ensure_credentials():
+                return
+            await self._sdk_init()
+        except Exception as e:
+            logger.error("bootstrap_init_failed", error=str(e), exc_info=True)
+            try:
+                await self._send({
+                    "type": "error",
+                    "payload": {
+                        "code": "bootstrap_init_failed",
+                        "message": str(e),
+                    },
+                })
+            except Exception:
+                pass
+
+    async def _sdk_init(self) -> None:
+        """Actual ClaudeSDKClient construction + initial session_started emit."""
         # We always use 'default' permission mode and rely on can_use_tool to
         # gate or auto-approve. This gives us per-prompt override capability.
         # include_partial_messages=True turns on real token-by-token streaming:
@@ -202,6 +284,14 @@ class Session:
         # prompt is sent.
         self._stream_task = asyncio.create_task(self._consume_stream())
 
+    def _has_credentials(self) -> bool:
+        """Thin wrapper around the module-level helper.
+
+        Shared with the WS handler's preflight check (so the banner
+        can light up before session.start() is ever called).
+        """
+        return claude_has_credentials()
+
     async def stop(self) -> None:
         # Cancel all live tail tasks first so they don't try to send into a
         # disconnected WS after the SDK shuts down.
@@ -213,6 +303,14 @@ class Session:
             except (asyncio.CancelledError, Exception):
                 pass
         self._task_tails.clear()
+
+        if self._bootstrap_task and not self._bootstrap_task.done():
+            self._bootstrap_task.cancel()
+            try:
+                await self._bootstrap_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._bootstrap_task = None
 
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
@@ -791,6 +889,73 @@ class Session:
         Kept as a method for the existing call sites in this file.
         """
         await emit_push_notify(title=title, body=body)
+
+    async def _ensure_credentials(self) -> bool:
+        """Make sure the Claude SDK has something to authenticate with.
+
+        Returns True when credentials are in place (env var hydrated
+        and/or ~/.claude/.credentials.json exists), False when
+        bootstrap failed and the caller should abort start().
+
+        Surfaces a user-facing error via WS on bootstrap failure
+        rather than letting the SDK crash with an opaque message.
+        """
+        # Already authenticated via env var that the operator set?
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return True
+        # Or via a `claude login`-produced credentials file mounted from
+        # the host? SDK reads it directly, nothing for us to do.
+        if (Path.home() / ".claude" / ".credentials.json").exists():
+            return True
+        # Or via a previous bootstrap run on this worker volume?
+        stored = load_credentials(_AGENT_TYPE)
+        if stored is not None:
+            data = stored.get("data") or {}
+            api_key = data.get("api_key") if isinstance(data, dict) else None
+            if isinstance(api_key, str) and api_key:
+                os.environ["ANTHROPIC_API_KEY"] = api_key
+                logger.info("bootstrap_credentials_loaded", source="persistent")
+                return True
+
+        # Nothing on disk. Ask the user through the hub bootstrap UI.
+        worker_id = os.environ.get("WORKER_ID", "") or "worker-claude"
+        try:
+            credentials = await request_credentials(
+                self._send,
+                worker_id=worker_id,
+                agent_type=_AGENT_TYPE,
+                flow="api_key",
+                instructions=_BOOTSTRAP_INSTRUCTIONS,
+                timeout=600.0,
+            )
+        except BootstrapError as exc:
+            logger.warning("bootstrap_failed", error=str(exc))
+            await self._send({
+                "type": "error",
+                "payload": {
+                    "code": "bootstrap_failed",
+                    "message": f"Authentication setup did not complete: {exc}",
+                },
+            })
+            return False
+
+        api_key = (
+            credentials.get("api_key")
+            if isinstance(credentials, dict)
+            else None
+        )
+        if not isinstance(api_key, str) or not api_key:
+            await self._send({
+                "type": "error",
+                "payload": {
+                    "code": "bootstrap_invalid_payload",
+                    "message": "Bootstrap response missing 'api_key' field.",
+                },
+            })
+            return False
+        os.environ["ANTHROPIC_API_KEY"] = api_key
+        logger.info("bootstrap_credentials_loaded", source="bootstrap")
+        return True
 
 
 def _iter_blocks(content: Any) -> AsyncIterator[Any] | list[Any]:

@@ -488,6 +488,34 @@ async def handle_websocket(
                     await worker_conns[active_worker_id].send(message)
                 continue
 
+            # ── Bootstrap auth: route by worker_id to that specific worker ──
+            # `auth_provided` carries the credentials the user pasted into
+            # the modal. `auth_cancel` lets the user dismiss the prompt.
+            # Both unicast to the named worker - never broadcast (the
+            # opposite direction, `auth_needed` / `auth_status`, IS sent
+            # by the worker to the browser via the default forward path).
+            if msg_type in ("auth_provided", "auth_cancel"):
+                target = payload.get("worker_id")
+                request_id = payload.get("request_id")
+                logger.info(
+                    "auth_route_received",
+                    msg_type=msg_type,
+                    target=target,
+                    request_id=request_id,
+                    target_connected=isinstance(target, str) and target in worker_conns,
+                )
+                if not isinstance(target, str) or target not in worker_conns:
+                    await websocket.send_json({
+                        "type": "error",
+                        "payload": {
+                            "code": "worker_not_connected",
+                            "message": f"Worker {target!r} is not connected for auth bootstrap",
+                        },
+                    })
+                    continue
+                await worker_conns[target].send(message)
+                continue
+
             # ── Project-bound: resolve hub_id → worker, remap, route ─
             if msg_type in _PROJECT_BOUND:
                 hub_id = payload.get("project_id")

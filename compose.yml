@@ -58,8 +58,14 @@ services:
       # Worker uses HTTP instead of WS for push_notify so it works after the
       # client WS is gone (PWA killed on Android, etc.).
       - HUB_URL=${HUB_URL:-http://hub:8001}
+      # Optional: Anthropic API key. When set, bypasses the bootstrap
+      # browser modal flow entirely - worker boots straight into a
+      # working session. Useful for headless / CI / Vault / Kubernetes
+      # deployments where a key is injected by the orchestrator.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      # Claude auth (claude login), settings, project session history
+      # Claude auth (claude login), settings, project session history.
+      # OPTIONAL when ANTHROPIC_API_KEY is set above.
       - ${HOME}/.claude:/home/app/.claude
       - ${HOME}/.claude.json:/home/app/.claude.json
       # Worker DB (projects index)

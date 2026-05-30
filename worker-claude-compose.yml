@@ -86,8 +86,22 @@ services:
       # ── Optional: hub behind Cloudflare Access with service tokens ─
       # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
       # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
+      # ── Optional: Anthropic API key (bypasses bootstrap entirely) ───
+      # Set this to skip the browser-side bootstrap modal flow. Useful
+      # for CI / Kubernetes / Vault deployments where a key is injected
+      # by the orchestrator. When set, the worker:
+      #   - never emits auth_needed
+      #   - never shows the "needs auth" banner in the sidebar
+      #   - boots straight into a working session on the first prompt
+      # Leave blank to use the bootstrap flow instead (or to fall back
+      # to ~/.claude/.credentials.json from a host `claude login`).
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      # Claude auth (claude login), settings, project session history
+      # Claude auth (claude login), settings, project session history.
+      # OPTIONAL when ANTHROPIC_API_KEY is set above (the SDK reads from
+      # the env var directly and doesn't need a credentials file). Keep
+      # the mounts if you want the SDK's full settings/transcripts
+      # behavior across worker restarts.
       - ${HOME}/.claude:/home/app/.claude
       - ${HOME}/.claude.json:/home/app/.claude.json
       # Worker DB (projects index) - create dir first: mkdir -p ~/.claude-web

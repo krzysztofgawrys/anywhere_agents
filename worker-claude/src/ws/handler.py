@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import os
 import time
+import uuid
 from typing import Any
 
 import structlog
@@ -91,6 +93,36 @@ async def handle_websocket(
     )
     terminal: TerminalSession | None = None
 
+    # Preflight credentials check: if we have no Anthropic API key on
+    # disk (no env var, no persistent bootstrap blob, no
+    # ~/.claude/.credentials.json), tell the user RIGHT NOW instead of
+    # waiting for them to click "New session". The frontend's auth
+    # store keys the banner by worker_id, so multiple data-WS connects
+    # for the same worker harmlessly overwrite each other's entry.
+    #
+    # We do NOT spawn the bootstrap future here - that happens lazily
+    # in session.start(). If the user submits credentials via this
+    # preflight banner (no live bootstrap waiting), the auth_provided
+    # branch below has a fallback path that persists them directly.
+    from src.sdk.session import claude_bootstrap_instructions, claude_has_credentials
+    if not claude_has_credentials():
+        preflight_request_id = str(uuid.uuid4())
+        await send({
+            "type": "auth_needed",
+            "payload": {
+                "worker_id": os.environ.get("WORKER_ID", "") or "worker-claude",
+                "agent_type": "claude",
+                "flow": "api_key",
+                "request_id": preflight_request_id,
+                "instructions": claude_bootstrap_instructions(),
+                # 10 min expiry like an in-flight bootstrap. Preflight
+                # banners that "expire" are harmless - the next connect
+                # re-emits.
+                "expires_at": int(time.time() + 600),
+            },
+        })
+        logger.info("auth_preflight_emitted", request_id=preflight_request_id)
+
     try:
         while True:
             raw = await asyncio.wait_for(
@@ -147,6 +179,62 @@ async def _route(
     if msg_type == "ping":
         manager.touch(connection_id)
         await send({"type": "pong", "payload": {}})
+        return terminal
+
+    # ── Bootstrap auth: resolve pending request_credentials() ─────────
+    # The hub forwards `auth_provided` from the browser after the user
+    # submitted the modal form. Match request_id to a pending future in
+    # worker_shared.sdk.bootstrap so the blocked session.start() can
+    # continue. `auth_cancel` lets the user dismiss the prompt.
+    if msg_type == "auth_provided":
+        from worker_shared.sdk.bootstrap import resolve_auth
+        from worker_shared.sdk.credentials_store import save_credentials
+        request_id = payload.get("request_id")
+        credentials = payload.get("credentials") or {}
+        logger.info(
+            "auth_provided_received",
+            request_id=request_id,
+            has_credentials=isinstance(credentials, dict) and bool(credentials),
+        )
+        if not isinstance(request_id, str) or not isinstance(credentials, dict):
+            await _send_error(
+                send, "bad_request", "auth_provided requires request_id and credentials"
+            )
+            return terminal
+        # First try the live-bootstrap path (session.start() is awaiting
+        # this future). If that returns False there's no in-flight
+        # bootstrap, but the user might have clicked Save on the
+        # preflight banner - in that case persist the credentials
+        # directly so the next session.start() picks them up.
+        if resolve_auth(request_id, credentials):
+            return terminal
+        # Fallback: preflight save.
+        api_key = credentials.get("api_key") if isinstance(credentials, dict) else None
+        if isinstance(api_key, str) and api_key:
+            save_credentials(agent_type="claude", flow="api_key", data={"api_key": api_key})
+            os.environ["ANTHROPIC_API_KEY"] = api_key
+            await send({
+                "type": "auth_status",
+                "payload": {
+                    "worker_id": os.environ.get("WORKER_ID", "") or "worker-claude",
+                    "request_id": request_id,
+                    "state": "completed",
+                },
+            })
+            logger.info("auth_preflight_persisted", request_id=request_id)
+        else:
+            await _send_error(
+                send,
+                "bad_request",
+                "auth_provided fallback save requires credentials.api_key",
+            )
+        return terminal
+
+    if msg_type == "auth_cancel":
+        from worker_shared.sdk.bootstrap import cancel_auth
+        request_id = payload.get("request_id")
+        if isinstance(request_id, str):
+            cancel_auth(request_id, "User cancelled the bootstrap")
         return terminal
 
     if msg_type == "list_projects":
@@ -371,7 +459,6 @@ async def _route(
         return terminal
 
     if msg_type == "browse_fs":
-        import os
         path = payload.get("path", "") or ""
         if not isinstance(path, str):
             await _send_error(send, "bad_request", "path must be a string")
@@ -415,7 +502,6 @@ async def _route(
         return terminal
 
     if msg_type == "create_project":
-        import os
         path = payload.get("path", "") or ""
         if not isinstance(path, str) or not path:
             await _send_error(send, "bad_request", "path required")

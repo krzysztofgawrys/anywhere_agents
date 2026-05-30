@@ -91,8 +91,17 @@ services:
       # ── Optional: hub behind Cloudflare Access with service tokens ─
       # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
       # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
+      # ── Optional: OpenAI API key (skips `codex login` requirement) ──
+      # Set this to bypass any browser-side device-code bootstrap when
+      # that flow lands for worker-codex. Useful for CI / Kubernetes /
+      # Vault deployments where a key is injected by the orchestrator.
+      # When set, the worker boots straight into a working session
+      # without ever needing `codex login` on the host.
+      # - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       # Codex auth + thread state (from `codex login` on host).
+      # OPTIONAL when OPENAI_API_KEY is set above. Keep the mount if
+      # you want Codex's local thread history available across restarts.
       - ${HOME}/.codex:/home/app/.codex
       # Worker DB (separate file, see CLAUDE_WEB_DB_PATH above).
       - ${HOME}/.claude-web:/home/app/.claude-web
