@@ -2,6 +2,7 @@
 name = "worker-shared"
 version = "0.1.0"
 description = "Shared modules for Claude Web workers (db, files, terminal, locks, projects service, session registry)"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "aiosqlite>=0.20.0",

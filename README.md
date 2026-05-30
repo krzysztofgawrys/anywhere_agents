@@ -650,7 +650,8 @@ cd hub && uv run pytest
 
 ## License
 
-[GNU Affero General Public License v3.0](LICENSE).
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution.
 
-If you want to embed this in a commercial product, open an issue and let's
-talk.
+Permissive: use, modify, redistribute, and embed in commercial products
+freely. Patent grant included. The only obligation is keeping the
+copyright + license notice when you redistribute the source.

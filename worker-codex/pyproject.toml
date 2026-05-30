@@ -2,6 +2,7 @@
 name = "claude-web-worker-codex"
 version = "0.1.0"
 description = "Claude Web worker (OpenAI Codex SDK) - runs Codex agent sessions, project scanning, file browser"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
