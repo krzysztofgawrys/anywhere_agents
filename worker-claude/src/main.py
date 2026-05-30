@@ -15,11 +15,12 @@ Two run modes selected by `WORKER_MODE` env var (mirrors worker-copilot):
 
 Note on /internal/upload (HTTP multipart file upload):
 - In server mode the hub POSTs files here directly (`worker.url` derived
-  to HTTP). In inbound mode the hub has no HTTP path to the worker and
-  file upload via this route is unavailable. Browser-side upload will
-  still appear to work for outbound workers; uploads targeting an
-  inbound worker will fail at the hub's proxy layer. Future work: route
-  uploads through the WS data channel for inbound workers too.
+  to HTTP). In inbound mode the hub has no HTTP path to the worker but
+  upload still works: the hub routes the file through a fresh WS data
+  channel (`type: "upload"` handled in ws/handler.py). Practical limit
+  ~12 MiB raw per file (bounded by uvicorn's ws_max_size default after
+  base64 + JSON envelope). Larger files get HTTP 413 from the hub.
+  Outbound workers keep the streaming HTTP path with no such limit.
 
 Inbound-mode env vars:
   HUB_PUBLIC_URL      https URL to the hub, e.g. https://hub.example.com

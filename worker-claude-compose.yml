@@ -48,10 +48,13 @@
 #   doesn't need a listening port at all. Leaving it exposes /health for
 #   liveness checks but the /ws endpoint will actively refuse connections.
 #
-#   Known limitation in inbound mode: /internal/upload (HTTP multipart
-#   file upload) is mounted but the hub has no way to reach it (worker
-#   dial-out only). Browser-side upload will fail at the hub proxy layer
-#   for inbound workers. Use git/scp/etc. to move files for now.
+#   Note for inbound mode: /internal/upload (HTTP multipart) is mounted
+#   but the hub can't reach it directly. File upload still works for
+#   inbound workers via a fresh WS data channel (hub opens it through
+#   the control channel, sends the file as a single base64-encoded
+#   message). Practical limit ~12 MiB raw per upload (bounded by
+#   uvicorn ws_max_size). Outbound workers keep the streaming HTTP
+#   path with no such limit.
 
 services:
   worker-claude:

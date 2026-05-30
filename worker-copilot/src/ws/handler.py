@@ -21,6 +21,7 @@ from worker_shared.files import (
     list_absolute_directory,
     list_directory,
     read_file,
+    upload_file,
     write_file,
 )
 from worker_shared.projects.service import (
@@ -540,6 +541,49 @@ async def _route(
         ok = sessions.resolve_permission(tool_use_id, allow=False, reason=reason)
         if not ok:
             await _send_error(send, "no_pending", "No pending request with that id")
+        return terminal
+
+    # ── Upload over WS (used by hub upload_proxy for inbound workers) ────
+    # In server (outbound) mode the hub POSTs files to /internal/upload
+    # directly. Inbound workers have no listening port for that, so the
+    # hub opens a fresh data WS via InboundRegistry and sends the upload
+    # as a single message. content_b64 is base64; max raw size is
+    # bounded by uvicorn's ws_max_size (16 MiB default) minus base64 and
+    # JSON wrapper overhead - about 12 MiB raw in practice.
+    if msg_type == "upload":
+        import base64
+        project_path = payload.get("project_path")
+        rel_path = payload.get("path") or ""
+        filename = payload.get("filename")
+        content_b64 = payload.get("content_b64")
+        on_conflict = payload.get("on_conflict") or "error"
+        if (
+            not isinstance(project_path, str)
+            or not isinstance(filename, str)
+            or not isinstance(content_b64, str)
+        ):
+            await send({"type": "upload_error", "payload": {
+                "code": "bad_request",
+                "message": "project_path, filename, content_b64 required",
+            }})
+            return terminal
+        try:
+            content = base64.b64decode(content_b64, validate=True)
+        except Exception:
+            await send({"type": "upload_error", "payload": {
+                "code": "bad_base64",
+                "message": "content_b64 is not valid base64",
+            }})
+            return terminal
+        try:
+            result = upload_file(project_path, rel_path, filename, content, on_conflict)
+        except FileBrowserError as exc:
+            await send({"type": "upload_error", "payload": {
+                "code": exc.code,
+                "message": exc.message,
+            }})
+            return terminal
+        await send({"type": "upload_response", "payload": result})
         return terminal
 
     await _send_error(

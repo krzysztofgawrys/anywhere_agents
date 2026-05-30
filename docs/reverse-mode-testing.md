@@ -1,9 +1,13 @@
-# Testing reverse-worker mode (worker-copilot)
+# Testing reverse-worker mode
 
-End-to-end smoke test for the inbound/reverse mode shipped in
-`feat/reverse-worker-mode`. Validates: control channel registration,
-data channel pairing per browser session, CF Access service token auth,
-graceful reconnect.
+End-to-end smoke test for the inbound/reverse mode. Validates: control
+channel registration, data channel pairing per browser session, CF
+Access service token auth, graceful reconnect.
+
+The walkthrough below uses **worker-copilot** as the test subject. The
+exact same recipe works for **worker-claude** with a few field
+substitutions (see the "Same recipe for worker-claude" section near the
+end). A multi-machine deployment walkthrough sits below that.
 
 ## What you need before starting
 
@@ -182,6 +186,169 @@ nc -zv localhost 8003    # should fail (Connection refused)
 
 The container is talking to the hub purely through its outbound 443.
 No firewall holes opened, no port-forward configured, no VPN.
+
+## Same recipe for worker-claude
+
+Identical flow, only field substitutions:
+
+| Field                    | worker-copilot value           | worker-claude value            |
+| ------------------------ | ------------------------------ | ------------------------------ |
+| `WORKER_TYPE` env        | `copilot`                      | `claude`                       |
+| `WORKER_ID` example      | `remote-copilot`               | `remote-claude`                |
+| Compose file             | `worker-copilot-compose.yml`   | `worker-claude-compose.yml`    |
+| Worker default port      | 8003                           | 8002                           |
+| Auth setup on host       | `copilot` once to log in       | `claude login` once            |
+| `~/...` auth mount       | `~/.copilot`                   | `~/.claude` + `~/.claude.json` |
+| Container name           | `claude-web-worker-copilot`    | `claude-web-worker-claude`     |
+| workers.json `type`      | `copilot`                      | `claude`                       |
+
+Everything else (CF Access setup, `HUB_PUBLIC_URL`, `WORKER_SECRET`,
+service tokens, hub workers.json shape with `mode: "inbound"`, expected
+log lines, network isolation verification) is the same.
+
+File upload via `/api/upload` (browser drag-and-drop / file picker)
+**does work** for inbound workers via a dedicated short-lived WS data
+channel. The hub routes the upload through `InboundRegistry.open_session()`
+and sends `{type: "upload", payload: {...content_b64...}}` over the
+data WS; the worker responds with `upload_response` or `upload_error`.
+
+Practical raw-bytes limit per upload in inbound mode: **~12 MiB** (bounded
+by uvicorn's `ws_max_size` default after base64 + JSON envelope). Files
+above that get HTTP 413 from the hub with a clear error message before
+the WS even opens. Outbound workers don't have this limit (they use the
+HTTP multipart path which streams).
+
+## Deploying to a second machine (the real showcase)
+
+This is the use case reverse mode exists for - a worker running on
+a different machine than the hub, reachable only through the hub's
+public URL via Cloudflare Tunnel. Mirrors the "Workers in a closed VPC"
+narrative from the README.
+
+### Prereqs on the worker machine
+
+- Docker + docker compose
+- `git` for cloning the repo
+- The agent CLI installed on the host (`claude login` or `copilot`)
+  so that the agent's auth state lives in `~/.claude` / `~/.copilot`
+  ready to be bind-mounted into the container
+- Egress 443 to your hub's public URL. Verify with:
+  ```bash
+  curl -I https://<your-hub-host>/api/health
+  # Expect: HTTP/2 302 (CF Access SSO redirect) - means CF edge is reachable
+  ```
+
+### One-time setup on the hub
+
+Add the future worker to `workers.json` on the hub box:
+
+```json
+{
+  "id": "remote-claude-pc1",
+  "type": "claude",
+  "label": "PC1 (reverse)",
+  "mode": "inbound",
+  "secret": "<WORKER_SECRET shared with worker>"
+}
+```
+
+No hub rebuild needed (workers.json is re-read on every browser WS
+connect). If you change `WORKER_SECRET`, that DOES require a hub env
+update + restart.
+
+CF Access service token: reuse the same one you used for the first
+reverse-mode test (one token can authorize many workers - "Any Access
+Service Token" policy doesn't care which one).
+
+### Steps on the worker machine
+
+```bash
+# 1. Clone repo (need the worker-claude/ subdir + compose files)
+git clone <your repo URL> claude_cloud
+cd claude_cloud
+
+# 2. Log in to the agent so ~/.claude/ exists with auth
+claude login            # or: copilot
+
+# 3. Create dirs the volume mounts expect
+mkdir -p ~/.claude-web
+
+# 4. Create .env
+cat > .env <<'EOF'
+UID=1000
+GID=1000
+
+WORKER_SECRET=<must match hub's>
+WORKER_MODE=inbound
+HUB_PUBLIC_URL=https://<your-hub-host>
+WORKER_ID=remote-claude-pc1
+WORKER_LABEL=PC1
+WORKER_TYPE=claude
+
+# CF Access service token
+CF_ACCESS_CLIENT_ID=<from CF Dashboard>
+CF_ACCESS_CLIENT_SECRET=<from CF Dashboard>
+EOF
+# Lock it down - has secrets
+chmod 600 .env
+
+# 5. Uncomment the reverse-mode env block in worker-claude-compose.yml
+#    (see the commented "Reverse (inbound) mode" lines under environment:)
+$EDITOR worker-claude-compose.yml
+
+# 6. Edit volume mounts to point at THIS machine's project directories
+#    (~/code is the default but you may have different paths)
+$EDITOR worker-claude-compose.yml
+
+# 7. Build and start
+docker compose -f worker-claude-compose.yml up -d --build
+
+# 8. Tail logs to verify dial-out
+docker compose -f worker-claude-compose.yml logs -f worker-claude
+```
+
+Within ~5 seconds of step 8 you should see:
+
+```
+hub_control_dialing url=wss://<hub>/worker-register worker_id=remote-claude-pc1
+hub_control_registered worker_id=remote-claude-pc1
+```
+
+On the hub:
+
+```
+worker_control_registered worker_id=remote-claude-pc1 type=claude
+```
+
+Open the hub in a browser. The sidebar should list "PC1 (reverse)" as
+a connected worker alongside any existing ones. Open a project on it,
+start a session, send a prompt - the round-trip goes
+browser -> CF Tunnel -> hub -> CF Tunnel back out -> CF edge -> CF
+Tunnel back to your worker box -> Claude SDK -> response back the same
+path. Latency adds ~100-200ms vs LAN but the demo value (multi-machine
+federation through public hub with full privacy) is the point.
+
+### Bonus: verify the worker box really has no inbound ports open
+
+The whole sales pitch of reverse mode. From outside the worker
+machine:
+
+```bash
+# From any other box on the network or even from the public internet
+nmap -p 8002,8003 <worker machine IP>
+# Both should be closed/filtered
+```
+
+From inside the worker machine, the container shouldn't bind anything
+either if you removed the `ports:` block in compose:
+
+```bash
+ss -tlnp | grep -E "8002|8003"
+# Should be empty
+```
+
+If you left `ports:` for the `/health` endpoint, only 127.0.0.1
+binding is fine (loopback is not "exposed").
 
 ## Known limitations
 

@@ -163,6 +163,34 @@ async def upload_proxy(
     if worker is None:
         raise HTTPException(status_code=404, detail=f"unknown worker {worker_id}")
 
+    content = await file.read()
+    use_filename = filename or file.filename or "upload.bin"
+
+    logger.info(
+        "upload_proxy_forward",
+        worker_id=worker_id,
+        mode=worker.mode,
+        project_path=project_path,
+        rel_dir=path,
+        filename=use_filename,
+        size=len(content),
+        email=claims.get("email"),
+    )
+
+    # ── Inbound (reverse-mode) worker: send the upload through a
+    # short-lived data WS opened via the worker's control channel. The
+    # worker is dial-out only so we have no HTTP path to it.
+    if worker.mode == "inbound":
+        return await _upload_via_inbound_ws(
+            worker_id=worker_id,
+            project_path=project_path,
+            rel_path=path,
+            filename=use_filename,
+            content=content,
+            on_conflict=on_conflict,
+        )
+
+    # ── Outbound worker: classic HTTP POST to /internal/upload.
     # Worker URL in workers.json is the WS URL ("ws://host:port/ws"). Derive
     # the corresponding HTTP base by swapping the scheme and stripping the
     # WS path.
@@ -171,14 +199,9 @@ async def upload_proxy(
         http_base = http_base[: -len("/ws")]
     upload_url = f"{http_base}/internal/upload"
 
-    # Stream the file body to the worker via httpx multipart. `file.read()`
-    # buffers in memory - acceptable for dev/single-user usage; for
-    # multi-tenant production we'd switch to chunked streaming. The user
-    # explicitly opted into "no limits" so this stays simple.
-    content = await file.read()
     files = {
         "file": (
-            filename or file.filename or "upload.bin",
+            use_filename,
             content,
             file.content_type or "application/octet-stream",
         ),
@@ -190,16 +213,6 @@ async def upload_proxy(
     }
     if filename:
         data["filename"] = filename
-
-    logger.info(
-        "upload_proxy_forward",
-        worker_id=worker_id,
-        project_path=project_path,
-        rel_dir=path,
-        filename=data.get("filename") or file.filename,
-        size=len(content),
-        email=claims.get("email"),
-    )
 
     # No client-side timeout cap: large files over slow connections need
     # the worker's full processing window. The hub itself runs on a single
@@ -226,6 +239,135 @@ async def upload_proxy(
     except ValueError:
         body = {"code": "bad_gateway", "message": resp.text[:200]}
     return JSONResponse(status_code=resp.status_code, content=body)
+
+
+# uvicorn's default ws_max_size is 16 MiB. After base64 encoding (~33%
+# overhead) and the wrapping JSON envelope, the practical raw-bytes cap
+# is around 12 MiB. We reject anything bigger before opening the WS so
+# the frontend gets a clean 413 instead of an opaque close-frame.
+_INBOUND_UPLOAD_MAX_BYTES = 12 * 1024 * 1024
+
+
+async def _upload_via_inbound_ws(
+    *,
+    worker_id: str,
+    project_path: str,
+    rel_path: str,
+    filename: str,
+    content: bytes,
+    on_conflict: str,
+) -> JSONResponse:
+    """Route an upload to an inbound (reverse-mode) worker via a fresh WS.
+
+    Protocol:
+      hub -> worker:  {type: "upload", payload: {project_path, path,
+                                                 filename, content_b64,
+                                                 on_conflict}}
+      worker -> hub:  {type: "upload_response", payload: <upload result>}
+                  OR  {type: "upload_error", payload: {code, message}}
+
+    The hub opens a dedicated data WS via InboundRegistry.open_session()
+    just for this one upload, then closes it. Browser-facing response
+    shape matches the HTTP /internal/upload path so the frontend can't
+    tell the difference between outbound and inbound workers.
+    """
+    import base64
+
+    if len(content) > _INBOUND_UPLOAD_MAX_BYTES:
+        logger.warning(
+            "upload_inbound_too_large",
+            worker_id=worker_id,
+            size=len(content),
+            limit=_INBOUND_UPLOAD_MAX_BYTES,
+        )
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Upload too large for inbound worker (max "
+                f"{_INBOUND_UPLOAD_MAX_BYTES} bytes raw). The worker has "
+                "no inbound HTTP port so the file has to fit in a single "
+                "WebSocket frame."
+            ),
+        )
+
+    try:
+        ws = await inbound_registry.open_session(worker_id, timeout=10.0)
+    except LookupError as exc:
+        logger.warning("upload_inbound_no_control", worker_id=worker_id, error=str(exc))
+        raise HTTPException(
+            status_code=502,
+            detail=f"worker {worker_id} not registered (control channel down)",
+        ) from exc
+    except TimeoutError as exc:
+        logger.warning("upload_inbound_session_timeout", worker_id=worker_id)
+        raise HTTPException(
+            status_code=504,
+            detail=f"worker {worker_id} did not open data channel in time",
+        ) from exc
+
+    content_b64 = base64.b64encode(content).decode("ascii")
+    try:
+        await ws.send_text(json.dumps({
+            "type": "upload",
+            "payload": {
+                "project_path": project_path,
+                "path": rel_path,
+                "filename": filename,
+                "content_b64": content_b64,
+                "on_conflict": on_conflict,
+            },
+        }))
+        # Wait for the worker's response. Generous timeout because the
+        # worker is reading + writing potentially-large files; we already
+        # capped the size so this isn't unbounded.
+        raw = await asyncio.wait_for(ws.receive_text(), timeout=60.0)
+    except (WebSocketDisconnect, RuntimeError) as exc:
+        logger.warning("upload_inbound_ws_dropped", worker_id=worker_id, error=str(exc))
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail="worker WS dropped mid-upload") from exc
+    except TimeoutError as exc:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        raise HTTPException(status_code=504, detail="worker did not respond to upload") from exc
+
+    try:
+        await ws.close()
+    except Exception:
+        pass
+
+    try:
+        msg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=502, detail="worker sent non-JSON upload response"
+        ) from exc
+
+    msg_type = msg.get("type")
+    payload = msg.get("payload") or {}
+
+    if msg_type == "upload_response":
+        return JSONResponse(content=payload)
+
+    if msg_type == "upload_error":
+        # Mirror the HTTP path: 409 for file_exists, 400 for everything
+        # else. The frontend already knows how to render both.
+        status_code = 409 if payload.get("code") == "file_exists" else 400
+        return JSONResponse(status_code=status_code, content=payload)
+
+    logger.warning(
+        "upload_inbound_unexpected_msg",
+        worker_id=worker_id,
+        msg_type=msg_type,
+    )
+    raise HTTPException(
+        status_code=502,
+        detail=f"unexpected worker response: type={msg_type}",
+    )
 
 
 @app.websocket("/worker-register")
