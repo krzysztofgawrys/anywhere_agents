@@ -1,0 +1,94 @@
+# Build + push worker-copilot to GitHub Container Registry.
+#
+# Image: ghcr.io/<owner>/anywhere-agents/worker-copilot
+#
+# Sister workflow to build-worker-claude.yml - same shape, only the
+# image name + path filters + cache scope differ. See that file for the
+# rationale comments.
+#
+# Tags pushed:
+#   latest      - every push to master
+#   sha-<7>     - every push (master AND PR validation builds)
+#   v<semver>   - every git tag matching v*
+#
+# Multi-arch: linux/amd64 + linux/arm64.
+
+name: build-worker-copilot
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+    paths:
+      - "worker-copilot/**"
+      - "shared/**"
+      - "docker/worker-copilot.Dockerfile"
+      - ".github/workflows/build-worker-copilot.yml"
+  pull_request:
+    paths:
+      - "worker-copilot/**"
+      - "shared/**"
+      - "docker/worker-copilot.Dockerfile"
+      - ".github/workflows/build-worker-copilot.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: build-worker-copilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/anywhere-agents/worker-copilot
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=sha-,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+          labels: |
+            org.opencontainers.image.title=Anywhere Agents - worker-copilot
+            org.opencontainers.image.description=Reverse-mode-capable GitHub Copilot CLI worker for Anywhere Agents
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/worker-copilot.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=worker-copilot
+          cache-to: type=gha,scope=worker-copilot,mode=max
+          provenance: mode=max
+          sbom: true

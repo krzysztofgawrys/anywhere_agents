@@ -29,6 +29,19 @@ RUN apt-get update \
 RUN mkdir -p /home/app && chmod 777 /home/app \
     && chmod a+w /etc/passwd /etc/group
 
+# Pre-create the claude-web state directory with the runtime UID/GID
+# baked in. When a named volume is bound at this path on first `up`,
+# Docker copies the directory's ownership + permissions from the image
+# into the (otherwise root-owned) volume - so the non-root worker
+# process can write without a separate init-container chown service.
+# Override APP_UID/APP_GID via `--build-arg` (or compose build.args)
+# if the deploy host's UID isn't 1000.
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN mkdir -p /home/app/.claude-web \
+    && chown ${APP_UID}:${APP_GID} /home/app/.claude-web \
+    && chmod 700 /home/app/.claude-web
+
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv
 # Shared package source - editable install in .venv points at /shared/worker_shared

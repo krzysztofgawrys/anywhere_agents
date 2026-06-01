@@ -81,73 +81,13 @@ services:
       - ${HOME}/elec:${HOME}/elec
       - ${HOME}/insp:${HOME}/insp
 
-  # Second worker-claude instance running in reverse (inbound) mode.
-  # EXAMPLE / OPT-IN: hidden behind a docker compose profile so it does
-  # NOT start with the plain `docker compose up -d`. To launch it
-  # alongside the rest of the stack:
-  #
-  #   docker compose --profile reverse-test up -d --build worker-claude-remote
-  #
-  # Smoke-test target for end-to-end validation of worker-claude inbound
-  # without taking down the primary worker-claude (which is the active
-  # container for the running Claude Code session driving this repo).
-  #
-  # Prereqs before launching:
-  #   - ~/.claude-remote/ exists on the host as a copy of ~/.claude/
-  #     (so this worker has its own auth + session history isolated from
-  #     the primary worker-claude container)
-  #   - ~/.claude-remote.json exists as a copy of ~/.claude.json
-  #   - workers.json contains an inbound entry with id "remote-claude"
-  #     (see workers.json.example for the shape)
-  #   - .env has WORKER_SECRET, HUB_PUBLIC_URL, and (if hub is behind
-  #     CF Access) CF_ACCESS_CLIENT_ID/SECRET
-  #
-  # Isolated state:
-  # - ~/.claude-remote (host) -> /home/app/.claude (container): private
-  #   copy of auth + session history so the two workers don't fight over
-  #   ~/.claude/projects/*.jsonl writes.
-  # - Separate SQLite path (worker-claude-remote.sqlite) so the projects
-  #   index doesn't collide with the primary worker's DB.
-  # - No `ports:` block - inbound workers don't need a listening port.
-  # - Same project root mounts as the primary worker so both see the
-  #   same code; user picks per-session which worker handles the prompt.
-  worker-claude-remote:
-    profiles: ["reverse-test"]
-    build:
-      context: .
-      dockerfile: docker/worker-claude.Dockerfile
-    container_name: claude-web-worker-claude-remote
-    restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
-    environment:
-      - HOME=/home/app
-      - WORKER_SECRET=${WORKER_SECRET:-changeme}
-      # Internal hub URL for push notifications (worker -> hub HTTP).
-      - HUB_URL=${HUB_URL:-http://hub:8001}
-      # Reverse-mode dial-out target (public hub URL through CF Tunnel).
-      - WORKER_MODE=inbound
-      - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://claude.gawrys.cloud}
-      - WORKER_ID=remote-claude
-      - WORKER_LABEL=Remote claude (reverse)
-      - WORKER_TYPE=claude
-      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
-      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
-      # Separate SQLite path so this worker's project index doesn't
-      # collide with worker-claude (primary)'s db.sqlite under the
-      # same ~/.claude-web mount.
-      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-claude-remote.sqlite
-    volumes:
-      # Isolated Claude state (copy of ~/.claude on host).
-      - ${HOME}/.claude-remote:/home/app/.claude
-      - ${HOME}/.claude-remote.json:/home/app/.claude.json
-      # Shared worker DB dir (DB file path is unique via env above).
-      - ${HOME}/.claude-web:/home/app/.claude-web
-      - ${HOME}/.ssh:/home/app/.ssh
-      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
-      # Same project roots as the primary worker.
-      - ${HOME}/code:${HOME}/code
-      - ${HOME}/elec:${HOME}/elec
-      - ${HOME}/insp:${HOME}/insp
+  # NOTE: worker-claude-remote (reverse/inbound) is NOT defined here -
+  # it lives in worker-claude-compose.yml as a standalone deployment
+  # (typically run on a different host or with a fully separate state
+  # tree). Keeping it out of this file avoids the shared-volume foot-
+  # gun where a bootstrap API key pasted into the remote spilled into
+  # the primary worker via ~/.claude-web, causing the primary to run
+  # on API credits instead of the user's Max subscription.
 
   worker-copilot:
     build:
@@ -180,7 +120,10 @@ services:
       - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
     volumes:
       # Copilot auth + session state (host must have run `copilot` to log in)
-      - ${HOME}/.copilot:/home/app/.copilot
+      # TEMPORARILY DISABLED - smoke-testing the bootstrap-auth flow against
+      # a fresh container with no $COPILOT_HOME population. Restore this line
+      # to recover persistent Copilot session history.
+      # - ${HOME}/.copilot:/home/app/.copilot
       # Worker DB (separate file, see CLAUDE_WEB_DB_PATH above)
       - ${HOME}/.claude-web:/home/app/.claude-web
       # Git credentials

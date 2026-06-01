@@ -29,6 +29,7 @@ whose state is persisted on disk under $COPILOT_HOME/session-state/<id>/.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -52,8 +53,15 @@ from copilot.generated.session_events import (
 from copilot.session import PermissionRequest, PermissionRequestResult
 from worker_shared.sdk.push_notify import emit_push_notify
 
-from src.sdk.client import get_client
+from src.sdk.client import (
+    copilot_has_credentials,
+    get_client,
+    reset_client,
+)
+from src.sdk.oauth import run_device_flow
 from src.sdk.permissions import PermissionBroker
+
+_AGENT_TYPE = "copilot"
 
 logger = structlog.get_logger()
 
@@ -89,6 +97,9 @@ class Session:
         self._idle_event.set()
         self._turn_started_at: float | None = None
         self._is_parked = False
+        # Background task for the bootstrap-auth-then-init flow. None
+        # when credentials were already present (synchronous start path).
+        self._bootstrap_task: asyncio.Task[None] | None = None
 
     @property
     def session_id(self) -> str:
@@ -105,6 +116,81 @@ class Session:
     async def start(self) -> None:
         if self._copilot_session is not None:
             return
+
+        # Fast path: credentials already on disk (or in env). Init the
+        # SDK synchronously so the caller's await completes only after
+        # session_started has been emitted.
+        if copilot_has_credentials():
+            await self._sdk_init()
+            return
+
+        # No creds, and we're NOT going to pick a flow on the user's
+        # behalf (paste vs OAuth) - that decision belongs in the modal.
+        # The sidebar banner is already up courtesy of the WS-handler
+        # preflight emit; once the user completes either flow there,
+        # the next click on "New session" lands here with creds present
+        # and goes through the fast path above.
+        logger.info("session_start_blocked_no_creds", session_id=self._session_id)
+        await self._send({
+            "type": "error",
+            "payload": {
+                "code": "auth_required",
+                "message": (
+                    "Copilot authentication is required. Click the "
+                    "yellow banner in the sidebar to paste a token or "
+                    "log in with GitHub, then start the session again."
+                ),
+            },
+        })
+
+    async def _bootstrap_and_init(self) -> None:
+        """Background task: run bootstrap auth, then init the SDK."""
+        try:
+            if not await self._ensure_credentials():
+                return
+            # Drop any cached client built with stale (empty) env so the
+            # next get_client() picks up our newly-hydrated
+            # COPILOT_GITHUB_TOKEN.
+            await reset_client()
+            await self._sdk_init()
+        except Exception as e:
+            logger.error("bootstrap_init_failed", error=str(e), exc_info=True)
+            try:
+                await self._send({
+                    "type": "error",
+                    "payload": {
+                        "code": "bootstrap_init_failed",
+                        "message": str(e),
+                    },
+                })
+            except Exception:
+                pass
+
+    async def _ensure_credentials(self) -> bool:
+        """Run the OAuth device flow when no credentials are present.
+
+        Spawns the bundled `copilot login` binary; it polls GitHub's
+        device authorization endpoint and writes the resulting token
+        into $COPILOT_HOME/config.json on success. We surface the
+        verification URL + 8-character user code to the browser modal
+        via auth_needed(flow=device_code); the modal shows a "Open
+        activation page" link and a Cancel button.
+
+        Returns True when authentication completed, False on user
+        cancel / timeout / subprocess failure. The auth_status
+        terminal message is emitted by run_device_flow itself.
+        """
+        if copilot_has_credentials():
+            return True
+        worker_id = os.environ.get("WORKER_ID", "") or "worker-copilot"
+        return await run_device_flow(
+            self._send,
+            worker_id=worker_id,
+            agent_type=_AGENT_TYPE,
+        )
+
+    async def _sdk_init(self) -> None:
+        """Actual CopilotSession construction + initial session_started emit."""
         client = await get_client()
         kwargs: dict[str, Any] = {
             "on_permission_request": self._on_permission_request,
@@ -160,6 +246,17 @@ class Session:
 
     async def stop(self) -> None:
         """Disconnect from the SDK while preserving on-disk state."""
+        # Cancel an in-flight bootstrap task so the session can shut down
+        # cleanly even if the user closed the tab mid-paste. Mirrors the
+        # worker-claude pattern - critical to avoid leaving the future
+        # waiter parked forever inside worker_shared.sdk.bootstrap.
+        if self._bootstrap_task is not None and not self._bootstrap_task.done():
+            self._bootstrap_task.cancel()
+            try:
+                await self._bootstrap_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._bootstrap_task = None
         if self._unsubscribe is not None:
             try:
                 self._unsubscribe()

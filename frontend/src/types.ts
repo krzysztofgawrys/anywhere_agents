@@ -155,6 +155,17 @@ export type ClientMessage =
   | {
       type: "auth_cancel";
       payload: { worker_id: string; request_id: string };
+    }
+  | {
+      // Asks the worker to swap the modal from paste flow to OAuth
+      // device flow. Worker spawns `copilot login`, scrapes its
+      // stdout for the device code, then emits a fresh
+      // auth_needed(flow=device_code) that replaces the same entry
+      // in the auth store - the modal then re-renders into the
+      // device_code panel. Only meaningful for workers whose SDK
+      // supports a device flow (currently: copilot).
+      type: "auth_request_oauth";
+      payload: { worker_id: string; request_id: string };
     };
 
 export type DirectoryEntry = {

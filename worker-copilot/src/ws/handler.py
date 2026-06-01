@@ -8,7 +8,9 @@ a `CopilotSession` from `github-copilot-sdk`.
 
 import asyncio
 import json
+import os
 import time
+import uuid
 from typing import Any
 
 import structlog
@@ -96,6 +98,35 @@ async def handle_websocket(
     )
     terminal: TerminalSession | None = None
 
+    # Preflight emit (mirrors worker-claude): banner appears in the
+    # sidebar immediately on WS connect when there's no token on disk.
+    # The banner offers BOTH paths to the user:
+    #   - paste a fine-grained PAT (api_key flow, fallback-saved by the
+    #     auth_provided branch in _route)
+    #   - click "Login with GitHub (OAuth)" in the modal, which sends
+    #     auth_request_oauth → we spawn `copilot login`, scrape stdout
+    #     for the device code, emit a fresh auth_needed(flow=device_code)
+    #     that overwrites this entry in the auth store → modal swaps
+    #     panels automatically.
+    # The preflight uses flow=api_key as the default banner shape so the
+    # UX matches worker-claude exactly; the modal then surfaces the
+    # OAuth-instead button when agent_type=="copilot".
+    from src.sdk.client import copilot_bootstrap_instructions, copilot_has_credentials
+    if not copilot_has_credentials():
+        preflight_request_id = str(uuid.uuid4())
+        await send({
+            "type": "auth_needed",
+            "payload": {
+                "worker_id": os.environ.get("WORKER_ID", "") or "worker-copilot",
+                "agent_type": "copilot",
+                "flow": "api_key",
+                "request_id": preflight_request_id,
+                "instructions": copilot_bootstrap_instructions(),
+                "expires_at": int(time.time() + 600),
+            },
+        })
+        logger.info("auth_preflight_emitted", request_id=preflight_request_id)
+
     try:
         while True:
             raw = await asyncio.wait_for(
@@ -155,6 +186,102 @@ async def _route(
         manager.touch(connection_id)
         await send({"type": "pong", "payload": {}})
         return terminal
+
+    # ── Bootstrap auth: resolve pending request_credentials() ─────────
+    # The hub forwards `auth_provided` from the browser after the user
+    # submitted the modal form. Match request_id to a pending future in
+    # worker_shared.sdk.bootstrap so the blocked session.start() can
+    # continue. `auth_cancel` lets the user dismiss the prompt.
+    if msg_type == "auth_provided":
+        from worker_shared.sdk.bootstrap import resolve_auth
+        from worker_shared.sdk.credentials_store import save_credentials
+        request_id = payload.get("request_id")
+        credentials = payload.get("credentials") or {}
+        logger.info(
+            "auth_provided_received",
+            request_id=request_id,
+            has_credentials=isinstance(credentials, dict) and bool(credentials),
+        )
+        if not isinstance(request_id, str) or not isinstance(credentials, dict):
+            await _send_error(
+                send, "bad_request", "auth_provided requires request_id and credentials"
+            )
+            return terminal
+        # First try the live-bootstrap path (session.start() is awaiting
+        # this future). If that returns False there's no in-flight
+        # bootstrap, but the user might have clicked Save on the
+        # preflight banner - persist directly so the next session.start()
+        # picks them up.
+        if resolve_auth(request_id, credentials):
+            return terminal
+        # Fallback preflight save. The modal field name is `api_key` for
+        # symmetry across workers; Copilot internally uses
+        # COPILOT_GITHUB_TOKEN, so accept either field name on input.
+        token = credentials.get("github_token") or credentials.get("api_key")
+        if isinstance(token, str) and token:
+            save_credentials(
+                agent_type="copilot",
+                flow="api_key",
+                data={"github_token": token},
+            )
+            os.environ["COPILOT_GITHUB_TOKEN"] = token
+            # Drop the cached CopilotClient so the next get_client()
+            # rebuilds the subprocess with the fresh token in env.
+            try:
+                from src.sdk.client import reset_client
+                await reset_client()
+            except Exception as e:
+                logger.warning("auth_preflight_reset_client_failed", error=str(e))
+            await send({
+                "type": "auth_status",
+                "payload": {
+                    "worker_id": os.environ.get("WORKER_ID", "") or "worker-copilot",
+                    "request_id": request_id,
+                    "state": "completed",
+                },
+            })
+            logger.info("auth_preflight_persisted", request_id=request_id)
+        else:
+            await _send_error(
+                send,
+                "bad_request",
+                "auth_provided fallback save requires credentials.github_token or credentials.api_key",
+            )
+        return terminal
+
+    if msg_type == "auth_request_oauth":
+        # User clicked "Login with GitHub (OAuth)" in the modal. Spawn
+        # `copilot login` in the background; it'll emit a fresh
+        # auth_needed(flow=device_code) once the device code line lands
+        # on its stdout (~1-2s). We do NOT await here - the WS read
+        # loop must keep pumping so the eventual auth_cancel can route
+        # through and kill the subprocess.
+        from src.sdk.oauth import run_device_flow
+        request_id = payload.get("request_id")
+        worker_id = (
+            payload.get("worker_id")
+            or os.environ.get("WORKER_ID", "")
+            or "worker-copilot"
+        )
+        logger.info("auth_request_oauth_received", worker_id=worker_id, request_id=request_id)
+        asyncio.create_task(
+            run_device_flow(send, worker_id=worker_id, agent_type="copilot")
+        )
+        return terminal
+
+    if msg_type == "auth_cancel":
+        from src.sdk.oauth import cancel_device_flow
+        from worker_shared.sdk.bootstrap import cancel_auth
+        request_id = payload.get("request_id")
+        if isinstance(request_id, str):
+            # Try both registries: the api_key paste path lives in
+            # worker_shared.sdk.bootstrap, the device-flow subprocess
+            # lives in src.sdk.oauth. Only one will match a given id.
+            cancel_auth(request_id, "User cancelled the bootstrap")
+            killed = cancel_device_flow(request_id)
+            logger.info("auth_cancel_handled", request_id=request_id, killed_oauth=killed)
+        return terminal
+
 
     # ── SDK-agnostic: projects ─────────────────────────────────────────────
     if msg_type == "list_projects":
@@ -308,7 +435,6 @@ async def _route(
         return terminal
 
     if msg_type == "browse_fs":
-        import os
         path = payload.get("path", "") or ""
         if not isinstance(path, str):
             await _send_error(send, "bad_request", "path must be a string")
@@ -352,7 +478,6 @@ async def _route(
         return terminal
 
     if msg_type == "create_project":
-        import os
         from pathlib import Path as _Path
         path = payload.get("path", "") or ""
         if not isinstance(path, str) or not path:
@@ -418,6 +543,15 @@ async def _route(
     if msg_type == "list_models":
         # Lazy-start the CopilotClient if needed, ask SDK for its model list.
         # Frontend uses this to populate /model autocomplete dynamically.
+        # Guard: only start the client if we have credentials - otherwise the
+        # headless subprocess would start its own device code login flow, which
+        # the user can't see (it shows a different device code than our OAuth
+        # modal), wasting a GitHub device code allocation and writing confusing
+        # entries to copilot.log.
+        from src.sdk.client import copilot_has_credentials
+        if not copilot_has_credentials():
+            await send({"type": "models", "payload": {"models": []}})
+            return terminal
         try:
             from src.sdk.client import get_client
             client = await get_client()

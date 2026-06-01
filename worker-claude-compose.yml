@@ -61,6 +61,14 @@ services:
     build:
       context: .
       dockerfile: docker/worker-claude.Dockerfile
+      # Bake the host's UID/GID into the image so the pre-created
+      # /home/app/.claude-web directory has correct ownership. Docker
+      # then propagates that ownership to the named volume on first
+      # mount, so the non-root worker process can write without any
+      # init-container chown gymnastics.
+      args:
+        APP_UID: ${UID:-1000}
+        APP_GID: ${GID:-1000}
     container_name: claude-web-worker-claude
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
@@ -104,8 +112,17 @@ services:
       # behavior across worker restarts.
       - ${HOME}/.claude:/home/app/.claude
       - ${HOME}/.claude.json:/home/app/.claude.json
-      # Worker DB (projects index) - create dir first: mkdir -p ~/.claude-web
-      - ${HOME}/.claude-web:/home/app/.claude-web
+      # Private named volume for project DB (db.sqlite) + bootstrap
+      # credentials (credentials/<worker_id>.json). Deliberately a
+      # named volume rather than a host bind so:
+      #   - no `mkdir` prereq on host before first `up`
+      #   - each worker deployment has fully isolated state (a bootstrap
+      #     API key pasted here never leaks into a co-located primary
+      #     worker that may be running on the same host's ~/.claude-web)
+      # Wipe state with:
+      #   docker volume rm worker-claude_claude-web-state
+      # (compose project prefix may differ - check `docker volume ls`)
+      - claude-web-state:/home/app/.claude-web
       # Git credentials (read-only)
       - ${HOME}/.ssh:/home/app/.ssh:ro
       - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
@@ -114,3 +131,9 @@ services:
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
       - ${HOME}/code:${HOME}/code
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  # Private claude-web state - bootstrap credentials + project DB.
+  # See worker-claude.volumes for the design note.
+  claude-web-state:

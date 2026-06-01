@@ -83,6 +83,31 @@ export function AuthBootstrapModal({ send }: Props) {
     // with an error message in the existing entry.error path.
   };
 
+  // Per-agent capability flag: does this worker's SDK support an OAuth
+  // device flow? Currently only copilot (its bundled `copilot login`
+  // does the device dance natively). Adding a new agent here only
+  // requires the worker side to accept `auth_request_oauth` - the
+  // modal mechanics are already wired.
+  const supportsOAuth = entry.agent_type === "copilot";
+
+  const onRequestOAuth = () => {
+    setSendError(null);
+    const ok = send({
+      type: "auth_request_oauth",
+      payload: { worker_id: entry.worker_id, request_id: entry.request_id },
+    });
+    if (!ok) {
+      setSendError(
+        "Connection to hub is reconnecting. Wait a moment and try again."
+      );
+      return;
+    }
+    // The worker will reply with a fresh auth_needed(flow=device_code)
+    // that replaces this entry in the auth store; the modal re-renders
+    // automatically into the device_code panel below. No local state
+    // flip needed here.
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="w-full max-w-md rounded-lg bg-zinc-900 border border-zinc-700 shadow-2xl">
@@ -145,6 +170,25 @@ export function AuthBootstrapModal({ send }: Props) {
                   {submitting ? "Sending..." : "Save"}
                 </button>
               </div>
+
+              {supportsOAuth && (
+                <div className="pt-2 border-t border-zinc-800 space-y-2">
+                  <div className="text-[11px] text-zinc-500 text-center">
+                    or
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onRequestOAuth}
+                    disabled={submitting}
+                    className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs text-zinc-200 hover:bg-zinc-700 disabled:opacity-50"
+                  >
+                    Login with GitHub (OAuth)
+                  </button>
+                  <p className="text-[11px] text-zinc-500 text-center">
+                    Opens GitHub device flow - no token generation needed.
+                  </p>
+                </div>
+              )}
             </form>
           )}
 

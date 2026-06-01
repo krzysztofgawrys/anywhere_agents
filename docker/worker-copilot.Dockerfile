@@ -1,6 +1,8 @@
-# worker-copilot Dockerfile - mirrors worker-claude's structure but:
-# - no Node.js, no @anthropic-ai/claude-code, no @github/copilot CLI install
-#   (github-copilot-sdk wheel ships the Copilot CLI binary bundled, ~140MB)
+# worker-copilot Dockerfile - mirrors worker-claude's structure.
+# Installs Node.js + @github/copilot CLI (npm) for OAuth device-flow login
+# that reliably writes tokens to config.json. The Python SDK
+# (github-copilot-sdk) still provides the runtime; the npm CLI is used
+# only for the `copilot login` credential bootstrap.
 # - exposes port 8003 (parallel to worker-claude on 8002)
 # - reads its source from worker-copilot/, shares worker_shared/ via path dep
 
@@ -21,16 +23,40 @@ RUN uv lock && uv sync --frozen --no-dev
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM python:3.13-slim
 
-# System deps: git, ssh, bash (terminal). No Node here - github-copilot-sdk
-# ships the Copilot CLI binary inside its wheel.
+# System deps: git, ssh, bash (terminal), Node.js (for @github/copilot CLI).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         curl ca-certificates git openssh-client bash \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
+# Install the standalone Copilot CLI (npm). The SDK-bundled binary
+# (v1.0.36) does NOT write tokens to config.json after `copilot login`;
+# the npm CLI (>=1.0.51) does. Used only for the OAuth bootstrap flow.
+RUN npm install -g @github/copilot@latest \
+    && npm cache clean --force
+
 RUN mkdir -p /home/app && chmod 777 /home/app \
     && chmod a+w /etc/passwd /etc/group
+
+# Pre-create the claude-web state directory with the runtime UID/GID
+# baked in. When a named volume is bound at this path on first `up`,
+# Docker copies the directory's ownership + permissions from the image
+# into the (otherwise root-owned) volume - so the non-root worker
+# process can write without a separate init-container chown service.
+# Override APP_UID/APP_GID via `--build-arg` (or compose build.args)
+# if the deploy host's UID isn't 1000.
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN mkdir -p /home/app/.claude-web \
+    && chown ${APP_UID}:${APP_GID} /home/app/.claude-web \
+    && chmod 700 /home/app/.claude-web
+
+RUN mkdir -p /home/app/.copilot \
+    && chown ${APP_UID}:${APP_GID} /home/app/.copilot \
+    && chmod 700 /home/app/.copilot
 
 WORKDIR /app
 COPY --from=deps /app/.venv /app/.venv

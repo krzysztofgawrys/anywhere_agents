@@ -88,10 +88,10 @@ services:
       # Copilot auth + session state (from `copilot` login on host).
       # OPTIONAL when COPILOT_GITHUB_TOKEN is set above. Keep the mount
       # if you want Copilot's local session history across restarts.
-      - ${HOME}/.copilot:/home/app/.copilot
+      - claude-web-state:/home/app/.copilot
       # Worker DB (projects index, separate from worker-claude) - create
       # the dir first: mkdir -p ~/.claude-web
-      - ${HOME}/.claude-web:/home/app/.claude-web
+      - claude-web-state:/home/app/.claude-web
       # Git credentials
       - ${HOME}/.ssh:/home/app/.ssh
       - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
@@ -100,3 +100,9 @@ services:
       # by Copilot inside ~/.copilot/session-state/.../workspace.* resolves
       # correctly inside the container.
       - ${HOME}/code:${HOME}/code
+
+# ── Named volumes ────────────────────────────────────────────────────────────
+volumes:
+  # Private claude-web state - bootstrap credentials + project DB.
+  # See worker-claude.volumes for the design note.
+  claude-web-state:

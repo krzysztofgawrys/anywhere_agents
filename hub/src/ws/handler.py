@@ -491,10 +491,16 @@ async def handle_websocket(
             # ── Bootstrap auth: route by worker_id to that specific worker ──
             # `auth_provided` carries the credentials the user pasted into
             # the modal. `auth_cancel` lets the user dismiss the prompt.
-            # Both unicast to the named worker - never broadcast (the
+            # `auth_request_oauth` asks the worker to switch the modal
+            # from paste flow to OAuth device flow (copilot only - worker
+            # spawns `copilot login`, scrapes the device code, emits a
+            # fresh auth_needed flow=device_code that overwrites the
+            # store entry; the modal re-renders into the device panel
+            # automatically).
+            # All unicast to the named worker - never broadcast (the
             # opposite direction, `auth_needed` / `auth_status`, IS sent
             # by the worker to the browser via the default forward path).
-            if msg_type in ("auth_provided", "auth_cancel"):
+            if msg_type in ("auth_provided", "auth_cancel", "auth_request_oauth"):
                 target = payload.get("worker_id")
                 request_id = payload.get("request_id")
                 logger.info(
