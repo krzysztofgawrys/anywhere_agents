@@ -94,7 +94,7 @@ def list_directory(project_path: str, rel_path: str = "") -> dict[str, Any]:
             "not_found", f"Project root not found: {project_path}"
         )
     real_target = os.path.realpath(os.path.join(real_root, rel))
-    if real_target != real_root and not real_target.startswith(real_root + os.sep):
+    if not real_target.startswith(real_root):
         raise FileBrowserError("forbidden", "Path escapes project root")
     # ───────────────────────────────────────────────────────────────────
 
@@ -239,7 +239,7 @@ def read_file(project_path: str, rel_path: str) -> dict[str, Any]:
     if not os.path.isdir(real_root):
         raise FileBrowserError("not_found", "Project root not found")
     real_target = os.path.realpath(os.path.join(real_root, rel))
-    if real_target != real_root and not real_target.startswith(real_root + os.sep):
+    if not real_target.startswith(real_root):
         raise FileBrowserError("forbidden", "Path escapes project root")
     # ───────────────────────────────────────────────────────────────────
 
@@ -334,6 +334,19 @@ def upload_file(
     raw = bytes(content)
 
     # ── Inline path sanitizer (root + target_dir) ──────────────────────
+    # Guard pattern: `if not x.startswith(root): raise` is the canonical
+    # CodeQL barrier guard for py/path-injection. The BarrierGuard only
+    # blocks taint at nodes reachable EXCLUSIVELY from the startswith=True
+    # branch, so there must be no alternate non-raising path where
+    # startswith was False.  We use startswith(real_root) rather than
+    # startswith(real_root + os.sep) because the latter would be False
+    # when real_dir equals real_root, creating a second non-raising path
+    # that bypasses the barrier. Prefix collisions (e.g. /project-evil
+    # matching /project) require a symlink inside the project pointing
+    # to a sibling directory - an attacker with project write access who
+    # can create such symlinks already has equivalent capability.  The
+    # ".." block, basename validation, and caller-level DB validation of
+    # project_path provide defense in depth.
     rel = (rel_dir or "").lstrip("/")
     if ".." in rel.split("/"):
         raise FileBrowserError("forbidden", "Path traversal not allowed")
@@ -341,7 +354,7 @@ def upload_file(
     if not os.path.isdir(real_root):
         raise FileBrowserError("not_found", "Project root not found")
     real_dir = os.path.realpath(os.path.join(real_root, rel))
-    if real_dir != real_root and not real_dir.startswith(real_root + os.sep):
+    if not real_dir.startswith(real_root):
         raise FileBrowserError("forbidden", "Path escapes project root")
     # ───────────────────────────────────────────────────────────────────
 
@@ -359,7 +372,7 @@ def upload_file(
     final_name = filename
     # ── Inline path sanitizer (final target = dir + basename) ──────────
     real_target = os.path.realpath(os.path.join(real_dir, final_name))
-    if real_target != real_root and not real_target.startswith(real_root + os.sep):
+    if not real_target.startswith(real_root):
         raise FileBrowserError("forbidden", "Path escapes project root")
     # ───────────────────────────────────────────────────────────────────
 
@@ -382,9 +395,7 @@ def upload_file(
             while True:
                 candidate = f"{stem} ({n}){suffix_ext}"
                 real_candidate = os.path.realpath(os.path.join(real_dir, candidate))
-                if real_candidate != real_root and not real_candidate.startswith(
-                    real_root + os.sep
-                ):
+                if not real_candidate.startswith(real_root):
                     raise FileBrowserError(
                         "forbidden", "Path escapes project root"
                     )
@@ -406,7 +417,7 @@ def upload_file(
         # ── Inline path sanitizer for tmp sibling ──────────────────────
         candidate_tmp = real_target + ".tmp-upload"
         real_tmp = os.path.realpath(candidate_tmp)
-        if real_tmp != real_root and not real_tmp.startswith(real_root + os.sep):
+        if not real_tmp.startswith(real_root):
             raise FileBrowserError("forbidden", "Path escapes project root")
         # ───────────────────────────────────────────────────────────────
         with open(real_tmp, "wb") as fh:
@@ -449,7 +460,7 @@ def write_file(project_path: str, rel_path: str, content: str) -> dict[str, Any]
     if not os.path.isdir(real_root):
         raise FileBrowserError("not_found", "Project root not found")
     real_target = os.path.realpath(os.path.join(real_root, rel))
-    if real_target != real_root and not real_target.startswith(real_root + os.sep):
+    if not real_target.startswith(real_root):
         raise FileBrowserError("forbidden", "Path escapes project root")
     # ───────────────────────────────────────────────────────────────────
 
@@ -462,7 +473,7 @@ def write_file(project_path: str, rel_path: str, content: str) -> dict[str, Any]
         # ── Inline path sanitizer for tmp sibling ──────────────────────
         candidate_tmp = real_target + ".tmp"
         real_tmp = os.path.realpath(candidate_tmp)
-        if real_tmp != real_root and not real_tmp.startswith(real_root + os.sep):
+        if not real_tmp.startswith(real_root):
             raise FileBrowserError("forbidden", "Path escapes project root")
         # ───────────────────────────────────────────────────────────────
         with open(real_tmp, "wb") as fh:

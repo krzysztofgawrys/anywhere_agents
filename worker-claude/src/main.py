@@ -45,6 +45,7 @@ from fastapi.responses import JSONResponse
 
 from worker_shared.db import db
 from worker_shared.files import FileBrowserError, upload_file
+from worker_shared.projects.service import get_project_by_path
 from worker_shared.sdk.registry import registry
 
 from src.projects.scanner import scan_and_register
@@ -164,20 +165,28 @@ async def internal_upload(
     if WORKER_SECRET and x_worker_secret != WORKER_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
 
+    # Validate project_path against the projects database so that only
+    # registered project roots are accepted. Use the DB-stored path
+    # (trusted) rather than the caller-supplied string.
+    project = await get_project_by_path(db, project_path)
+    if not project:
+        raise HTTPException(status_code=403, detail="unknown project path")
+    safe_project_path: str = project["path"]
+
     # Prefer the multipart filename hint from the field, fall back to the
     # UploadFile-provided filename (browser sets it from the File object).
     use_name = filename or file.filename or ""
     content = await file.read()
     logger.info(
         "upload_http_request",
-        project_path=project_path,
+        project_path=safe_project_path,
         rel_dir=path,
         filename=use_name,
         on_conflict=on_conflict,
         size=len(content),
     )
     try:
-        result = upload_file(project_path, path, use_name, content, on_conflict)
+        result = upload_file(safe_project_path, path, use_name, content, on_conflict)
     except FileBrowserError as exc:
         logger.warning(
             "upload_http_failed",

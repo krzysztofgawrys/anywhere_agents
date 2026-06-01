@@ -60,6 +60,31 @@ async def get_project(database: Database, project_id: int) -> dict[str, Any] | N
             }
 
 
+async def get_project_by_path(
+    database: Database, path: str
+) -> dict[str, Any] | None:
+    """Look up a project by its absolute filesystem path.
+
+    Returns the project dict if found, None otherwise. Used to validate
+    that a caller-supplied path corresponds to a registered project.
+    """
+    await database.init()
+    async with database.connect() as conn:
+        async with conn.execute(
+            "SELECT id, path, name, auto_approve FROM projects WHERE path = ?",
+            (path,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "path": row["path"],
+                "name": row["name"],
+                "auto_approve": bool(row["auto_approve"]),
+            }
+
+
 async def create_project(database: Database, path: str) -> dict[str, Any]:
     """Register a directory as a project, returning the record (existing or new)."""
     from pathlib import Path

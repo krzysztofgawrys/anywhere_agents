@@ -36,5 +36,8 @@ docker/.env
 .mypy_cache/
 .ruff_cache/
 
+# CodeQL local analysis (databases + SARIF results)
+.codeql-local/
+
 # TS build info
 frontend/tsconfig.tsbuildinfo

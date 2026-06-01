@@ -29,6 +29,7 @@ from worker_shared.files import (
 from worker_shared.projects.service import (
     create_project,
     get_project,
+    get_project_by_path,
     list_projects,
     set_auto_approve,
 )
@@ -721,6 +722,15 @@ async def _route(
                 "message": "project_path, filename, content_b64 required",
             }})
             return terminal
+        # Validate project_path against the DB; use the DB-stored path.
+        project = await get_project_by_path(db, project_path)
+        if not project:
+            await send({"type": "upload_error", "payload": {
+                "code": "forbidden",
+                "message": "unknown project path",
+            }})
+            return terminal
+        safe_project_path: str = project["path"]
         try:
             content = base64.b64decode(content_b64, validate=True)
         except Exception:
@@ -730,7 +740,7 @@ async def _route(
             }})
             return terminal
         try:
-            result = upload_file(project_path, rel_path, filename, content, on_conflict)
+            result = upload_file(safe_project_path, rel_path, filename, content, on_conflict)
         except FileBrowserError as exc:
             await send({"type": "upload_error", "payload": {
                 "code": exc.code,
