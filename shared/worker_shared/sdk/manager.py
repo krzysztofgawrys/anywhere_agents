@@ -142,8 +142,6 @@ class SessionManager:
             })
             return None
 
-        await self._release_current_lock()
-
         # If the client didn't send a model preference, check the DB for
         # a previously persisted choice so the session resumes with the
         # same model even across worker restarts / different browsers.
