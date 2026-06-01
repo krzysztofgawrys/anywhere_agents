@@ -110,6 +110,16 @@ function App() {
   // bounces back with `no_session`. Cleared after a successful resend attempt
   // so a second `no_session` doesn't loop.
   const lastPromptRef = useRef<ClientMessage | null>(null);
+  // Queued prompt to send after an interrupt completes. When the user clicks
+  // Stop with text in the composer, we queue it here and send it once the
+  // backend confirms the interrupted turn finished (via `result` message).
+  const pendingPromptRef = useRef<{
+    text: string;
+    autoApprove: boolean;
+    images: PromptImage[];
+    stream: boolean;
+  } | null>(null);
+  const pendingPromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const unsub = useProjectsStore.subscribe((s) => {
       activeProjectIdRef.current = s.activeProjectId;
@@ -176,6 +186,47 @@ function App() {
     terminalWriteRef.current = null;
   }, []);
 
+  // sendRef lets onReconnect/sendPendingPrompt close over the stable ref
+  // rather than the not-yet-declared `send` value - defined before
+  // onServerMessage and useWebSocket.
+  const sendRef = useRef<((msg: ClientMessage) => boolean) | null>(null);
+
+  /** Flush the queued post-interrupt prompt to the backend.
+   *
+   * Defined before onServerMessage so it can be called from the `result`
+   * handler. Uses sendRef (not `send`) because `send` is not yet declared.
+   */
+  const sendPendingPrompt = useCallback(() => {
+    const pending = pendingPromptRef.current;
+    if (!pending) return;
+    pendingPromptRef.current = null;
+    if (pendingPromptTimerRef.current) {
+      clearTimeout(pendingPromptTimerRef.current);
+      pendingPromptTimerRef.current = null;
+    }
+    // Restore streaming state so the UI shows the correct indicators
+    // while the new prompt is being processed.
+    useChatStore.setState({
+      status: "streaming" as const,
+      streamingActivity: { kind: "waiting" as const },
+    });
+    const pm = useChatStore.getState().planMode;
+    const promptText = pm
+      ? `[PLAN MODE - read-only, do NOT execute any changes]\n${pending.text}`
+      : pending.text;
+    const promptMsg: ClientMessage = {
+      type: "prompt",
+      payload: {
+        text: promptText,
+        auto_approve: pending.autoApprove,
+        stream: pending.stream,
+        ...(pending.images.length > 0 ? { images: pending.images } : {}),
+      },
+    };
+    lastPromptRef.current = promptMsg;
+    sendRef.current?.(promptMsg);
+  }, []);
+
   const onServerMessage = useCallback(
     (msg: ServerMessage) => {
       if (msg.type === "error" && msg.payload.code === "no_session") {
@@ -207,6 +258,21 @@ function App() {
           // condition we recovered from automatically.
           return;
         }
+      }
+      if (msg.type === "result" && pendingPromptRef.current) {
+        // The interrupted turn just completed. Mark its assistant message
+        // as finished (without setting status to idle - we're about to
+        // start a new turn), then send the queued prompt.
+        useChatStore.setState((s) => ({
+          currentAssistantId: null,
+          messages: s.messages.map((m) =>
+            m.id === s.currentAssistantId ? { ...m, finished: true } : m
+          ),
+        }));
+        sendPendingPrompt();
+        // Skip the normal result handler (notification, idle transition)
+        // since we're immediately starting a new turn.
+        return;
       }
       if (msg.type === "result" && !msg.payload.is_error) {
         // First result ever → good moment to ask for notification permission,
@@ -336,6 +402,7 @@ function App() {
       setNewProjectOpen,
       setActiveProject,
       killTerminal,
+      sendPendingPrompt,
     ]
   );
 
@@ -350,10 +417,6 @@ function App() {
     },
     [openFiles]
   );
-
-  // sendRef lets onReconnect close over the stable ref rather than the
-  // not-yet-declared `send` value - defined before useWebSocket.
-  const sendRef = useRef<((msg: ClientMessage) => boolean) | null>(null);
 
   /** Try to resume: prefer in-memory state, fall back to localStorage.
    *
@@ -565,24 +628,53 @@ function App() {
     [send, appendUserPrompt, planMode]
   );
 
-  const onInterrupt = useCallback(() => {
-    send({ type: "interrupt", payload: {} });
-    // Force-clear local streaming state immediately. The backend may not
-    // respond (session lost on worker restart, WS half-open, hub state
-    // diverged) and in that case the user is left staring at a frozen
-    // "Thinking..." with no way to unstick the UI. Treat the interrupt
-    // click as authoritative locally: stop showing streaming indicators,
-    // mark any in-flight assistant message as finished. If the backend
-    // does respond later with a `result` it's idempotent.
-    useChatStore.setState((s) => ({
-      status: "idle",
-      streamingActivity: null,
-      currentAssistantId: null,
-      messages: s.messages.map((m) =>
-        !m.finished ? { ...m, finished: true } : m
-      ),
-    }));
-  }, [send]);
+  const onInterrupt = useCallback(
+    (pendingPrompt?: {
+      text: string;
+      autoApprove: boolean;
+      images: PromptImage[];
+      stream: boolean;
+    }) => {
+      // Clear any previously queued post-interrupt prompt.
+      if (pendingPromptTimerRef.current) {
+        clearTimeout(pendingPromptTimerRef.current);
+        pendingPromptTimerRef.current = null;
+      }
+      pendingPromptRef.current = null;
+
+      send({ type: "interrupt", payload: {} });
+      // Force-clear local streaming state immediately. The backend may not
+      // respond (session lost on worker restart, WS half-open, hub state
+      // diverged) and in that case the user is left staring at a frozen
+      // "Thinking..." with no way to unstick the UI. Treat the interrupt
+      // click as authoritative locally: stop showing streaming indicators,
+      // mark any in-flight assistant message as finished. If the backend
+      // does respond later with a `result` it's idempotent.
+      useChatStore.setState((s) => ({
+        status: "idle",
+        streamingActivity: null,
+        currentAssistantId: null,
+        messages: s.messages.map((m) =>
+          !m.finished ? { ...m, finished: true } : m
+        ),
+      }));
+
+      if (pendingPrompt) {
+        // Show the user message optimistically and queue the actual prompt
+        // to be sent once the interrupted turn's `result` arrives.
+        appendUserPrompt(
+          pendingPrompt.text,
+          pendingPrompt.images.length > 0 ? pendingPrompt.images : undefined,
+        );
+        pendingPromptRef.current = pendingPrompt;
+        // Safety fallback: if the backend never sends a `result` (e.g.
+        // session died), send the prompt after 5 seconds anyway. By then
+        // the backend should have cleared its busy state.
+        pendingPromptTimerRef.current = setTimeout(sendPendingPrompt, 5000);
+      }
+    },
+    [send, appendUserPrompt, sendPendingPrompt],
+  );
 
   // Dynamic /model autocomplete entries sourced from the active worker's
   // models list (hub puts it in `workers` payload). Falls back to nothing

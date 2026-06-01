@@ -33,7 +33,12 @@ type Props = {
     images: PromptImage[],
     streamTokens: boolean,
   ) => void;
-  onInterrupt: () => void;
+  onInterrupt: (pendingPrompt?: {
+    text: string;
+    autoApprove: boolean;
+    images: PromptImage[];
+    stream: boolean;
+  }) => void;
 };
 
 const STREAM_TOKENS_KEY = "claude-web:stream-tokens";
@@ -409,7 +414,24 @@ export function Composer({
             {streaming ? (
               <button
                 type="button"
-                onClick={onInterrupt}
+                onClick={() => {
+                  const trimmed = text.trim();
+                  if (trimmed || images.length > 0) {
+                    // Interrupt + send the typed prompt after agent stops
+                    onInterrupt({
+                      text: trimmed,
+                      autoApprove: autoOnce,
+                      images: [...images],
+                      stream: streamTokens,
+                    });
+                    setText("");
+                    setAutoOnce(false);
+                    setImages([]);
+                    setImageError(null);
+                  } else {
+                    onInterrupt();
+                  }
+                }}
                 className="p-3 rounded-lg font-medium bg-red-600 hover:bg-red-700"
                 title="Stop"
                 aria-label="Stop"
