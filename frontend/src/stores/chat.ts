@@ -100,7 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingUserInputs: [],
 
   reset: () =>
-    set({
+    set((s) => ({
       messages: [],
       status: "idle",
       lastError: null,
@@ -115,10 +115,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       loadingOlder: false,
       autoApprove: false,
       planMode: false,
-      model: null,
+      // Preserve model across session switches - it is a user-level
+      // preference, not per-session state. Clearing it here would cause
+      // the useEffect persist to overwrite localStorage with null right
+      // before the new session_started re-persists, creating a race.
+      model: s.model,
       pendingPermissions: [],
       pendingUserInputs: [],
-    }),
+    })),
 
   setHistory: (messages, hasMore, oldestUuid) =>
     set((s) => ({
@@ -383,7 +387,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
             blocks: [{ kind: "info", text: `Model changed to ${label}` }],
             finished: true,
           };
-          set({ messages: [...get().messages, infoMsg] });
+          // Persist the model in Zustand so the useEffect in App.tsx
+          // picks up the change and writes it to localStorage. Without
+          // this, /model commands issued via the SDK CLI only display
+          // the info bubble but never update the persisted state -
+          // causing the choice to vanish on reload.
+          set({ model, messages: [...get().messages, infoMsg] });
         }
         return;
       }
