@@ -141,3 +141,44 @@ async def test_info(lm: LockManager) -> None:
     assert entry is not None
     assert entry.session_id == "s1"
     assert entry.device_label == "laptop"
+
+
+# ── Edge cases ─────────────────────────────────────────────────────────
+
+
+async def test_force_takeover_notify_exception_does_not_block(lm: LockManager) -> None:
+    """Even if the revocation notify callback raises, takeover succeeds."""
+    async def bad_notify(msg: dict) -> None:
+        raise RuntimeError("WS already closed")
+
+    await lm.try_acquire(
+        session_id="s1", connection_id="c1", device_label="laptop", notify=bad_notify,
+    )
+    acquired, _ = await lm.try_acquire(
+        session_id="s1", connection_id="c2", device_label="phone",
+        notify=_noop_notify, force=True,
+    )
+    assert acquired is True
+    assert lm.info("s1").connection_id == "c2"
+
+
+async def test_multiple_sessions_different_connections(lm: LockManager) -> None:
+    """Different sessions on different connections don't conflict."""
+    await lm.try_acquire(
+        session_id="s1", connection_id="c1", device_label="d", notify=_noop_notify,
+    )
+    acquired, _ = await lm.try_acquire(
+        session_id="s2", connection_id="c2", device_label="d", notify=_noop_notify,
+    )
+    assert acquired is True
+    assert lm.active_locks == 2
+
+
+async def test_release_idempotent(lm: LockManager) -> None:
+    """Releasing the same lock twice is safe (second returns False)."""
+    await lm.try_acquire(
+        session_id="s1", connection_id="c1", device_label="d", notify=_noop_notify,
+    )
+    assert await lm.release("s1", "c1") is True
+    assert await lm.release("s1", "c1") is False
+    assert lm.active_locks == 0
