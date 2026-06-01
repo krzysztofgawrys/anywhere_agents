@@ -128,27 +128,43 @@ function App() {
   useWakeLock(streaming);
 
   const LS_KEY = "claude_web_last_session";
+  const LS_MODEL_PREFIX = "claude_web_model:";
 
-  const persistSession = useCallback(
-    (projectId: number, sessionId: string, model: string | null) => {
-      try {
-        localStorage.setItem(LS_KEY, JSON.stringify({ projectId, sessionId, model }));
-      } catch {}
-    },
-    []
-  );
+  const persistSession = useCallback((projectId: number, sessionId: string) => {
+    try {
+      localStorage.setItem(LS_KEY, JSON.stringify({ projectId, sessionId }));
+    } catch {}
+  }, []);
 
-  // Re-persist whenever the user changes the model on an active session so
-  // a subsequent reload (or push-notification tap) restores the exact model
-  // they last chose. Without this, only `session_started` would persist and
-  // mid-session `/model` switches would be lost on the next page load.
+  /** Save the model choice for a specific session. */
+  const persistSessionModel = useCallback((sessionId: string, model: string | null) => {
+    try {
+      if (model) {
+        localStorage.setItem(LS_MODEL_PREFIX + sessionId, model);
+      } else {
+        localStorage.removeItem(LS_MODEL_PREFIX + sessionId);
+      }
+    } catch {}
+  }, []);
+
+  /** Read the persisted model for a specific session. */
+  const readSessionModel = useCallback((sessionId: string): string | null => {
+    try {
+      return localStorage.getItem(LS_MODEL_PREFIX + sessionId);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Persist model whenever it changes on an active session so a subsequent
+  // reload restores the exact choice. Each session stores its own model
+  // independently - different workers expose different model sets.
   useEffect(() => {
     const sessionId = useChatStore.getState().activeSessionId;
-    const projectId = activeProjectIdRef.current;
-    if (sessionId !== null && projectId !== null) {
-      persistSession(projectId, sessionId, selectedModel);
+    if (sessionId !== null) {
+      persistSessionModel(sessionId, selectedModel);
     }
-  }, [selectedModel, persistSession]);
+  }, [selectedModel, persistSessionModel]);
 
   // Terminal state - must be declared before onServerMessage uses killTerminal.
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -263,11 +279,7 @@ function App() {
         // can auto-resume it without requiring user interaction.
         const projectId = activeProjectIdRef.current;
         if (projectId !== null) {
-          persistSession(
-            projectId,
-            msg.payload.session_id,
-            useChatStore.getState().model
-          );
+          persistSession(projectId, msg.payload.session_id);
         }
         if (!msg.payload.resumed) {
           // New session created - refresh the session list so it shows up
@@ -352,34 +364,31 @@ function App() {
   const resumeLastSession = useCallback(() => {
     let projectId = activeProjectIdRef.current;
     let sessionId = useChatStore.getState().activeSessionId;
-    // Prefer the in-memory model (set by /model command earlier in this tab);
-    // only fall back to localStorage on a fresh page load when Zustand is null.
-    let model: string | null = useChatStore.getState().model;
 
     // Fresh page load - nothing in memory, check localStorage.
     if (projectId === null || sessionId === null) {
       try {
         const saved = localStorage.getItem(LS_KEY);
         if (saved) {
-          const parsed = JSON.parse(saved) as {
-            projectId: number;
-            sessionId: string;
-            model?: string | null;
-          };
+          const parsed = JSON.parse(saved) as { projectId: number; sessionId: string };
           projectId = parsed.projectId;
           sessionId = parsed.sessionId;
-          if (model === null && parsed.model != null) {
-            model = parsed.model;
-            // Rehydrate the chat store so the model picker UI reflects the
-            // restored choice and any subsequent new_session/resume calls
-            // pick it up from `selectedModel` naturally.
-            useChatStore.getState().setModel(model);
-          }
         }
       } catch {}
     }
 
     if (projectId === null || sessionId === null) return;
+
+    // Restore the per-session model: prefer Zustand (still set from an
+    // earlier /model in this tab), fall back to per-session localStorage.
+    let model: string | null = useChatStore.getState().model;
+    if (model === null) {
+      model = readSessionModel(sessionId);
+      if (model !== null) {
+        // Rehydrate so the UI badge and subsequent resume/new calls use it.
+        useChatStore.getState().setModel(model);
+      }
+    }
 
     if (!document.hidden) {
       // Page is visible - claim the session lock and reload history.
@@ -393,7 +402,7 @@ function App() {
       type: "session_history",
       payload: { project_id: projectId, session_id: sessionId, limit: 30 },
     });
-  }, []);
+  }, [readSessionModel]);
 
   const onConnect = useCallback(() => {
     // Fires only on the first WS connection of this page load (e.g. user tapped

@@ -100,7 +100,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   pendingUserInputs: [],
 
   reset: () =>
-    set((s) => ({
+    set({
       messages: [],
       status: "idle",
       lastError: null,
@@ -115,14 +115,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       loadingOlder: false,
       autoApprove: false,
       planMode: false,
-      // Preserve model across session switches - it is a user-level
-      // preference, not per-session state. Clearing it here would cause
-      // the useEffect persist to overwrite localStorage with null right
-      // before the new session_started re-persists, creating a race.
-      model: s.model,
+      model: null,
       pendingPermissions: [],
       pendingUserInputs: [],
-    })),
+    }),
 
   setHistory: (messages, hasMore, oldestUuid) =>
     set((s) => ({
