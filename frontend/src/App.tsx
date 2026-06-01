@@ -670,31 +670,42 @@ function App() {
       }
       killTerminal();
       resetChat();
+      // Restore the target session's persisted model (not the previous
+      // session's model from the stale closure). reset() just cleared
+      // Zustand, so we read from per-session localStorage.
+      const model = readSessionModel(sessionId);
+      if (model !== null) {
+        useChatStore.getState().setModel(model);
+      }
       send({
         type: "session_history",
         payload: { project_id: projectId, session_id: sessionId, limit: 30 },
       });
       send({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId, model: selectedModel },
+        payload: { project_id: projectId, session_id: sessionId, model },
       });
     },
-    [resetChat, send, killTerminal, selectedModel]
+    [resetChat, send, killTerminal, readSessionModel]
   );
 
   const onTakeover = useCallback(() => {
     if (!pendingLock || pendingLock.projectId === null) return;
+    const model = readSessionModel(pendingLock.sessionId);
+    if (model !== null) {
+      useChatStore.getState().setModel(model);
+    }
     send({
       type: "resume_session",
       payload: {
         project_id: pendingLock.projectId,
         session_id: pendingLock.sessionId,
         force: true,
-        model: selectedModel,
+        model,
       },
     });
     setPendingLock(null);
-  }, [pendingLock, send, setPendingLock, selectedModel]);
+  }, [pendingLock, send, setPendingLock, readSessionModel]);
 
   const onAllowTool = useCallback(
     (toolUseId: string) => {
