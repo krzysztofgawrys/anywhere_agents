@@ -209,12 +209,37 @@ class Session:
                 kwargs["session_id"] = self._session_id
                 self._copilot_session = await client.create_session(**kwargs)
         except Exception as e:
-            logger.error("copilot_session_start_failed", error=str(e), exc_info=True)
-            await self._send({
-                "type": "error",
-                "payload": {"code": "session_start_failed", "message": str(e)},
-            })
-            return
+            # If the model is invalid (e.g. a Claude model forwarded from
+            # another worker type), retry without it instead of crashing.
+            if self._model and "not available" in str(e).lower():
+                logger.warning(
+                    "copilot_model_not_available_fallback",
+                    model=self._model,
+                    error=str(e),
+                )
+                self._model = None
+                kwargs.pop("model", None)
+                try:
+                    if self._resume:
+                        self._copilot_session = await client.resume_session(
+                            self._resume, **kwargs
+                        )
+                    else:
+                        self._copilot_session = await client.create_session(**kwargs)
+                except Exception as e2:
+                    logger.error("copilot_session_start_failed", error=str(e2), exc_info=True)
+                    await self._send({
+                        "type": "error",
+                        "payload": {"code": "session_start_failed", "message": str(e2)},
+                    })
+                    return
+            else:
+                logger.error("copilot_session_start_failed", error=str(e), exc_info=True)
+                await self._send({
+                    "type": "error",
+                    "payload": {"code": "session_start_failed", "message": str(e)},
+                })
+                return
 
         # Bridge SDK events into our async send loop. on() is sync; the
         # handler schedules an asyncio task per event.
