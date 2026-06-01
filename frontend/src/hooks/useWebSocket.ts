@@ -3,6 +3,27 @@ import type { ClientMessage, ServerMessage } from "../types";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const RECONNECT_DELAY_MS = 2_000;
+/** After this many consecutive WS failures, probe HTTP to detect CF Access expiry. */
+const AUTH_CHECK_AFTER_FAILURES = 3;
+
+/**
+ * Probe the current origin with an HTTP HEAD to see if Cloudflare Access
+ * redirects to a login page. Returns true when the session is expired.
+ */
+async function checkCfAuth(): Promise<boolean> {
+  try {
+    const resp = await fetch("/", { method: "HEAD", redirect: "manual" });
+    // CF Access redirect -> opaqueredirect (status 0) or 302/303
+    if (resp.type === "opaqueredirect" || resp.status === 401 || resp.status === 403) {
+      return true;
+    }
+    return false;
+  } catch {
+    // Network error - could be CF intercepting, but could also be offline.
+    // Don't reload on network errors; let the normal retry handle it.
+    return false;
+  }
+}
 
 type Options = {
   url?: string;
@@ -22,6 +43,7 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
   const connectHandlerRef = useRef(onConnect);
   const manuallyClosedRef = useRef(false);
   const everConnectedRef = useRef(false);
+  const consecutiveFailuresRef = useRef(0);
 
   useEffect(() => {
     handlerRef.current = onMessage;
@@ -52,6 +74,7 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
+      consecutiveFailuresRef.current = 0;
       const isReconnect = everConnectedRef.current;
       everConnectedRef.current = true;
       setConnected(true);
@@ -79,15 +102,37 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       setConnected(false);
       if (pingTimerRef.current !== null) {
         clearInterval(pingTimerRef.current);
         pingTimerRef.current = null;
       }
-      if (!manuallyClosedRef.current) {
-        reconnectTimerRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
+      if (manuallyClosedRef.current) return;
+
+      // Hub sends 1008 (Policy Violation) when CF Access JWT is invalid.
+      if (event.code === 1008) {
+        window.location.reload();
+        return;
       }
+
+      consecutiveFailuresRef.current++;
+      if (consecutiveFailuresRef.current >= AUTH_CHECK_AFTER_FAILURES) {
+        // Multiple consecutive failures - probe HTTP to check if CF
+        // Access session expired (the WS upgrade gets rejected by CF
+        // before reaching the hub, so we only see code 1006).
+        consecutiveFailuresRef.current = 0;
+        void checkCfAuth().then((expired) => {
+          if (expired) {
+            window.location.reload();
+          } else {
+            reconnectTimerRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
+          }
+        });
+        return;
+      }
+
+      reconnectTimerRef.current = window.setTimeout(connect, RECONNECT_DELAY_MS);
     };
 
     ws.onerror = () => {
