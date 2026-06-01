@@ -555,12 +555,32 @@ async def _route(
         try:
             from src.sdk.client import get_client
             client = await get_client()
-            sdk_models = await client.list_models()
-            models = [
-                {"id": getattr(m, "id", ""), "name": getattr(m, "name", "") or getattr(m, "id", "")}
-                for m in sdk_models
-                if getattr(m, "id", "")
-            ]
+            try:
+                sdk_models = await client.list_models()
+                models = [
+                    {"id": getattr(m, "id", ""), "name": getattr(m, "name", "") or getattr(m, "id", "")}
+                    for m in sdk_models
+                    if getattr(m, "id", "")
+                ]
+            except Exception as e:
+                # SDK model parsing may fail when the GitHub API schema
+                # drifts (e.g. ModelBilling.multiplier was dropped). Fall
+                # back to raw RPC and extract only id/name for the frontend.
+                logger.warning("list_models_sdk_parse_failed", error=str(e))
+                models = []
+                try:
+                    raw = await client._client.request("models.list", {})
+                    for m in raw.get("models", []):
+                        if isinstance(m, dict) and m.get("id"):
+                            models.append({
+                                "id": m["id"],
+                                "name": m.get("name") or m["id"],
+                            })
+                    # Clear the SDK cache so the next call retries parsing
+                    # (in case a future SDK update fixes the schema).
+                    client._models_cache = None
+                except Exception as e2:
+                    logger.warning("list_models_raw_fallback_failed", error=str(e2))
         except Exception as e:
             logger.warning("list_models_failed", error=str(e))
             models = []
