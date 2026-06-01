@@ -12,7 +12,7 @@
 #     2. Run `copilot` on host once to authenticate (creates ~/.copilot/).
 #     3. Create .env with UID, GID, WORKER_SECRET matching hub.
 #     4. Edit volume mounts for your project directories.
-#     5. docker compose -f worker-copilot-compose.yml up -d --build
+#     5. docker compose -f workers/worker-copilot-compose.yml up -d
 #
 #   Hub's workers.json entry:
 #     {
@@ -50,9 +50,7 @@
 
 services:
   worker-copilot:
-    build:
-      context: .
-      dockerfile: docker/worker-copilot.Dockerfile
+    image: ghcr.io/krzysztofgawrys/anywhere-agents/worker-copilot:latest
     container_name: claude-web-worker-copilot
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"

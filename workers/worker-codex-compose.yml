@@ -14,7 +14,7 @@
 #        container).
 #     3. Create .env with UID, GID, WORKER_SECRET matching hub.
 #     4. Edit volume mounts for your project directories.
-#     5. docker compose -f worker-codex-compose.yml up -d --build
+#     5. docker compose -f workers/worker-codex-compose.yml up -d
 #
 #   Hub's workers.json entry:
 #     {
@@ -61,9 +61,7 @@
 
 services:
   worker-codex:
-    build:
-      context: .
-      dockerfile: docker/worker-codex.Dockerfile
+    image: ghcr.io/krzysztofgawrys/anywhere-agents/worker-codex:latest
     container_name: claude-web-worker-codex
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"

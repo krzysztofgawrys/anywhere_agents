@@ -9,7 +9,7 @@
   {
     "id": "remote-copilot",
     "type": "copilot",
-    "label": "Remote Copilot (bootstrap test)",
+    "label": "Remote Copilot",
     "mode": "inbound",
     "secret": "changeme"
   }

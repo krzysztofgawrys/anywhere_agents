@@ -220,11 +220,12 @@ Hub + multi-agent workers running in Docker.
 - **Hub** (`hub/`): FastAPI. Frontend static serve, Cloudflare Access auth,
   WebSocket router between browser and N workers, push notifications,
   per-worker model registry.
-- **Workers** (`worker-claude/`, `worker-copilot/`): FastAPI. One per agent
-  SDK family. Each handles project scanning, terminal, file browser,
-  session management, and routes prompts into its SDK's session loop.
+- **Workers** (`worker-claude/`, `worker-copilot/`, `worker-codex/`): FastAPI.
+  One per agent SDK family. Each handles project scanning, terminal, file
+  browser, session management, and routes prompts into its SDK's session loop.
   - `worker-claude` - Anthropic `claude-agent-sdk`
   - `worker-copilot` - `github-copilot-sdk` (GitHub Copilot CLI)
+  - `worker-codex` - `openai-codex-sdk` (OpenAI Codex CLI)
 - **Shared** (`shared/worker_shared/`): SDK-agnostic modules (db, files,
   terminal, locks, projects service, session registry) consumed by every
   worker via a uv path source. Adding a new agent SDK = one new worker
@@ -263,7 +264,7 @@ cd claude_cloud
 cp .env.example .env             # fill in UID, GID, WORKER_SECRET
 
 # Configure workers (id, type, label, url, secret)
-cp workers.json1 workers.json    # or edit by hand
+cp workers.json.example workers.json  # or edit by hand
 
 # Build + start (hub, both workers, optional cloudflared)
 docker compose up -d --build
@@ -274,8 +275,8 @@ docker compose up -d --build
 Adding a remote worker from another machine:
 
 ```bash
-# On the remote machine: bring up a standalone worker
-docker compose -f worker-claude-compose.yml up -d --build
+# On the remote machine: bring up a standalone worker (pulls from GHCR)
+docker compose -f workers/worker-claude-compose.yml up -d
 
 # On the hub machine: append a new entry to workers.json
 #   { "id": "big-box", "type": "claude", "label": "Big Box",
@@ -531,9 +532,11 @@ docker/
 └── entrypoint.sh              Injects user into /etc/passwd (fixes "I have no name!")
 ```
 
-- `compose.yml` - hub + local worker-claude + local worker-copilot + cloudflared
-- `worker-claude-compose.yml` - standalone worker-claude for a remote machine
-- `worker-copilot-compose.yml` - standalone worker-copilot for a remote machine
+- `compose.yml` - hub + local worker-claude + cloudflared (worker-copilot
+  and worker-codex commented out as examples)
+- `workers/worker-claude-compose.yml` - standalone worker-claude for a remote machine (GHCR image)
+- `workers/worker-copilot-compose.yml` - standalone worker-copilot for a remote machine (GHCR image)
+- `workers/worker-codex-compose.yml` - standalone worker-codex for a remote machine (GHCR image)
 - `workers.json` - worker registry; one entry per worker:
   ```json
   {

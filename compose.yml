@@ -7,7 +7,7 @@
 #
 # Hub:            frontend proxy + auth + push notifications
 # worker-claude:  Anthropic Claude SDK, project scanning, terminal, file browser
-# worker-copilot: GitHub Copilot SDK (skeleton; phase 4 wires the real SDK)
+# worker-copilot: GitHub Copilot SDK
 
 services:
   hub:
@@ -41,8 +41,8 @@ services:
       # Hub tries to connect to worker-copilot on every client WS handshake.
       # service_started (not _healthy) so a Copilot worker hiccup never blocks
       # hub startup - hub already handles unreachable workers gracefully.
-      worker-copilot:
-        condition: service_started
+      # worker-copilot:
+      #   condition: service_healthy
 
   worker-claude:
     build:
@@ -78,87 +78,54 @@ services:
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
       - ${HOME}/code:${HOME}/code
-      - ${HOME}/elec:${HOME}/elec
-      - ${HOME}/insp:${HOME}/insp
 
-  # NOTE: worker-claude-remote (reverse/inbound) is NOT defined here -
-  # it lives in worker-claude-compose.yml as a standalone deployment
-  # (typically run on a different host or with a fully separate state
-  # tree). Keeping it out of this file avoids the shared-volume foot-
-  # gun where a bootstrap API key pasted into the remote spilled into
-  # the primary worker via ~/.claude-web, causing the primary to run
-  # on API credits instead of the user's Max subscription.
+  # NOTE: standalone worker compose files for remote deployments live in
+  # workers/ (e.g. workers/worker-claude-compose.yml). They pull pre-built
+  # images from GHCR and are meant to run on a separate host with their
+  # own state. Keeping them out of this file avoids the shared-volume
+  # foot-gun where a bootstrap API key pasted into the remote spills
+  # into the primary worker via ~/.claude-web.
 
-  worker-copilot:
-    build:
-      context: .
-      dockerfile: docker/worker-copilot.Dockerfile
-    container_name: claude-web-worker-copilot
-    restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
-    environment:
-      - HOME=/home/app
-      - WORKER_SECRET=${WORKER_SECRET:-changeme}
-      # Internal hub URL for out-of-band push notifications (worker -> hub
-      # HTTP POST to /api/internal/push). Stays as docker-internal hostname
-      # since push doesn't need to traverse CF Access.
-      - HUB_URL=${HUB_URL:-http://hub:8001}
-      - COPILOT_HOME=/home/app/.copilot
-      # Separate SQLite from worker-claude so each worker has an independent
-      # project list (different scanners, different on-disk sources).
-      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
-      # ── Reverse (inbound) mode ──────────────────────────────────────
-      # Worker dials OUT to the hub via the public URL (through CF Tunnel
-      # + CF Access). This is the full production data path - latency
-      # adds a CF hop, but it validates the whole stack end-to-end.
-      - WORKER_MODE=${WORKER_MODE:-server}
-      - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://claude.gawrys.cloud}
-      - WORKER_ID=${WORKER_ID:-remote-copilot}
-      - WORKER_LABEL=${WORKER_LABEL:-Remote}
-      - WORKER_TYPE=copilot
-      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
-      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
-    volumes:
-      # Copilot auth + session state (host must have run `copilot` to log in)
-      # TEMPORARILY DISABLED - smoke-testing the bootstrap-auth flow against
-      # a fresh container with no $COPILOT_HOME population. Restore this line
-      # to recover persistent Copilot session history.
-      # - ${HOME}/.copilot:/home/app/.copilot
-      # Worker DB (separate file, see CLAUDE_WEB_DB_PATH above)
-      - ${HOME}/.claude-web:/home/app/.claude-web
-      # Git credentials
-      - ${HOME}/.ssh:/home/app/.ssh
-      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
-      # ── Project roots ──────────────────────────────────────────────────
-      # Same absolute-path convention as worker-claude so workspace_path
-      # recorded by Copilot in ~/.copilot/session-state resolves correctly.
-      - ${HOME}/code:${HOME}/code
+  # worker-copilot:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/worker-copilot.Dockerfile
+  #   container_name: claude-web-worker-copilot
+  #   restart: unless-stopped
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   environment:
+  #     - HOME=/home/app
+  #     - WORKER_SECRET=${WORKER_SECRET:-changeme}
+  #     - HUB_URL=${HUB_URL:-http://hub:8001}
+  #     - COPILOT_HOME=/home/app/.copilot
+  #     - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
+  #   volumes:
+  #     - ${HOME}/.copilot:/home/app/.copilot
+  #     - ${HOME}/.claude-web:/home/app/.claude-web
+  #     - ${HOME}/.ssh:/home/app/.ssh
+  #     - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+  #     - ${HOME}/code:${HOME}/code
 
-  # worker-codex (OpenAI Codex CLI). Off-by-default behind a profile
-  # because it needs `codex login` on the host (~/.codex/auth.json) and
-  # the Codex CLI binary - both absent until the operator opts in.
-  # Launch alongside the rest of the stack with:
-  #   docker compose --profile codex up -d --build worker-codex
-  worker-codex:
-    profiles: ["codex"]
-    build:
-      context: .
-      dockerfile: docker/worker-codex.Dockerfile
-    container_name: claude-web-worker-codex
-    restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
-    environment:
-      - HOME=/home/app
-      - WORKER_SECRET=${WORKER_SECRET:-changeme}
-      - HUB_URL=${HUB_URL:-http://hub:8001}
-      - CODEX_HOME=/home/app/.codex
-      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-codex.sqlite
-    volumes:
-      - ${HOME}/.codex:/home/app/.codex
-      - ${HOME}/.claude-web:/home/app/.claude-web
-      - ${HOME}/.ssh:/home/app/.ssh
-      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
-      - ${HOME}/code:${HOME}/code
+  # worker-codex:
+  #   profiles: ["codex"]
+  #   build:
+  #     context: .
+  #     dockerfile: docker/worker-codex.Dockerfile
+  #   container_name: claude-web-worker-codex
+  #   restart: unless-stopped
+  #   user: "${UID:-1000}:${GID:-1000}"
+  #   environment:
+  #     - HOME=/home/app
+  #     - WORKER_SECRET=${WORKER_SECRET:-changeme}
+  #     - HUB_URL=${HUB_URL:-http://hub:8001}
+  #     - CODEX_HOME=/home/app/.codex
+  #     - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-codex.sqlite
+  #   volumes:
+  #     - ${HOME}/.codex:/home/app/.codex
+  #     - ${HOME}/.claude-web:/home/app/.claude-web
+  #     - ${HOME}/.ssh:/home/app/.ssh
+  #     - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+  #     - ${HOME}/code:${HOME}/code
 
   cloudflared:
     image: cloudflare/cloudflared:latest

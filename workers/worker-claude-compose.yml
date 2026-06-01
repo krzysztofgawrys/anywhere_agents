@@ -12,7 +12,7 @@
 #     2. Run `claude login` on host once (creates ~/.claude/).
 #     3. Create .env with UID, GID, WORKER_SECRET matching hub.
 #     4. Edit volume mounts for your project directories.
-#     5. docker compose -f worker-claude-compose.yml up -d --build
+#     5. docker compose -f workers/worker-claude-compose.yml up -d
 #
 #   Hub's workers.json entry:
 #     {
@@ -58,17 +58,7 @@
 
 services:
   worker-claude:
-    build:
-      context: .
-      dockerfile: docker/worker-claude.Dockerfile
-      # Bake the host's UID/GID into the image so the pre-created
-      # /home/app/.claude-web directory has correct ownership. Docker
-      # then propagates that ownership to the named volume on first
-      # mount, so the non-root worker process can write without any
-      # init-container chown gymnastics.
-      args:
-        APP_UID: ${UID:-1000}
-        APP_GID: ${GID:-1000}
+    image: ghcr.io/krzysztofgawrys/anywhere-agents/worker-claude:latest
     container_name: claude-web-worker-claude
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"

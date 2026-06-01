@@ -7,17 +7,10 @@
     "secret": "changeme"
   },
   {
-    "id": "remote-copilot",
+    "id": "local-copilot",
     "type": "copilot",
-    "label": "Remote copilot (reverse)",
-    "mode": "inbound",
-    "secret": "changeme"
-  },
-  {
-    "id": "remote-claude",
-    "type": "claude",
-    "label": "Remote claude (reverse)",
-    "mode": "inbound",
+    "label": "Laptop (Copilot)",
+    "url": "ws://worker-copilot:8003/ws",
     "secret": "changeme"
   },
   {
@@ -25,6 +18,20 @@
     "type": "codex",
     "label": "Laptop (Codex)",
     "url": "ws://worker-codex:8004/ws",
+    "secret": "changeme"
+  },
+  {
+    "id": "remote-claude",
+    "type": "claude",
+    "label": "Remote Claude",
+    "mode": "inbound",
+    "secret": "changeme"
+  },
+  {
+    "id": "remote-copilot",
+    "type": "copilot",
+    "label": "Remote Copilot",
+    "mode": "inbound",
     "secret": "changeme"
   }
 ]
