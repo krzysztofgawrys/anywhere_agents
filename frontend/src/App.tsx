@@ -129,11 +129,26 @@ function App() {
 
   const LS_KEY = "claude_web_last_session";
 
-  const persistSession = useCallback((projectId: number, sessionId: string) => {
-    try {
-      localStorage.setItem(LS_KEY, JSON.stringify({ projectId, sessionId }));
-    } catch {}
-  }, []);
+  const persistSession = useCallback(
+    (projectId: number, sessionId: string, model: string | null) => {
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify({ projectId, sessionId, model }));
+      } catch {}
+    },
+    []
+  );
+
+  // Re-persist whenever the user changes the model on an active session so
+  // a subsequent reload (or push-notification tap) restores the exact model
+  // they last chose. Without this, only `session_started` would persist and
+  // mid-session `/model` switches would be lost on the next page load.
+  useEffect(() => {
+    const sessionId = useChatStore.getState().activeSessionId;
+    const projectId = activeProjectIdRef.current;
+    if (sessionId !== null && projectId !== null) {
+      persistSession(projectId, sessionId, selectedModel);
+    }
+  }, [selectedModel, persistSession]);
 
   // Terminal state - must be declared before onServerMessage uses killTerminal.
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -163,7 +178,13 @@ function App() {
           lastPromptRef.current = null;
           sendRef.current?.({
             type: "resume_session",
-            payload: { project_id: projectId, session_id: sessionId },
+            payload: {
+              project_id: projectId,
+              session_id: sessionId,
+              // Preserve the model across the worker restart - otherwise the
+              // SDK slow-path resume would silently fall back to the default.
+              model: useChatStore.getState().model,
+            },
           });
           sendRef.current?.(pending);
           // Swallow the error - the user shouldn't see a red banner for a
@@ -242,7 +263,11 @@ function App() {
         // can auto-resume it without requiring user interaction.
         const projectId = activeProjectIdRef.current;
         if (projectId !== null) {
-          persistSession(projectId, msg.payload.session_id);
+          persistSession(
+            projectId,
+            msg.payload.session_id,
+            useChatStore.getState().model
+          );
         }
         if (!msg.payload.resumed) {
           // New session created - refresh the session list so it shows up
@@ -327,15 +352,29 @@ function App() {
   const resumeLastSession = useCallback(() => {
     let projectId = activeProjectIdRef.current;
     let sessionId = useChatStore.getState().activeSessionId;
+    // Prefer the in-memory model (set by /model command earlier in this tab);
+    // only fall back to localStorage on a fresh page load when Zustand is null.
+    let model: string | null = useChatStore.getState().model;
 
     // Fresh page load - nothing in memory, check localStorage.
     if (projectId === null || sessionId === null) {
       try {
         const saved = localStorage.getItem(LS_KEY);
         if (saved) {
-          const parsed = JSON.parse(saved) as { projectId: number; sessionId: string };
+          const parsed = JSON.parse(saved) as {
+            projectId: number;
+            sessionId: string;
+            model?: string | null;
+          };
           projectId = parsed.projectId;
           sessionId = parsed.sessionId;
+          if (model === null && parsed.model != null) {
+            model = parsed.model;
+            // Rehydrate the chat store so the model picker UI reflects the
+            // restored choice and any subsequent new_session/resume calls
+            // pick it up from `selectedModel` naturally.
+            useChatStore.getState().setModel(model);
+          }
         }
       } catch {}
     }
@@ -346,7 +385,7 @@ function App() {
       // Page is visible - claim the session lock and reload history.
       sendRef.current?.({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId },
+        payload: { project_id: projectId, session_id: sessionId, model },
       });
     }
     // Always reload history so background output becomes visible when user returns.

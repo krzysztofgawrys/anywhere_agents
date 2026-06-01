@@ -166,6 +166,15 @@ class SessionManager:
             # `parked` is a SessionProtocol from this worker's factory.
             parked.rebind(self._send)  # type: ignore[attr-defined]
             parked.set_auto_approve(auto_approve)  # type: ignore[attr-defined]
+            # Persist the client's model choice across reconnects: the parked
+            # session retains whatever model it last used, but the reconnecting
+            # client may explicitly want a different one (or the same one it
+            # previously chose, recovered from localStorage on page reload).
+            # Only override when the client actually sent a model, so a None
+            # payload doesn't accidentally reset a previously selected model
+            # back to the SDK default.
+            if model is not None:
+                await parked.set_model(model)  # type: ignore[attr-defined]
             self._current = parked  # type: ignore[assignment]
             await self._current.notify_reconnected()  # type: ignore[union-attr]
             logger.info(
