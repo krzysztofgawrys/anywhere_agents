@@ -80,7 +80,6 @@ class SessionManager:
             })
             return None
 
-        await self._release_current_lock()
         session = self._factory(
             send=self._send,
             cwd=cwd,
@@ -105,7 +104,7 @@ class SessionManager:
             })
             return None
 
-        await self._stop_current()
+        await self._park_current()
         await session.start()
         self._current = session
         return session
@@ -136,8 +135,6 @@ class SessionManager:
             })
             return None
 
-        await self._release_current_lock()
-
         # ── Fast path: session is parked in the registry ────────────
         parked = registry.take(session_id)
         if parked is not None:
@@ -162,7 +159,7 @@ class SessionManager:
                 })
                 return None
 
-            await self._stop_current()
+            await self._park_current()
             # `parked` is a SessionProtocol from this worker's factory.
             parked.rebind(self._send)  # type: ignore[attr-defined]
             parked.set_auto_approve(auto_approve)  # type: ignore[attr-defined]
@@ -203,7 +200,7 @@ class SessionManager:
             })
             return None
 
-        await self._stop_current()
+        await self._park_current()
         session = self._factory(
             send=self._send,
             cwd=cwd,
@@ -284,19 +281,19 @@ class SessionManager:
 
     # ── Internals ────────────────────────────────────────────────────
 
-    async def _stop_current(self) -> None:
-        if self._current is not None:
-            try:
-                await self._current.stop()
-            except Exception as e:
-                logger.warning("session_stop_error", error=str(e))
-            self._current = None
+    async def _park_current(self) -> None:
+        """Park the active session so it continues running in the background.
 
-    async def _release_current_lock(self) -> None:
+        The session is moved to the registry and its lock is released so
+        another client (or the same client switching back) can reclaim it.
+        The in-progress agent turn keeps running; the registry TTL will
+        clean it up eventually if nobody resumes it.
+        """
         if self._current is not None:
-            await self._locks.release(
-                self._current.session_id, self._connection_id
-            )
+            sid = self._current.session_id
+            registry.park(self._current)
+            await self._locks.release(sid, self._connection_id)
+            self._current = None
 
     def _on_lock_revoked_factory(self, session_id: str) -> Any:
         """Build a callback that runs when *this* connection's lock is taken."""
@@ -304,11 +301,16 @@ class SessionManager:
         async def _on_revoked(msg: dict[str, Any]) -> None:
             # Notify the WS client so it can drop to read-only.
             await self._send(msg)
-            # Stop the active session if it's the one being revoked.
+            # Stop the active session if it's the one being revoked -
+            # another client is taking over so we terminate (not park).
             if (
                 self._current is not None
                 and self._current.session_id == session_id
             ):
-                await self._stop_current()
+                try:
+                    await self._current.stop()
+                except Exception as e:
+                    logger.warning("session_stop_error", error=str(e))
+                self._current = None
 
         return _on_revoked
