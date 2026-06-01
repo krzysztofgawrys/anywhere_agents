@@ -197,10 +197,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
           autoApprove: msg.payload.auto_approve,
           pendingPermissions: [],
           pendingUserInputs: [],
-          // Backend tells us the session is mid-turn on reconnect - restore streaming
-          // so the user sees the correct state before the history payload arrives.
+          // Sync streaming state with the backend on (re)connect.
+          // Restore streaming if the session is mid-turn, or clear it if
+          // the agent finished while we were away (e.g. app backgrounded
+          // on mobile, WS dropped, result message missed).
           ...(msg.payload.is_busy && s.status !== "streaming"
             ? { status: "streaming" as const }
+            : {}),
+          ...(!msg.payload.is_busy && s.status === "streaming"
+            ? {
+                status: "idle" as const,
+                streamingActivity: null,
+                currentAssistantId: null,
+                messages: s.messages.map((m) =>
+                  !m.finished ? { ...m, finished: true } : m
+                ),
+              }
             : {}),
         }));
         return;

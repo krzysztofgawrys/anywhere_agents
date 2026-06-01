@@ -493,6 +493,14 @@ function App() {
     // refetch on the first `result` event so we pick up the complete state
     // once the in-flight turn (if any) finishes.
     pendingHistoryRefreshRef.current = true;
+    // Discard any queued post-interrupt prompt - the WS dropped so the
+    // original interrupt may never have reached the backend, and replaying
+    // a stale prompt after reconnect would confuse the user.
+    if (pendingPromptTimerRef.current) {
+      clearTimeout(pendingPromptTimerRef.current);
+      pendingPromptTimerRef.current = null;
+    }
+    pendingPromptRef.current = null;
     resumeLastSession();
   }, [resumeLastSession]);
 
