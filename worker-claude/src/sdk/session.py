@@ -276,6 +276,7 @@ class Session:
                 "cwd": self._cwd,
                 "resumed": bool(self._resume),
                 "auto_approve": self._permissions.is_auto_approve,
+                "model": self._model,
             },
         })
 
@@ -433,6 +434,7 @@ class Session:
                 # Tell the frontend whether the session is mid-turn so it can
                 # restore the streaming state before the history payload arrives.
                 "is_busy": self._busy,
+                "model": self._model,
             },
         })
         await self._permissions.resend_pending_user_inputs(self._send)

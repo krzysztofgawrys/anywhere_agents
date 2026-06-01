@@ -298,6 +298,7 @@ async def _route(
             return terminal
         await sessions.new_session(
             cwd=project["path"],
+            project_id=project_id,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,
         )
@@ -317,6 +318,7 @@ async def _route(
         await sessions.resume_session(
             cwd=project["path"],
             session_id=session_id,
+            project_id=project_id,
             force=force,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,

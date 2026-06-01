@@ -25,6 +25,7 @@ from typing import Any
 
 import structlog
 
+from worker_shared.db import db
 from worker_shared.locks.manager import LockManager, locks
 from worker_shared.sdk.base import SendFn, SessionFactory, SessionProtocol
 from worker_shared.sdk.registry import registry
@@ -55,6 +56,7 @@ class SessionManager:
         self._device_label = device_label
         self._locks = lock_manager or locks
         self._current: SessionProtocol | None = None
+        self._current_project_id: int | None = None
 
     @property
     def current(self) -> SessionProtocol | None:
@@ -66,6 +68,7 @@ class SessionManager:
         self,
         cwd: str,
         *,
+        project_id: int | None = None,
         auto_approve: bool = False,
         model: str | None = None,
     ) -> SessionProtocol | None:
@@ -107,6 +110,9 @@ class SessionManager:
         await self._park_current()
         await session.start()
         self._current = session
+        self._current_project_id = project_id
+        if project_id is not None:
+            await db.upsert_session_model(session.session_id, project_id, model)
         return session
 
     async def resume_session(
@@ -114,6 +120,7 @@ class SessionManager:
         cwd: str,
         session_id: str,
         *,
+        project_id: int | None = None,
         force: bool = False,
         auto_approve: bool = False,
         model: str | None = None,
@@ -134,6 +141,14 @@ class SessionManager:
                 },
             })
             return None
+
+        await self._release_current_lock()
+
+        # If the client didn't send a model preference, check the DB for
+        # a previously persisted choice so the session resumes with the
+        # same model even across worker restarts / different browsers.
+        if model is None:
+            model = await db.get_session_model(session_id)
 
         # ── Fast path: session is parked in the registry ────────────
         parked = registry.take(session_id)
@@ -163,16 +178,10 @@ class SessionManager:
             # `parked` is a SessionProtocol from this worker's factory.
             parked.rebind(self._send)  # type: ignore[attr-defined]
             parked.set_auto_approve(auto_approve)  # type: ignore[attr-defined]
-            # Persist the client's model choice across reconnects: the parked
-            # session retains whatever model it last used, but the reconnecting
-            # client may explicitly want a different one (or the same one it
-            # previously chose, recovered from localStorage on page reload).
-            # Only override when the client actually sent a model, so a None
-            # payload doesn't accidentally reset a previously selected model
-            # back to the SDK default.
             if model is not None:
                 await parked.set_model(model)  # type: ignore[attr-defined]
             self._current = parked  # type: ignore[assignment]
+            self._current_project_id = project_id
             await self._current.notify_reconnected()  # type: ignore[union-attr]
             logger.info(
                 "session_reattached",
@@ -210,6 +219,9 @@ class SessionManager:
         )
         await session.start()
         self._current = session
+        self._current_project_id = project_id
+        if project_id is not None:
+            await db.upsert_session_model(session_id, project_id, model)
         return session
 
     # ── Pass-throughs to active session ──────────────────────────────
@@ -262,6 +274,12 @@ class SessionManager:
     async def set_model(self, model: str | None) -> None:
         if self._current is not None:
             await self._current.set_model(model)
+            if self._current_project_id is not None:
+                await db.upsert_session_model(
+                    self._current.session_id,
+                    self._current_project_id,
+                    model,
+                )
 
     async def interrupt(self) -> None:
         if self._current is not None:

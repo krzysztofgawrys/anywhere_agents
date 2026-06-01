@@ -195,6 +195,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
           readOnly: false,
           pendingLock: null,
           autoApprove: msg.payload.auto_approve,
+          // Backend is the source of truth for the session's model.
+          // If the payload includes it, sync the UI; otherwise keep the
+          // existing in-memory value (backwards compat with older workers
+          // that don't send the field yet).
+          ...(msg.payload.model !== undefined ? { model: msg.payload.model ?? null } : {}),
           pendingPermissions: [],
           pendingUserInputs: [],
           // Sync streaming state with the backend on (re)connect.

@@ -32,6 +32,16 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 CREATE INDEX IF NOT EXISTS idx_projects_path ON projects(path);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    model TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 """
 
 # Inline migrations for pre-existing databases.
@@ -72,6 +82,37 @@ class Database:
             yield conn
         finally:
             await conn.close()
+
+
+    # ── Session model helpers ──────────────────────────────────────────
+
+    async def upsert_session_model(
+        self,
+        session_id: str,
+        project_id: int,
+        model: str | None,
+    ) -> None:
+        """Create or update a session row with the given model."""
+        async with self.connect() as conn:
+            await conn.execute(
+                """INSERT INTO sessions (id, project_id, model, updated_at)
+                   VALUES (?, ?, ?, datetime('now'))
+                   ON CONFLICT(id) DO UPDATE SET
+                       model = excluded.model,
+                       updated_at = excluded.updated_at""",
+                (session_id, project_id, model),
+            )
+            await conn.commit()
+
+    async def get_session_model(self, session_id: str) -> str | None:
+        """Return the persisted model for *session_id*, or None."""
+        async with self.connect() as conn:
+            row = await conn.execute_fetchall(
+                "SELECT model FROM sessions WHERE id = ?", (session_id,)
+            )
+            if row:
+                return row[0][0]
+            return None
 
 
 # Module-level singleton; tests can override via dependency injection

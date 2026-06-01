@@ -202,6 +202,8 @@ export type ServerMessage =
         auto_approve: boolean;
         /** True when the session is currently mid-turn (e.g. reconnecting while streaming). */
         is_busy?: boolean;
+        /** Model persisted for this session (from worker DB). null = SDK default. */
+        model?: string | null;
       };
     }
   | {
