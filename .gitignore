@@ -22,10 +22,14 @@ frontend-dist/
 .env
 docker/.env
 
-# Local config holding real secrets - copy from the matching *.example and
-# fill in. The real files stay on each machine, never in git.
+# Local config that may hold real secrets - copy from the matching *.example
+# and fill in. The real files stay on each machine, never in git; only the
+# *.example templates are committed.
 worker-windows/start.ps1
+workers/worker-claude-compose.yml
+workers/worker-codex-compose.yml
 workers/worker-copilot-compose.yml
+workers.json
 
 # IDE
 .idea/
