@@ -3,6 +3,7 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import type { ClientMessage } from "../types";
+import { TerminalKeyboard } from "./TerminalKeyboard";
 
 type Props = {
   projectId: number;
@@ -22,7 +23,7 @@ const ARROW_KEYS: { label: string; data: string }[] = [
   { label: "↓", data: "\x1b[B" },
   { label: "→", data: "\x1b[C" },
 ];
-/** Height of the accessory bar in px - kept in sync with the bar's h-11 class
+/** Height of the accessory bar in px - kept in sync with the bar's BAR_H style
  * so the in-flow spacer reserves exactly the right amount of room. */
 const BAR_H = 44;
 
@@ -41,6 +42,11 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
   // keyboard. Lets the accessory bar float just above the keyboard instead of
   // being buried under it. 0 when the keyboard is closed.
   const [kbOffset, setKbOffset] = useState(0);
+
+  // Hybrid keyboard: when on, the OS keyboard is suppressed and our in-app
+  // keyboard is shown instead. A ref mirrors it for non-React callbacks.
+  const [customKb, setCustomKb] = useState(false);
+  const customKbRef = useRef(false);
 
   const isTouch = useMemo(
     () =>
@@ -72,7 +78,12 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
     sendRef.current({ type: "terminal_input", payload: { data: out } });
   }, []);
 
-  const refocus = useCallback(() => textareaRef.current?.focus(), []);
+  // Refocus the hidden textarea so taps don't dismiss the OS keyboard. No-op in
+  // custom-keyboard mode, where the textarea is intentionally blurred.
+  const refocus = useCallback(() => {
+    if (customKbRef.current) return;
+    textareaRef.current?.focus();
+  }, []);
 
   // Bootstrap xterm once on mount
   useEffect(() => {
@@ -196,9 +207,86 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
     refocus();
   }, [refocus]);
 
+  // Switch between the OS keyboard and our in-app keyboard.
+  const toggleCustomKb = useCallback(() => {
+    const next = !customKbRef.current;
+    customKbRef.current = next;
+    setCustomKb(next);
+    const ta = textareaRef.current;
+    ta?.setAttribute("inputmode", next ? "none" : "text");
+    // Suppress the OS keyboard by blurring; restore it by focusing.
+    if (next) ta?.blur();
+    else ta?.focus();
+  }, []);
+
   const keyBtn =
     "shrink-0 px-2.5 py-1.5 rounded text-xs font-mono bg-gray-800 text-gray-200 " +
     "active:bg-gray-700 border border-gray-700 select-none";
+
+  const barButtons = (
+    <>
+      <button
+        type="button"
+        className={keyBtn}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          pressKey("\x1b");
+        }}
+      >
+        Esc
+      </button>
+      <button
+        type="button"
+        className={keyBtn}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          pressKey("\t");
+        }}
+      >
+        Tab
+      </button>
+      <button
+        type="button"
+        className={`${keyBtn} ${
+          ctrlArmed ? "!bg-blue-600 !text-white !border-blue-500" : ""
+        }`}
+        aria-pressed={ctrlArmed}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          toggleCtrl();
+        }}
+      >
+        Ctrl
+      </button>
+      {ARROW_KEYS.map((k) => (
+        <button
+          key={k.label}
+          type="button"
+          className={keyBtn}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            pressKey(k.data);
+          }}
+        >
+          {k.label}
+        </button>
+      ))}
+      <button
+        type="button"
+        className={`${keyBtn} ml-auto ${
+          customKb ? "!bg-blue-600 !text-white !border-blue-500" : ""
+        }`}
+        aria-pressed={customKb}
+        title={customKb ? "Use device keyboard" : "Use in-app keyboard"}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          toggleCustomKb();
+        }}
+      >
+        ⌨
+      </button>
+    </>
+  );
 
   return (
     <div className="flex flex-col h-full border-t border-gray-700 bg-[#0d1117]">
@@ -216,63 +304,32 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
       </div>
       {/* xterm mount point */}
       <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
-      {/* Touch-only accessory key bar. It floats just above the on-screen
-          keyboard (position tracked via visualViewport) instead of hiding
-          behind it. The in-flow spacer reserves the same height so the bar
-          never covers the last terminal line. */}
-      {isTouch && (
+
+      {isTouch && customKb && (
+        /* Custom-keyboard mode: bar + in-app keyboard sit in normal flow at the
+           bottom (the OS keyboard is suppressed, so nothing to float over). */
+        <div className="shrink-0">
+          <div
+            className="flex items-center gap-1.5 overflow-x-auto px-2 bg-gray-900 border-t border-gray-700"
+            style={{ height: BAR_H }}
+          >
+            {barButtons}
+          </div>
+          <TerminalKeyboard onKey={pressKey} />
+        </div>
+      )}
+
+      {isTouch && !customKb && (
+        /* OS-keyboard mode: the bar floats just above the on-screen keyboard
+           (tracked via visualViewport). An in-flow spacer of the same height
+           keeps the floating bar from covering the last terminal line. */
         <>
           <div className="shrink-0" style={{ height: kbOffset + BAR_H }} />
           <div
             className="fixed left-0 right-0 z-50 flex items-center gap-1.5 overflow-x-auto px-2 bg-gray-900 border-t border-gray-700"
             style={{ bottom: kbOffset, height: BAR_H }}
           >
-          <button
-            type="button"
-            className={keyBtn}
-            onPointerDown={(e) => {
-              e.preventDefault();
-              pressKey("\x1b");
-            }}
-          >
-            Esc
-          </button>
-          <button
-            type="button"
-            className={keyBtn}
-            onPointerDown={(e) => {
-              e.preventDefault();
-              pressKey("\t");
-            }}
-          >
-            Tab
-          </button>
-          <button
-            type="button"
-            className={`${keyBtn} ${
-              ctrlArmed ? "!bg-blue-600 !text-white !border-blue-500" : ""
-            }`}
-            aria-pressed={ctrlArmed}
-            onPointerDown={(e) => {
-              e.preventDefault();
-              toggleCtrl();
-            }}
-          >
-            Ctrl
-          </button>
-          {ARROW_KEYS.map((k) => (
-            <button
-              key={k.label}
-              type="button"
-              className={keyBtn}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                pressKey(k.data);
-              }}
-            >
-              {k.label}
-            </button>
-          ))}
+            {barButtons}
           </div>
         </>
       )}
