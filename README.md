@@ -220,12 +220,22 @@ Hub + multi-agent workers running in Docker.
 - **Hub** (`hub/`): FastAPI. Frontend static serve, Cloudflare Access auth,
   WebSocket router between browser and N workers, push notifications,
   per-worker model registry.
-- **Workers** (`worker-claude/`, `worker-copilot/`, `worker-codex/`): FastAPI.
-  One per agent SDK family. Each handles project scanning, terminal, file
-  browser, session management, and routes prompts into its SDK's session loop.
+- **Workers** (`worker-claude/`, `worker-copilot/`, `worker-codex/`,
+  `worker-windows/`): FastAPI. One per agent SDK family. Each handles project
+  scanning, terminal, file browser, session management, and routes prompts
+  into its SDK's session loop.
   - `worker-claude` - Anthropic `claude-agent-sdk`
   - `worker-copilot` - `github-copilot-sdk` (GitHub Copilot CLI)
   - `worker-codex` - `openai-codex-sdk` (OpenAI Codex CLI)
+  - `worker-windows` - Claude SDK on Windows, plus an Excel automation module
+    (Office.js task-pane add-in + an MCP server on `EXCEL_PORT`, default
+    `3847`). Runs natively (`start.ps1`), not in Docker. Supports both server
+    and inbound (reverse) modes like the other workers.
+  - A co-located **`elec`** variant of worker-claude ships in
+    `compose.override.yml` (auto-merged): a second Claude worker serving
+    `~/elec` with USB passthrough for an electronics toolchain, isolated state,
+    registered in `workers.json` as id `elec`. Remove that file + the
+    `workers.json` entry to undo.
 - **Shared** (`shared/worker_shared/`): SDK-agnostic modules (db, files,
   terminal, locks, projects service, session registry) consumed by every
   worker via a uv path source. Adding a new agent SDK = one new worker
@@ -260,22 +270,33 @@ is the worker of the most recent `new_session` / `resume_session`.
 ```bash
 # Clone, configure
 git clone <this repo>
-cd claude_cloud
+cd anywhere_agents
+
+# Enable the secret-scanning git hooks (pre-commit + pre-push). One-time.
+./scripts/install-hooks.sh
+
 cp .env.example .env             # fill in UID, GID, WORKER_SECRET
 
 # Configure workers (id, type, label, url, secret)
 cp workers.json.example workers.json  # or edit by hand
 
-# Build + start (hub, both workers, optional cloudflared)
+# Build + start (hub, local worker-claude, optional cloudflared)
 docker compose up -d --build
 
 # Open http://localhost:8001 (or your tunnel hostname)
 ```
 
+> Config that can hold secrets is gitignored; the repo ships only `*.example`
+> templates. Copy the one you need and fill it in locally - never commit the
+> real file. The pre-push hook scans for secrets and blocks a push if it finds
+> any (see [Git hooks](#git-hooks--secret-scanning)).
+
 Adding a remote worker from another machine:
 
 ```bash
-# On the remote machine: bring up a standalone worker (pulls from GHCR)
+# On the remote machine: copy the gitignored template, fill in secrets,
+# then bring up a standalone worker (pulls from GHCR).
+cp workers/worker-claude-compose.yml.example workers/worker-claude-compose.yml
 docker compose -f workers/worker-claude-compose.yml up -d
 
 # On the hub machine: append a new entry to workers.json
@@ -318,6 +339,9 @@ docker compose up -d --build hub
 - **Secrets at rest:** `~/.claude-web/push_subs.json` (web push
   subscriptions, atomic write), SQLite DB (project index, no source code).
   No secrets logged.
+- **Secret hygiene in git:** real config holding secrets is gitignored; only
+  `*.example` templates are committed, and pre-commit/pre-push hooks scan for
+  secrets (see [Git hooks](#git-hooks--secret-scanning)).
 - **Per-session locks:** a session is bound to the WS connection that
   resumed it. A second device gets `session_locked` with the current
   holder's device label and can either back off or take over (sends
@@ -364,6 +388,10 @@ docker compose up -d --build hub
 - Projects sorted by last session modification time
 - Project search/filter (name or path, case-insensitive)
 - Worker filter dropdown (shown when more than one worker is connected)
+- Active session highlighted yellow; a session that streams in the background
+  (different chat) is flagged blue on its session row, project, and worker
+  filter, clearing when you open it. Background-session stream events never
+  bleed into the chat you are currently viewing.
 - New project browser - modal FS navigator with breadcrumbs, "New folder"
 - Projects whose `cwd` doesn't exist on the worker shown greyed-out
 - Active project/session persisted to localStorage (survives reload / push tap)
@@ -387,6 +415,11 @@ docker compose up -d --build hub
 - PTY fork on worker side, asyncio reader
 - Dynamic resize via ResizeObserver
 - Hide without kill - PTY stays alive when terminal is closed
+- Mobile accessory key bar (touch only): Esc, Tab, a sticky Ctrl that
+  composes with the next key, and arrow keys - floats just above the on-screen
+  keyboard (tracked via `visualViewport`) instead of hiding behind it
+- Optional in-app keyboard (toggle): suppresses the OS keyboard and renders a
+  built-in QWERTY + symbols layout that feeds the PTY directly
 
 ### Permissions
 - Per-project `auto_approve` flag (sidebar dot + header pill, toggleable
@@ -416,7 +449,9 @@ docker compose up -d --build hub
 
 Both use `tag: "claude-result"` so they don't stack. Local notify is
 skipped when push is active. Service worker suppresses push banner when
-any client window has `visibilityState === 'visible'`.
+any client window has `visibilityState === 'visible'`, and any lingering
+tray notifications are cleared when the app becomes visible again (opened
+by any means, not just by tapping the notification).
 
 ### PWA
 - Web App Manifest with icons (192px + 512px, separate `any` and `maskable`)
@@ -438,6 +473,31 @@ any client window has `visibilityState === 'visible'`.
 - **Commits**: conventional commits (`feat:`, `fix:`, `refactor:`)
 - **Dependency posture**: no socket.io, no Redux, no react-query - keep
   the surface minimal
+
+---
+
+## Git hooks / secret scanning
+
+Secret hygiene is enforced at the git layer so a secret cannot be committed
+or pushed regardless of who (a human or an agent) runs git.
+
+- `./scripts/install-hooks.sh` points `core.hooksPath` at `.githooks/`.
+- **pre-commit** scans staged changes; **pre-push** scans each pushed commit
+  range. Both run `gitleaks` (regex rules + Shannon-entropy heuristics, when
+  installed) AND a bundled regex/entropy fallback (`secret-fallback.py`), and
+  block if either flags something - so protection still works where gitleaks
+  is not installed (fresh clones, other worker containers).
+- `.gitleaks.toml` extends the default ruleset with an allowlist for template
+  placeholders (`${VAR}`, `<...>`, `changeme`).
+- Real config holding secrets (`*.env`, `start.ps1`, worker `*-compose.yml`,
+  `workers.json`) is gitignored; only sanitized `*.example` templates are
+  committed. Copy the `*.example`, fill it in locally, never commit the real
+  file.
+- Install gitleaks for the strongest coverage
+  (<https://github.com/gitleaks/gitleaks>); the hooks degrade gracefully
+  without it.
+- `--no-verify` bypasses the hooks. Do not use it to push past a finding -
+  fix the value or update the allowlist.
 
 ---
 
@@ -489,6 +549,14 @@ worker-copilot/src/      (GitHub Copilot SDK runtime - mirrors worker-claude)
 │                        on_permission_request callback
 └── ws/handler.py        WS routing + heartbeat + list_models endpoint
 
+worker-windows/src/      (Claude SDK on Windows + Excel automation)
+├── main.py              FastAPI app, server + inbound modes, /internal/upload
+├── modules/excel/       Office.js task-pane add-in + MCP server (EXCEL_PORT)
+│                        bridging Claude tool calls to live Excel
+├── sdk/                 session/manager/permissions (mirrors worker-claude)
+├── projects/, sessions/, terminal/, ws/   same shape as the other workers
+└── start.ps1            native launcher (uv sync + uvicorn on 8002)
+
 frontend/src/
 ├── App.tsx              Main app shell, WS message dispatch, search
 ├── stores/
@@ -502,20 +570,34 @@ frontend/src/
 │   ├── useWakeLock.ts           Screen wake lock during streaming
 │   └── useSpeechInput.ts        Web Speech API voice dictation
 ├── components/
-│   ├── Sidebar.tsx             Projects, sessions, search, worker filter, logout
+│   ├── Sidebar.tsx             Projects, sessions, search, worker filter, logout;
+│   │                          active-session (yellow) + background-activity (blue) cues
 │   ├── Composer.tsx            Input, slash commands, images, voice, auto-approve
 │   ├── Message.tsx             Markdown + syntax highlight + search highlight
 │   ├── ToolBlock.tsx           Collapsible tool call display + DiffView
 │   ├── DiffView.tsx            LCS line diff (add/del/ctx, green/red)
 │   ├── FileBrowser.tsx         Directory listing + file viewer/editor
-│   ├── Terminal.tsx            xterm.js PTY terminal
+│   ├── Terminal.tsx            xterm.js PTY terminal + mobile accessory key bar
+│   ├── TerminalKeyboard.tsx    In-app soft keyboard (hybrid mode)
 │   ├── StreamingStatus.tsx     Activity bar (thinking/tool/waiting)
+│   ├── TypingIndicator.tsx     Animated typing dots
 │   ├── UserInputPrompt.tsx     Multi-question panel with minimize
 │   ├── NewProjectBrowser.tsx   Modal FS browser for new projects
-│   └── PermissionPrompt.tsx    Inline Allow/Deny above composer
+│   ├── PermissionPrompt.tsx    Inline Allow/Deny above composer
+│   ├── LockTakeoverModal.tsx   "Take over" prompt on session_locked
+│   ├── UploadOverlay.tsx       Drag-and-drop upload progress overlay
+│   ├── AuthBootstrapBanner.tsx Worker-needs-credentials banner
+│   └── AuthBootstrapModal.tsx  Paste API key / device-code bootstrap flow
 ├── commands.ts             Slash command definitions + matchCommands()
 └── public/
     └── sw.js               Service worker (push, fetch, notification click)
+
+.githooks/                  Secret-scanning git hooks (see Git hooks section)
+├── pre-commit              Scan staged changes
+├── pre-push                Scan each pushed commit range
+├── scan-secrets.sh         gitleaks + bundled fallback driver
+└── secret-fallback.py      regex/entropy scanner used when gitleaks is absent
+scripts/install-hooks.sh    Enable the hooks (sets core.hooksPath)
 ```
 
 ---
@@ -524,20 +606,29 @@ frontend/src/
 
 ```
 docker/
-├── hub.Dockerfile             Multi-stage: node (frontend) - uv (deps) - python:3.13-slim
-├── worker-claude.Dockerfile   Multi-stage: uv (deps) - python:3.13-slim + Node.js + Claude CLI
-├── worker-copilot.Dockerfile  Multi-stage: uv (deps) - python:3.13-slim
-│                              (github-copilot-sdk wheel bundles the Copilot CLI
-│                              binary so no separate Node install)
-└── entrypoint.sh              Injects user into /etc/passwd (fixes "I have no name!")
+├── hub.Dockerfile                Multi-stage: node (frontend) - uv (deps) - python:3.13-slim
+├── worker-claude.Dockerfile      Multi-stage: uv (deps) - python:3.13-slim + Node.js + Claude CLI
+├── worker-claude-elec.Dockerfile worker-claude + serial/USB toolchain (the `elec` worker)
+├── worker-copilot.Dockerfile     Multi-stage: uv (deps) - python:3.13-slim
+│                                 (github-copilot-sdk wheel bundles the Copilot CLI
+│                                 binary so no separate Node install)
+├── worker-codex.Dockerfile       Multi-stage: uv (deps) - python:3.13-slim + OpenAI Codex CLI
+└── entrypoint.sh                 Injects user into /etc/passwd (fixes "I have no name!")
 ```
 
 - `compose.yml` - hub + local worker-claude + cloudflared (worker-copilot
   and worker-codex commented out as examples)
-- `workers/worker-claude-compose.yml` - standalone worker-claude for a remote machine (GHCR image)
-- `workers/worker-copilot-compose.yml` - standalone worker-copilot for a remote machine (GHCR image)
-- `workers/worker-codex-compose.yml` - standalone worker-codex for a remote machine (GHCR image)
-- `workers.json` - worker registry; one entry per worker:
+- `compose.override.yml` - auto-merged; adds the co-located `elec` worker
+  (worker-claude + USB passthrough). Delete to disable.
+- `workers/worker-claude-compose.yml.example` - standalone worker-claude for a remote machine (GHCR image)
+- `workers/worker-copilot-compose.yml.example` - standalone worker-copilot for a remote machine (GHCR image)
+- `workers/worker-codex-compose.yml.example` - standalone worker-codex for a remote machine (GHCR image)
+  - These (and `workers.json`) are gitignored once filled in; copy the
+    `*.example`, add your secrets, and run the real file. `worker-windows`
+    ships no compose file - it runs natively via `start.ps1` (copy
+    `worker-windows/start.ps1.example`).
+- `workers.json` (gitignored; from `workers.json.example`) - worker registry;
+  one entry per worker:
   ```json
   {
     "id": "big-worker",
