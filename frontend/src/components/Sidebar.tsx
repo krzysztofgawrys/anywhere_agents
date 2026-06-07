@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClientMessage, Project, SessionSummary } from "../types";
 import { useProjectsStore } from "../stores/projects";
+import { useChatStore } from "../stores/chat";
 import { AuthBootstrapBanner } from "./AuthBootstrapBanner";
 
 type Props = {
@@ -28,9 +29,22 @@ export function Sidebar({
   const workersFromHub = useProjectsStore((s) => s.workers);
   const sessionsByProject = useProjectsStore((s) => s.sessionsByProject);
   const activeProjectId = useProjectsStore((s) => s.activeProjectId);
+  const backgroundSessions = useProjectsStore((s) => s.backgroundSessions);
+  const clearBackground = useProjectsStore((s) => s.clearBackground);
   const loading = useProjectsStore((s) => s.loading);
   const setActive = useProjectsStore((s) => s.setActive);
   const setLoading = useProjectsStore((s) => s.setLoading);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+
+  // True when a worker has a project containing a session with unseen
+  // background output. Used to drop a blue dot on the worker filter.
+  const workerHasBackground = (workerId: string) =>
+    backgroundSessions.size > 0 &&
+    projects.some(
+      (p) =>
+        p.worker_id === workerId &&
+        (sessionsByProject[p.id] ?? []).some((s) => backgroundSessions.has(s.id))
+    );
 
   // Worker filter list. Prefer the canonical list from the hub (every known
   // worker, even with zero projects). Older hub builds don't send `workers`
@@ -154,6 +168,15 @@ export function Sidebar({
                         })()
                       : "All workers"}
                   </span>
+                  {workerFilter !== null &&
+                    workerList.some(
+                      (w) => w.id !== workerFilter && workerHasBackground(w.id)
+                    ) && (
+                      <span
+                        className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"
+                        title="Background activity on another worker"
+                      />
+                    )}
                   <svg
                     width="12"
                     height="12"
@@ -194,6 +217,12 @@ export function Sidebar({
                             <span
                               className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 shrink-0"
                               aria-label="disconnected"
+                            />
+                          )}
+                          {workerHasBackground(w.id) && (
+                            <span
+                              className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"
+                              title="Background activity"
                             />
                           )}
                           {w.label}
@@ -296,11 +325,14 @@ export function Sidebar({
               isExpanded={expanded.has(p.id)}
               sessions={sessionsByProject[p.id]}
               showWorker={multiWorker}
+              activeSessionId={activeSessionId}
+              backgroundSessions={backgroundSessions}
               onToggle={() => {
                 if (p.available) toggleProject(p.id);
               }}
               onPickSession={(sid) => {
                 if (!p.available) return;
+                clearBackground(sid);
                 setActive(p.id);
                 onPickSession(p.id, sid);
                 onClose();
@@ -346,6 +378,8 @@ type ProjectItemProps = {
   isExpanded: boolean;
   sessions: SessionSummary[] | undefined;
   showWorker: boolean;
+  activeSessionId: string | null;
+  backgroundSessions: Set<string>;
   onToggle: () => void;
   onPickSession: (sessionId: string) => void;
   onNewSession: () => void;
@@ -358,12 +392,17 @@ function ProjectItem({
   isExpanded,
   sessions,
   showWorker,
+  activeSessionId,
+  backgroundSessions,
   onToggle,
   onPickSession,
   onNewSession,
   onBrowseFiles,
 }: ProjectItemProps) {
   const unavailable = !project.available;
+  // A project lights up blue when any of its (loaded) sessions has unseen
+  // background output.
+  const hasBackground = (sessions ?? []).some((s) => backgroundSessions.has(s.id));
 
   return (
     <div className={unavailable ? "opacity-40" : ""}>
@@ -388,7 +427,19 @@ function ProjectItem({
           <span className="text-gray-500 text-xs shrink-0">
             {unavailable ? "○" : isExpanded ? "▾" : "▸"}
           </span>
-          <span className="truncate flex-1">{project.name}</span>
+          <span
+            className={`truncate flex-1 ${
+              hasBackground && !isActive ? "text-blue-300" : ""
+            }`}
+          >
+            {project.name}
+          </span>
+          {hasBackground && (
+            <span
+              className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"
+              title="New background activity"
+            />
+          )}
           {showWorker && project.worker_label && (
             <span className="shrink-0 text-[10px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">
               {project.worker_label}
@@ -441,22 +492,46 @@ function ProjectItem({
           {sessions !== undefined && sessions.length === 0 && (
             <p className="text-xs text-gray-600 px-2 py-1">No sessions yet.</p>
           )}
-          {sessions?.map((s) => (
-            <button
-              type="button"
-              key={s.id}
-              onClick={() => onPickSession(s.id)}
-              className="w-full text-left px-2 py-1.5 rounded text-xs hover:bg-gray-800/50 group"
-              title={s.id}
-            >
-              <div className="truncate text-gray-300 group-hover:text-white">
-                {s.title ?? s.preview ?? s.id.slice(0, 8)}
-              </div>
-              <div className="truncate text-gray-600 text-[10px]">
-                {s.message_count} msg · {new Date(s.mtime * 1000).toLocaleString()}
-              </div>
-            </button>
-          ))}
+          {sessions?.map((s) => {
+            const isActiveSession = s.id === activeSessionId;
+            const isBackground = !isActiveSession && backgroundSessions.has(s.id);
+            const rowCls = isActiveSession
+              ? "bg-yellow-500/20 ring-1 ring-inset ring-yellow-500/40"
+              : isBackground
+                ? "bg-blue-600/20"
+                : "hover:bg-gray-800/50";
+            const titleCls = isActiveSession
+              ? "text-yellow-100"
+              : isBackground
+                ? "text-blue-200"
+                : "text-gray-300 group-hover:text-white";
+            const metaCls = isActiveSession
+              ? "text-yellow-200/70"
+              : isBackground
+                ? "text-blue-300/60"
+                : "text-gray-600";
+            return (
+              <button
+                type="button"
+                key={s.id}
+                onClick={() => onPickSession(s.id)}
+                className={`w-full text-left px-2 py-1.5 rounded text-xs group ${rowCls}`}
+                title={s.id}
+              >
+                <div className={`truncate flex items-center gap-1.5 ${titleCls}`}>
+                  {isBackground && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {s.title ?? s.preview ?? s.id.slice(0, 8)}
+                  </span>
+                </div>
+                <div className={`truncate text-[10px] ${metaCls}`}>
+                  {s.message_count} msg · {new Date(s.mtime * 1000).toLocaleString()}
+                </div>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
