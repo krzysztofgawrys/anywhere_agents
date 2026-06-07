@@ -580,8 +580,22 @@ function App() {
   // meaning streaming events (and the final `result`) were never delivered.
   // A fresh session_history fetch catches any messages produced while away.
   useEffect(() => {
+    // Dismiss any lingering tray notifications - once the user is looking at
+    // the app, a banner is stale. The service worker already closes a
+    // notification when it's tapped (notificationclick); this covers opening
+    // the app by any OTHER means (home screen, app switcher, already open).
+    // getNotifications() is callable from the page via the SW registration,
+    // so no postMessage to the worker is needed.
+    const clearNotifications = () => {
+      if (!("serviceWorker" in navigator)) return;
+      navigator.serviceWorker.ready
+        .then((reg) => reg.getNotifications())
+        .then((notes) => notes.forEach((n) => n.close()))
+        .catch(() => {});
+    };
     const onVisible = () => {
       if (document.visibilityState !== "visible") return;
+      clearNotifications();
       const projectId = activeProjectIdRef.current;
       const sessionId = useChatStore.getState().activeSessionId;
       if (projectId === null || sessionId === null) return;
@@ -590,6 +604,9 @@ function App() {
         payload: { project_id: projectId, session_id: sessionId, limit: 30 },
       });
     };
+    // Cold start (PWA launched from the home screen) fires no visibilitychange
+    // event - the page is already visible - so clear once on mount too.
+    if (document.visibilityState === "visible") clearNotifications();
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
