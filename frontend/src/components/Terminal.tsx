@@ -22,6 +22,9 @@ const ARROW_KEYS: { label: string; data: string }[] = [
   { label: "↓", data: "\x1b[B" },
   { label: "→", data: "\x1b[C" },
 ];
+/** Height of the accessory bar in px - kept in sync with the bar's h-11 class
+ * so the in-flow spacer reserves exactly the right amount of room. */
+const BAR_H = 44;
 
 export function Terminal({ projectId, send, onReady, onHide }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -33,6 +36,11 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
   // character (from the bar OR the OS keyboard) which becomes a control code.
   const ctrlArmedRef = useRef(false);
   const [ctrlArmed, setCtrlArmed] = useState(false);
+
+  // Distance from the layout-viewport bottom to the top of the on-screen
+  // keyboard. Lets the accessory bar float just above the keyboard instead of
+  // being buried under it. 0 when the keyboard is closed.
+  const [kbOffset, setKbOffset] = useState(0);
 
   const isTouch = useMemo(
     () =>
@@ -151,6 +159,27 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
     return () => ro.disconnect();
   }, [send]);
 
+  // Track the on-screen keyboard via the visual viewport so the accessory bar
+  // can float right above it. visualViewport is the portable signal (works on
+  // iOS Safari and Android Chrome); when the keyboard opens it shrinks while
+  // the layout viewport stays put, so the gap below it is the keyboard height.
+  useEffect(() => {
+    if (!isTouch) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      const offset = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      setKbOffset(offset);
+    };
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, [isTouch]);
+
   // Accessory-bar key press. preventDefault on pointerdown keeps focus on the
   // hidden textarea so the OS keyboard doesn't dismiss between taps.
   const pressKey = useCallback(
@@ -187,9 +216,17 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
       </div>
       {/* xterm mount point */}
       <div ref={containerRef} className="flex-1 overflow-hidden p-1" />
-      {/* Touch-only accessory key bar - terminal keys the soft keyboard lacks */}
+      {/* Touch-only accessory key bar. It floats just above the on-screen
+          keyboard (position tracked via visualViewport) instead of hiding
+          behind it. The in-flow spacer reserves the same height so the bar
+          never covers the last terminal line. */}
       {isTouch && (
-        <div className="flex gap-1.5 overflow-x-auto px-2 py-1.5 bg-gray-900 border-t border-gray-700 shrink-0">
+        <>
+          <div className="shrink-0" style={{ height: kbOffset + BAR_H }} />
+          <div
+            className="fixed left-0 right-0 z-50 flex items-center gap-1.5 overflow-x-auto px-2 bg-gray-900 border-t border-gray-700"
+            style={{ bottom: kbOffset, height: BAR_H }}
+          >
           <button
             type="button"
             className={keyBtn}
@@ -236,7 +273,8 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
               {k.label}
             </button>
           ))}
-        </div>
+          </div>
+        </>
       )}
     </div>
   );
