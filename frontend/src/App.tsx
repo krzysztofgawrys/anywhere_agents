@@ -149,7 +149,6 @@ function App() {
 
   const LS_KEY = "claude_web_last_session";
   const LS_MODEL_PREFIX = "claude_web_model:";
-  const LS_EFFORT_PREFIX = "claude_web_effort:";
 
   const persistSession = useCallback((projectId: number, sessionId: string) => {
     try {
@@ -177,41 +176,18 @@ function App() {
     }
   }, []);
 
-  /** Save the effort choice for a specific session. */
-  const persistSessionEffort = useCallback((sessionId: string, effort: string | null) => {
-    try {
-      if (effort) {
-        localStorage.setItem(LS_EFFORT_PREFIX + sessionId, effort);
-      } else {
-        localStorage.removeItem(LS_EFFORT_PREFIX + sessionId);
-      }
-    } catch {}
-  }, []);
-
-  /** Read the persisted effort for a specific session. */
-  const readSessionEffort = useCallback((sessionId: string): string | null => {
-    try {
-      return localStorage.getItem(LS_EFFORT_PREFIX + sessionId);
-    } catch {
-      return null;
-    }
-  }, []);
-
-  // Persist model and effort whenever they change on an active session so a
-  // subsequent reload restores the exact choices. Each session stores its own
-  // values independently - different workers expose different options.
+  // Persist the model whenever it changes on an active session so a
+  // subsequent reload restores the exact choice. Effort is intentionally
+  // NOT mirrored here: it is persisted server-side per session (SQLite via
+  // the worker SessionManager) and delivered back in session_started, so the
+  // backend DB is its single source of truth. Keeping a parallel localStorage
+  // copy only risked a stale client value overriding the DB across devices.
   useEffect(() => {
     const sessionId = useChatStore.getState().activeSessionId;
     if (sessionId !== null) {
       persistSessionModel(sessionId, selectedModel);
     }
   }, [selectedModel, persistSessionModel]);
-  useEffect(() => {
-    const sessionId = useChatStore.getState().activeSessionId;
-    if (sessionId !== null) {
-      persistSessionEffort(sessionId, selectedEffort);
-    }
-  }, [selectedEffort, persistSessionEffort]);
 
   // Terminal state - must be declared before onServerMessage uses killTerminal.
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -285,11 +261,11 @@ function App() {
             payload: {
               project_id: projectId,
               session_id: sessionId,
-              // Preserve the model and effort across the worker restart -
-              // otherwise the SDK slow-path resume would silently fall back
-              // to the defaults.
+              // Preserve the model across the worker restart - otherwise the
+              // SDK slow-path resume would silently fall back to the default.
+              // Effort is restored from the worker's SQLite prefs on resume,
+              // so it doesn't need to ride along here.
               model: useChatStore.getState().model,
-              effort: useChatStore.getState().effort,
             },
           });
           sendRef.current?.(pending);
@@ -532,20 +508,14 @@ function App() {
         useChatStore.getState().setModel(model);
       }
     }
-    // Same for effort.
-    let effort: string | null = useChatStore.getState().effort;
-    if (effort === null) {
-      effort = readSessionEffort(sessionId);
-      if (effort !== null) {
-        useChatStore.getState().setEffort(effort);
-      }
-    }
+    // Effort is not restored here: the worker resolves it from its SQLite
+    // session prefs on resume and echoes it back in session_started.
 
     if (!document.hidden) {
       // Page is visible - claim the session lock and reload history.
       sendRef.current?.({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId, model, effort },
+        payload: { project_id: projectId, session_id: sessionId, model },
       });
     }
     // Always reload history so background output becomes visible when user returns.
@@ -553,7 +523,7 @@ function App() {
       type: "session_history",
       payload: { project_id: projectId, session_id: sessionId, limit: 30 },
     });
-  }, [readSessionModel, readSessionEffort]);
+  }, [readSessionModel]);
 
   // Keep the ref in sync so onServerMessage can call resumeLastSession without
   // creating a deps-ordering TDZ problem (onServerMessage is defined earlier).
@@ -923,16 +893,14 @@ function App() {
       }
       killTerminal();
       resetChat();
-      // Restore the target session's persisted model and effort (not the
-      // previous session's values from the stale closure). reset() just
-      // cleared Zustand, so we read from per-session localStorage.
+      // Restore the target session's persisted model (not the previous
+      // session's value from the stale closure). reset() just cleared Zustand,
+      // so we read from per-session localStorage. Effort is restored server-
+      // side: the worker resolves it from SQLite on resume and sends it back
+      // in session_started, which updates the badge.
       const model = readSessionModel(sessionId);
       if (model !== null) {
         useChatStore.getState().setModel(model);
-      }
-      const effort = readSessionEffort(sessionId);
-      if (effort !== null) {
-        useChatStore.getState().setEffort(effort);
       }
       send({
         type: "session_history",
@@ -940,10 +908,10 @@ function App() {
       });
       send({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId, model, effort },
+        payload: { project_id: projectId, session_id: sessionId, model },
       });
     },
-    [resetChat, send, killTerminal, readSessionModel, readSessionEffort]
+    [resetChat, send, killTerminal, readSessionModel]
   );
 
   const onTakeover = useCallback(() => {
@@ -952,10 +920,6 @@ function App() {
     if (model !== null) {
       useChatStore.getState().setModel(model);
     }
-    const effort = readSessionEffort(pendingLock.sessionId);
-    if (effort !== null) {
-      useChatStore.getState().setEffort(effort);
-    }
     send({
       type: "resume_session",
       payload: {
@@ -963,11 +927,10 @@ function App() {
         session_id: pendingLock.sessionId,
         force: true,
         model,
-        effort,
       },
     });
     setPendingLock(null);
-  }, [pendingLock, send, setPendingLock, readSessionModel, readSessionEffort]);
+  }, [pendingLock, send, setPendingLock, readSessionModel]);
 
   const onAllowTool = useCallback(
     (toolUseId: string) => {
