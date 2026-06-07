@@ -245,13 +245,87 @@ describe("streaming events", () => {
     useChatStore.setState({ status: "streaming" });
     dispatch({
       type: "tool_call",
-      payload: { tool_use_id: "t1", name: "Read", input: { file_path: "/foo" } },
+      payload: { session_id: "s1", tool_use_id: "t1", name: "Read", input: { file_path: "/foo" } },
     } as ServerMessage);
 
     const s = state();
     expect(s.streamingActivity).toEqual({ kind: "tool", name: "Read", detail: "/foo" });
     const block = s.messages[0]!.blocks[0]!;
     expect(block.kind).toBe("tool");
+  });
+});
+
+// ── background session filtering ────────────────────────────────────
+
+describe("background session filtering", () => {
+  // All agents stream over the single hub WS connection. When the user views
+  // one chat while another agent runs, the background agent's events must not
+  // render in the open chat.
+  beforeEach(() => {
+    dispatch({
+      type: "session_started",
+      payload: { session_id: "active", cwd: "/", resumed: false, auto_approve: false, is_busy: true },
+    } as ServerMessage);
+  });
+
+  it("drops text_delta from a background session", () => {
+    dispatch({ type: "text_delta", payload: { session_id: "other", text: "leak" } } as ServerMessage);
+    expect(state().messages).toHaveLength(0);
+  });
+
+  it("keeps text_delta from the active session", () => {
+    dispatch({ type: "text_delta", payload: { session_id: "active", text: "mine" } } as ServerMessage);
+    const s = state();
+    expect(s.messages).toHaveLength(1);
+    expect(s.messages[0]!.blocks).toEqual([{ kind: "text", text: "mine" }]);
+  });
+
+  it("drops thinking/tool_call/task_event from a background session", () => {
+    dispatch({ type: "thinking", payload: { session_id: "other", text: "hmm" } } as ServerMessage);
+    dispatch({
+      type: "tool_call",
+      payload: { session_id: "other", tool_use_id: "t1", name: "Read", input: { file_path: "/x" } },
+    } as ServerMessage);
+    dispatch({
+      type: "task_event",
+      payload: {
+        session_id: "other",
+        event_type: "started",
+        task_id: "k1",
+        summary: null,
+        description: null,
+        status: null,
+        tool_use_id: null,
+        last_tool_name: null,
+      },
+    } as ServerMessage);
+    expect(state().messages).toHaveLength(0);
+  });
+
+  it("a background session's result does not reset the active session's streaming state", () => {
+    // Active session is mid-stream.
+    dispatch({ type: "text_delta", payload: { session_id: "active", text: "hi" } } as ServerMessage);
+    const before = state();
+    expect(before.status).toBe("streaming");
+    expect(before.currentAssistantId).not.toBeNull();
+
+    // Background session finishes - must NOT clear the active stream.
+    dispatch({
+      type: "result",
+      payload: {
+        session_id: "other",
+        subtype: "success",
+        duration_ms: 1,
+        total_cost_usd: 0,
+        num_turns: 1,
+        is_error: false,
+      },
+    } as ServerMessage);
+
+    const after = state();
+    expect(after.status).toBe("streaming");
+    expect(after.currentAssistantId).toBe(before.currentAssistantId);
+    expect(after.messages[0]!.finished).toBe(false);
   });
 });
 
@@ -297,7 +371,7 @@ describe("permission_request", () => {
   it("adds to pendingPermissions", () => {
     dispatch({
       type: "permission_request",
-      payload: { tool_use_id: "t1", name: "Bash", input: { command: "ls" }, description: null },
+      payload: { session_id: "s1", tool_use_id: "t1", name: "Bash", input: { command: "ls" }, description: null },
     } as ServerMessage);
     expect(state().pendingPermissions).toHaveLength(1);
     expect(state().pendingPermissions[0]!.toolUseId).toBe("t1");

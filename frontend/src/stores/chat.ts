@@ -55,6 +55,8 @@ type ChatState = {
   planMode: boolean;
   /** Selected model passed to new/resume session. null = SDK default. */
   model: string | null;
+  /** Selected effort/reasoning level. null = SDK default. */
+  effort: string | null;
   /** Outstanding permission requests, oldest first. */
   pendingPermissions: PendingPermission[];
   /** AskUserQuestion requests waiting for the user to answer. */
@@ -74,11 +76,38 @@ type ChatState = {
   setAutoApprove: (value: boolean) => void;
   setPlanMode: (value: boolean) => void;
   setModel: (value: string | null) => void;
+  setEffort: (value: string | null) => void;
 };
 
 function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/**
+ * Streamed/content message types that only affect the chat currently on
+ * screen. Every agent's output is forwarded over the single hub WS
+ * connection, so when several agents run at once a background agent's events
+ * would otherwise bleed into whichever chat the user is viewing. These types
+ * carry a `session_id`; if it doesn't match the active session we drop them.
+ * The background session's output is persisted on the worker and reloaded
+ * from history when the user switches to it, so nothing is lost.
+ *
+ * Deliberately excluded:
+ *  - permission_request: has no resume-time resend path and isn't denied when
+ *    switching within the same WS, so dropping it would strand the prompt.
+ *  - user_input_request: globally visible by the same reasoning as above.
+ *  - session_locked / lock_revoked: relate to the resume handshake, where the
+ *    active session id may not match yet.
+ */
+const SESSION_SCOPED_TYPES: ReadonlySet<string> = new Set([
+  "text_delta",
+  "thinking",
+  "tool_call",
+  "tool_result",
+  "task_event",
+  "result",
+  "system",
+]);
 
 export const useChatStore = create<ChatState>((set, get) => ({
   messages: [],
@@ -96,6 +125,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   autoApprove: false,
   planMode: false,
   model: null,
+  effort: null,
   pendingPermissions: [],
   pendingUserInputs: [],
 
@@ -116,6 +146,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       autoApprove: false,
       planMode: false,
       model: null,
+      effort: null,
       pendingPermissions: [],
       pendingUserInputs: [],
     }),
@@ -165,6 +196,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setAutoApprove: (value) => set({ autoApprove: value }),
   setPlanMode: (value) => set({ planMode: value }),
   setModel: (value) => set({ model: value }),
+  setEffort: (value) => set({ effort: value }),
 
   appendUserPrompt: (text, images) => {
     const blocks: ChatBlock[] = [];
@@ -187,6 +219,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   handleServerMessage: (msg) => {
+    // Ignore streamed content that belongs to a background session - it must
+    // not render in the chat the user is currently viewing. See
+    // SESSION_SCOPED_TYPES for why interactive/lock messages are exempt.
+    if (SESSION_SCOPED_TYPES.has(msg.type)) {
+      const active = get().activeSessionId;
+      const sid = (msg.payload as { session_id?: string }).session_id;
+      if (active !== null && sid !== undefined && sid !== active) return;
+    }
     switch (msg.type) {
       case "session_started":
         set((s) => ({
@@ -195,11 +235,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
           readOnly: false,
           pendingLock: null,
           autoApprove: msg.payload.auto_approve,
-          // Backend is the source of truth for the session's model.
-          // If the payload includes it, sync the UI; otherwise keep the
+          // Backend is the source of truth for the session's model and effort.
+          // If the payload includes them, sync the UI; otherwise keep the
           // existing in-memory value (backwards compat with older workers
           // that don't send the field yet).
           ...(msg.payload.model !== undefined ? { model: msg.payload.model ?? null } : {}),
+          ...(msg.payload.effort !== undefined ? { effort: msg.payload.effort ?? null } : {}),
           pendingPermissions: [],
           pendingUserInputs: [],
           // Sync streaming state with the backend on (re)connect.
@@ -207,7 +248,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // the agent finished while we were away (e.g. app backgrounded
           // on mobile, WS dropped, result message missed).
           ...(msg.payload.is_busy && s.status !== "streaming"
-            ? { status: "streaming" as const }
+            ? { status: "streaming" as const, streamingActivity: { kind: "waiting" as const } }
             : {}),
           ...(!msg.payload.is_busy && s.status === "streaming"
             ? {
@@ -406,6 +447,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
           // the info bubble but never update the persisted state -
           // causing the choice to vanish on reload.
           set({ model, messages: [...get().messages, infoMsg] });
+        }
+        if (sub === "effort_changed") {
+          const data = msg.payload.data as Record<string, unknown> | undefined;
+          const effort = (data?.effort as string) ?? null;
+          const infoMsg: ChatMessage = {
+            id: newId(),
+            role: "system",
+            blocks: [{ kind: "info", text: `Effort changed to ${effort ?? "default"}` }],
+            finished: true,
+          };
+          set({ effort, messages: [...get().messages, infoMsg] });
         }
         return;
       }
