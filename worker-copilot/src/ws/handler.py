@@ -15,7 +15,6 @@ from typing import Any
 
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
-
 from worker_shared.db import db
 from worker_shared.files import (
     FileBrowserError,
@@ -33,6 +32,7 @@ from worker_shared.projects.service import (
     list_projects,
     set_auto_approve,
 )
+from worker_shared.sdk.prefs import apply_set_effort, apply_set_model
 from worker_shared.terminal.session import TerminalSession
 
 from src.sdk.manager import SessionManager
@@ -271,8 +271,9 @@ async def _route(
         return terminal
 
     if msg_type == "auth_cancel":
-        from src.sdk.oauth import cancel_device_flow
         from worker_shared.sdk.bootstrap import cancel_auth
+
+        from src.sdk.oauth import cancel_device_flow
         request_id = payload.get("request_id")
         if isinstance(request_id, str):
             # Try both registries: the api_key paste path lives in
@@ -643,21 +644,11 @@ async def _route(
         return terminal
 
     if msg_type == "set_model":
-        model = payload.get("model") or None
-        await sessions.set_model(model)
-        await send({
-            "type": "system",
-            "payload": {"subtype": "model_changed", "data": {"model": model}},
-        })
+        await apply_set_model(payload, sessions, send)
         return terminal
 
     if msg_type == "set_effort":
-        effort = payload.get("effort") or None
-        await sessions.set_effort(effort)
-        await send({
-            "type": "system",
-            "payload": {"subtype": "effort_changed", "data": {"effort": effort}},
-        })
+        await apply_set_effort(payload, sessions, send)
         return terminal
 
     if msg_type == "prompt":

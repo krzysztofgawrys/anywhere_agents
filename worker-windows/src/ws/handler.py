@@ -28,6 +28,8 @@ from worker_shared.projects.service import (
     list_projects,
     set_auto_approve,
 )
+from worker_shared.sdk.prefs import apply_set_effort, apply_set_model
+
 try:
     from worker_shared.terminal.session import TerminalSession
     _TERMINAL_AVAILABLE = True
@@ -354,21 +356,11 @@ async def _route(
         return terminal
 
     if msg_type == "set_model":
-        model = payload.get("model") or None
-        await sessions.set_model(model)
-        await send({
-            "type": "system",
-            "payload": {"subtype": "model_changed", "data": {"model": model}},
-        })
+        await apply_set_model(payload, sessions, send)
         return terminal
 
     if msg_type == "set_effort":
-        effort = payload.get("effort") or None
-        await sessions.set_effort(effort)
-        await send({
-            "type": "system",
-            "payload": {"subtype": "effort_changed", "data": {"effort": effort}},
-        })
+        await apply_set_effort(payload, sessions, send)
         return terminal
 
     if msg_type == "prompt":
