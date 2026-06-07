@@ -22,7 +22,6 @@ const ARROW_KEYS: { label: string; data: string }[] = [
   { label: "↓", data: "\x1b[B" },
   { label: "→", data: "\x1b[C" },
 ];
-const SYMBOL_KEYS = ["|", "~", "/", "\\", "-", "_", "^", "`", "*", "#"];
 
 export function Terminal({ projectId, send, onReady, onHide }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -235,19 +234,6 @@ export function Terminal({ projectId, send, onReady, onHide }: Props) {
               }}
             >
               {k.label}
-            </button>
-          ))}
-          {SYMBOL_KEYS.map((sym) => (
-            <button
-              key={sym}
-              type="button"
-              className={keyBtn}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                pressKey(sym);
-              }}
-            >
-              {sym}
             </button>
           ))}
         </div>
