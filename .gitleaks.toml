@@ -1,0 +1,16 @@
+# gitleaks config for anywhere_agents.
+# Extends the bundled ruleset (provider regexes + entropy heuristics) and adds
+# a small allowlist so placeholder/template syntax in *.example files and docs
+# does not trip the scanner. Real secrets are still caught everywhere.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Placeholder and env-substitution syntax used in templates/docs"
+regexTarget = "match"
+regexes = [
+  '''\$\{[A-Za-z_][A-Za-z0-9_]*(:-[^}]*)?\}''',   # ${VAR} / ${VAR:-default}
+  '''<[^>\n]{1,60}>''',                           # <placeholder>
+  '''\bchangeme\b''',
+  '''sk-ant-\.\.\.''',                            # docs placeholder for an Anthropic key
+]
