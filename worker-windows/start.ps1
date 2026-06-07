@@ -1,0 +1,52 @@
+# start.ps1 - uruchom worker-windows
+# Uruchom z katalogu worker-windows:  .\start.ps1
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ── Konfiguracja ────────────────────────────────────────────────────────────
+$env:WORKER_MODE          = "inbound"
+$env:HUB_PUBLIC_URL       = "https://claude.gawrys.cloud"
+$env:WORKER_ID            = "windows-excel"
+$env:WORKER_SECRET        = "changeme"
+$env:EXCEL_PORT           = "3847"
+
+# Cloudflare Access - service token dla /worker-register i /worker-data
+$env:CF_ACCESS_CLIENT_ID     = "6f349c59acdc3ce2934a250e0024adf5.access"
+$env:CF_ACCESS_CLIENT_SECRET = "9a32508fd55947f8ab33fc2d5b9ea51d4be49202b1164d08a32cf5e9b897eff6"
+
+# ── Katalog roboczy = katalog skryptu ───────────────────────────────────────
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+Set-Location $ScriptDir
+
+# ── Certyfikaty dev dla Office.js (HTTPS na localhost) ──────────────────────
+$CertDir  = "$env:USERPROFILE\.office-addin-dev-certs"
+$CertFile = "$CertDir\localhost.crt"
+if (-not (Test-Path $CertFile)) {
+    Write-Host "Instalowanie certyfikatow dev dla Office.js..." -ForegroundColor Yellow
+    if (Get-Command npx -ErrorAction SilentlyContinue) {
+        npx office-addin-dev-certs install --days 3650
+    } else {
+        Write-Warning "npx nie znalezione - zainstaluj Node.js i uruchom recznie:"
+        Write-Warning "  npx office-addin-dev-certs install"
+    }
+}
+
+# ── uv sync ─────────────────────────────────────────────────────────────────
+Write-Host "Synchronizacja zaleznosci (uv sync)..." -ForegroundColor Cyan
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    uv sync
+    if ($LASTEXITCODE -ne 0) { throw "uv sync nie powiodl sie" }
+} else {
+    throw "uv nie znalezione. Zainstaluj: https://docs.astral.sh/uv/getting-started/installation/"
+}
+
+# ── Uruchom worker ───────────────────────────────────────────────────────────
+Write-Host ""
+Write-Host "Uruchamianie worker-windows..." -ForegroundColor Green
+Write-Host "  Hub:    $env:HUB_PUBLIC_URL"
+Write-Host "  Worker: $env:WORKER_ID"
+Write-Host "  Excel:  https://localhost:$env:EXCEL_PORT"
+Write-Host ""
+
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8002

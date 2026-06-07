@@ -1,0 +1,56 @@
+[project]
+name = "claude-web-worker-windows"
+version = "0.1.0"
+description = "Windows worker for Claude Web - Excel and native Windows app automation via Office.js + MCP"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "pydantic>=2.9.0",
+    "structlog>=24.4.0",
+    "aiosqlite>=0.20.0",
+    "claude-agent-sdk>=0.2.82",
+    "httpx>=0.27.0",
+    "worker-shared",
+    # MCP server SDK (Streamable HTTP / SSE transport)
+    "mcp>=1.0.0",
+    # HTTPS support (Office.js requires HTTPS even for localhost)
+    "truststore>=0.10.0",
+    # Windows ConPTY terminal support (PowerShell sessions)
+    "pywinpty>=2.0.0",
+]
+
+[tool.uv.sources]
+worker-shared = { path = "../shared", editable = true }
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "mypy>=1.11.0",
+    "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
