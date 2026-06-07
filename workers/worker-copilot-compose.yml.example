@@ -1,5 +1,9 @@
 # Claude Web Worker (GitHub Copilot SDK) - standalone compose for remote machines
 #
+# ⚠️  This is the EXAMPLE/template. Copy it to worker-copilot-compose.yml
+#     (which is gitignored) and fill in real secrets there. NEVER commit the
+#     real file - keep CF_ACCESS_CLIENT_SECRET and similar out of git.
+#
 # Two deployment modes. Pick ONE by setting WORKER_MODE in .env:
 #
 # ── server (default, classic) ───────────────────────────────────────────
@@ -74,8 +78,9 @@ services:
       - WORKER_LABEL=${WORKER_LABEL:-Remote}
       - WORKER_TYPE=copilot
       # ── Optional: hub behind Cloudflare Access with service tokens ─
-      - CF_ACCESS_CLIENT_ID=6f349c59acdc3ce2934a250e0024adf5.access
-      - CF_ACCESS_CLIENT_SECRET=9a32508fd55947f8ab33fc2d5b9ea51d4be49202b1164d08a32cf5e9b897eff6
+      # Provide real values via env (.env) - do NOT hardcode them here.
+      - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
+      - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
       # ── Optional: GitHub PAT (skips `copilot` login requirement) ────
       # Set this to a PAT with Copilot scope to bypass any browser-side
       # device-code bootstrap when that flow lands for worker-copilot.

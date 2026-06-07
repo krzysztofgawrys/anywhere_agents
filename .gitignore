@@ -22,6 +22,11 @@ frontend-dist/
 .env
 docker/.env
 
+# Local config holding real secrets - copy from the matching *.example and
+# fill in. The real files stay on each machine, never in git.
+worker-windows/start.ps1
+workers/worker-copilot-compose.yml
+
 # IDE
 .idea/
 .vscode/

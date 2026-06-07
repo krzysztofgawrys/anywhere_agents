@@ -1,3 +1,6 @@
+# start.ps1.example - SZABLON. Skopiuj do start.ps1 (jest w .gitignore) i wpisz
+# prawdziwe wartosci. NIE commituj start.ps1 - trzymaj sekrety poza gitem.
+#
 # start.ps1 - uruchom worker-windows
 # Uruchom z katalogu worker-windows:  .\start.ps1
 
@@ -12,8 +15,8 @@ $env:WORKER_SECRET        = "changeme"
 $env:EXCEL_PORT           = "3847"
 
 # Cloudflare Access - service token dla /worker-register i /worker-data
-$env:CF_ACCESS_CLIENT_ID     = "6f349c59acdc3ce2934a250e0024adf5.access"
-$env:CF_ACCESS_CLIENT_SECRET = "9a32508fd55947f8ab33fc2d5b9ea51d4be49202b1164d08a32cf5e9b897eff6"
+$env:CF_ACCESS_CLIENT_ID     = "<service-token-client-id>.access"
+$env:CF_ACCESS_CLIENT_SECRET = "<service-token-client-secret>"
 
 # ── Katalog roboczy = katalog skryptu ───────────────────────────────────────
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
