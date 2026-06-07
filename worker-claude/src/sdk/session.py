@@ -151,12 +151,14 @@ class Session:
         resume_session_id: str | None = None,
         auto_approve: bool = False,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self._send = send
         self._cwd = cwd
         self._session_id = resume_session_id or session_id or str(uuid.uuid4())
         self._resume = resume_session_id
         self._model = model
+        self._effort = effort
         self._client: ClaudeSDKClient | None = None
         # Long-lived consumer of client.receive_messages(). We need to keep
         # reading between turns so Monitor / TaskCreate task-notifications that
@@ -258,6 +260,7 @@ class Session:
             include_partial_messages=True,
             resume=self._resume,
             model=self._model,
+            effort=self._effort,
         )
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
@@ -277,6 +280,7 @@ class Session:
                 "resumed": bool(self._resume),
                 "auto_approve": self._permissions.is_auto_approve,
                 "model": self._model,
+                "effort": self._effort,
             },
         })
 
@@ -405,6 +409,12 @@ class Session:
                 "payload": {"code": "set_model_failed", "message": str(e)},
             })
 
+    async def set_effort(self, effort: str | None) -> None:
+        """Change the effort level. Claude SDK only supports this at session init,
+        so we store the preference and it takes effect on the next session start."""
+        self._effort = effort
+        logger.info("effort_changed", effort=effort, session_id=self._session_id)
+
     def rebind(self, send: SendFn, *, parked: bool = False) -> None:
         """Re-attach a new WS send function after client reconnect / park.
 
@@ -435,6 +445,7 @@ class Session:
                 # restore the streaming state before the history payload arrives.
                 "is_busy": self._busy,
                 "model": self._model,
+                "effort": self._effort,
             },
         })
         await self._permissions.resend_pending_user_inputs(self._send)

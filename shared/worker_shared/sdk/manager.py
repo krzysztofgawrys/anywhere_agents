@@ -71,6 +71,7 @@ class SessionManager:
         project_id: int | None = None,
         auto_approve: bool = False,
         model: str | None = None,
+        effort: str | None = None,
     ) -> SessionProtocol | None:
         """Start a fresh session bound to `cwd`. Returns it (or None on lock fail)."""
         if not Path(cwd).is_dir():
@@ -88,6 +89,7 @@ class SessionManager:
             cwd=cwd,
             auto_approve=auto_approve,
             model=model,
+            effort=effort,
         )
 
         acquired, _ = await self._locks.try_acquire(
@@ -112,7 +114,9 @@ class SessionManager:
         self._current = session
         self._current_project_id = project_id
         if project_id is not None:
-            await db.upsert_session_model(session.session_id, project_id, model)
+            await db.upsert_session(
+                session.session_id, project_id, model=model, effort=effort,
+            )
         return session
 
     async def resume_session(
@@ -124,6 +128,7 @@ class SessionManager:
         force: bool = False,
         auto_approve: bool = False,
         model: str | None = None,
+        effort: str | None = None,
     ) -> SessionProtocol | None:
         """Resume an existing session, acquiring its lock (force=takeover).
 
@@ -142,11 +147,15 @@ class SessionManager:
             })
             return None
 
-        # If the client didn't send a model preference, check the DB for
-        # a previously persisted choice so the session resumes with the
-        # same model even across worker restarts / different browsers.
-        if model is None:
-            model = await db.get_session_model(session_id)
+        # If the client didn't send preferences, check the DB so the
+        # session resumes with the same model/effort even across worker
+        # restarts or different browsers.
+        if model is None or effort is None:
+            db_model, db_effort = await db.get_session_prefs(session_id)
+            if model is None:
+                model = db_model
+            if effort is None:
+                effort = db_effort
 
         # ── Fast path: session is parked in the registry ────────────
         parked = registry.take(session_id)
@@ -159,8 +168,6 @@ class SessionManager:
                 force=force,
             )
             if not acquired and existing is not None:
-                # Another client holds the lock; put the session back
-                # and surface the conflict.
                 registry.park(parked)
                 await self._send({
                     "type": "session_locked",
@@ -173,11 +180,15 @@ class SessionManager:
                 return None
 
             await self._park_current()
-            # `parked` is a SessionProtocol from this worker's factory.
             parked.rebind(self._send)  # type: ignore[attr-defined]
             parked.set_auto_approve(auto_approve)  # type: ignore[attr-defined]
             if model is not None:
                 await parked.set_model(model)  # type: ignore[attr-defined]
+            if effort is not None:
+                # Re-apply the resolved effort too - otherwise a reattached
+                # parked session keeps its stale in-memory effort and diverges
+                # from the persisted/DB value the UI badge reflects.
+                await parked.set_effort(effort)  # type: ignore[attr-defined]
             self._current = parked  # type: ignore[assignment]
             self._current_project_id = project_id
             await self._current.notify_reconnected()  # type: ignore[union-attr]
@@ -214,12 +225,15 @@ class SessionManager:
             resume_session_id=session_id,
             auto_approve=auto_approve,
             model=model,
+            effort=effort,
         )
         await session.start()
         self._current = session
         self._current_project_id = project_id
         if project_id is not None:
-            await db.upsert_session_model(session_id, project_id, model)
+            await db.upsert_session(
+                session_id, project_id, model=model, effort=effort,
+            )
         return session
 
     # ── Pass-throughs to active session ──────────────────────────────
@@ -273,10 +287,16 @@ class SessionManager:
         if self._current is not None:
             await self._current.set_model(model)
             if self._current_project_id is not None:
-                await db.upsert_session_model(
-                    self._current.session_id,
-                    self._current_project_id,
-                    model,
+                await db.update_session_field(
+                    self._current.session_id, "model", model,
+                )
+
+    async def set_effort(self, effort: str | None) -> None:
+        if self._current is not None:
+            await self._current.set_effort(effort)
+            if self._current_project_id is not None:
+                await db.update_session_field(
+                    self._current.session_id, "effort", effort,
                 )
 
     async def interrupt(self) -> None:

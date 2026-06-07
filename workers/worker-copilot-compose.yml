@@ -68,14 +68,14 @@ services:
       # independent (different scanners, different on-disk sources).
       - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/worker-copilot.sqlite
       # ── Reverse mode (uncomment to enable) ──────────────────────────
-      # - WORKER_MODE=inbound
-      # - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://hub.example.com}
-      # - WORKER_ID=${WORKER_ID:-remote-copilot}
-      # - WORKER_LABEL=${WORKER_LABEL:-Remote}
-      # - WORKER_TYPE=copilot
+      - WORKER_MODE=inbound
+      - HUB_PUBLIC_URL=${HUB_PUBLIC_URL:-https://claude.gawrys.cloud}
+      - WORKER_ID=${WORKER_ID:-remote-copilot}
+      - WORKER_LABEL=${WORKER_LABEL:-Remote}
+      - WORKER_TYPE=copilot
       # ── Optional: hub behind Cloudflare Access with service tokens ─
-      # - CF_ACCESS_CLIENT_ID=${CF_ACCESS_CLIENT_ID:-}
-      # - CF_ACCESS_CLIENT_SECRET=${CF_ACCESS_CLIENT_SECRET:-}
+      - CF_ACCESS_CLIENT_ID=6f349c59acdc3ce2934a250e0024adf5.access
+      - CF_ACCESS_CLIENT_SECRET=9a32508fd55947f8ab33fc2d5b9ea51d4be49202b1164d08a32cf5e9b897eff6
       # ── Optional: GitHub PAT (skips `copilot` login requirement) ────
       # Set this to a PAT with Copilot scope to bypass any browser-side
       # device-code bootstrap when that flow lands for worker-copilot.

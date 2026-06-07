@@ -145,6 +145,10 @@ class SessionProtocol(Protocol):
         """Switch the model mid-session. No-op if the SDK doesn't support it."""
         ...
 
+    async def set_effort(self, effort: str | None) -> None:
+        """Change the effort/reasoning level. Implementation varies per SDK."""
+        ...
+
     # ── Park / reconnect (called by manager on WS lifecycle) ────────
 
     def rebind(self, send: SendFn, *, parked: bool = False) -> None:

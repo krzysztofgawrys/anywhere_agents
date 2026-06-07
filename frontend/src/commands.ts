@@ -18,6 +18,7 @@ export type SlashCommand = {
 export const BUILTIN_COMMANDS: SlashCommand[] = [
   { name: "clear", description: "Clear chat messages" },
   { name: "compact", description: "Summarize conversation to save context" },
+  { name: "effort default", description: "Reset to SDK default effort" },
   { name: "model default", description: "Switch to SDK default model" },
   { name: "new", description: "Start a new session in this project" },
   { name: "plan", description: "Switch to plan mode (read-only, no changes)" },

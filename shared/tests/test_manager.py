@@ -36,6 +36,7 @@ def _make_session(session_id: str = "s1", cwd: str = "/tmp/project") -> MagicMoc
     s.send_prompt = AsyncMock()
     s.set_auto_approve = MagicMock()
     s.set_model = AsyncMock()
+    s.set_effort = AsyncMock()
     s.rebind = MagicMock()
     s.notify_reconnected = AsyncMock()
     return s

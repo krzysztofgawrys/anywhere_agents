@@ -7,6 +7,10 @@
 export type ModelInfo = {
   id: string;
   name: string;
+  /** Effort/reasoning levels this model supports (e.g. ["low","medium","high"]). */
+  efforts?: string[];
+  /** Default effort level for this model. */
+  default_effort?: string;
 };
 
 /** Worker the hub knows about (from workers.json). `connected` reflects
@@ -102,16 +106,26 @@ export type ClientMessage =
         before_uuid?: string | null;
       };
     }
-  | { type: "new_session"; payload: { project_id: number; model?: string | null } }
+  | {
+      type: "new_session";
+      payload: { project_id: number; model?: string | null; effort?: string | null };
+    }
   | {
       type: "resume_session";
-      payload: { project_id: number; session_id: string; force?: boolean; model?: string | null };
+      payload: {
+        project_id: number;
+        session_id: string;
+        force?: boolean;
+        model?: string | null;
+        effort?: string | null;
+      };
     }
   | {
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
   | { type: "set_model"; payload: { model: string | null } }
+  | { type: "set_effort"; payload: { effort: string | null } }
   | {
       type: "prompt";
       payload: {
@@ -204,6 +218,8 @@ export type ServerMessage =
         is_busy?: boolean;
         /** Model persisted for this session (from worker DB). null = SDK default. */
         model?: string | null;
+        /** Effort/reasoning level persisted for this session. null = SDK default. */
+        effort?: string | null;
       };
     }
   | {
@@ -355,4 +371,5 @@ export type ServerMessage =
     }
   | { type: "terminal_ready"; payload: Record<string, never> }
   | { type: "terminal_output"; payload: { data: string } }
-  | { type: "terminal_closed"; payload: { exit_code: number } };
+  | { type: "terminal_closed"; payload: { exit_code: number } }
+  | { type: "worker_reconnected"; payload: { worker_id: string } };

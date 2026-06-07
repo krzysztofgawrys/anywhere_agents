@@ -172,8 +172,21 @@ class WorkerConnection:
         ws = await websockets.connect(
             url,
             additional_headers=headers,
-            ping_interval=20,
-            ping_timeout=60,
+            # Keep the websockets-library ping/pong on the hub-to-worker leg,
+            # but with a generous timeout. A half-open connection (worker host
+            # crash, NAT/firewall idle drop, network partition) produces no
+            # TCP RST/FIN, so recv() in _read_loop would block forever and the
+            # worker would appear online indefinitely - prompts routed to it
+            # would silently vanish. Pings are the only thing that surfaces
+            # such a dead peer as ConnectionClosed.
+            #
+            # The original concern was spurious drops while the worker is busy
+            # (long Claude API call, tool execution). The wide 300s ping_timeout
+            # tolerates long stalls while still reclaiming a truly dead
+            # connection within ~ping_interval+ping_timeout. Tune up if a real
+            # long-running synchronous operation ever trips it.
+            ping_interval=30,
+            ping_timeout=300,
             close_timeout=5,
             # Default in websockets library is 1 MiB; any larger frame
             # silently closes the connection with code 1009. Match (or

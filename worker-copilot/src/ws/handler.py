@@ -558,11 +558,25 @@ async def _route(
             client = await get_client()
             try:
                 sdk_models = await client.list_models()
-                models = [
-                    {"id": getattr(m, "id", ""), "name": getattr(m, "name", "") or getattr(m, "id", "")}
-                    for m in sdk_models
-                    if getattr(m, "id", "")
-                ]
+                models = []
+                for m in sdk_models:
+                    mid = getattr(m, "id", "")
+                    if not mid:
+                        continue
+                    entry: dict[str, Any] = {
+                        "id": mid,
+                        "name": getattr(m, "name", "") or mid,
+                    }
+                    # Include per-model reasoning effort levels when the SDK
+                    # exposes them so the frontend can build a dynamic /effort
+                    # picker scoped to the active model.
+                    efforts = getattr(m, "supported_reasoning_efforts", None)
+                    if isinstance(efforts, list) and efforts:
+                        entry["efforts"] = efforts
+                    default_effort = getattr(m, "default_reasoning_effort", None)
+                    if isinstance(default_effort, str) and default_effort:
+                        entry["default_effort"] = default_effort
+                    models.append(entry)
             except Exception as e:
                 # SDK model parsing may fail when the GitHub API schema
                 # drifts (e.g. ModelBilling.multiplier was dropped). Fall
@@ -602,6 +616,7 @@ async def _route(
             project_id=project_id,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,
+            effort=payload.get("effort") or None,
         )
         return terminal
 
@@ -623,6 +638,7 @@ async def _route(
             force=force,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,
+            effort=payload.get("effort") or None,
         )
         return terminal
 
@@ -632,6 +648,15 @@ async def _route(
         await send({
             "type": "system",
             "payload": {"subtype": "model_changed", "data": {"model": model}},
+        })
+        return terminal
+
+    if msg_type == "set_effort":
+        effort = payload.get("effort") or None
+        await sessions.set_effort(effort)
+        await send({
+            "type": "system",
+            "payload": {"subtype": "effort_changed", "data": {"effort": effort}},
         })
         return terminal
 

@@ -78,6 +78,7 @@ services:
       # ~/.claude/projects/*.jsonl resolves correctly inside the container.
       # Add more lines below for additional project directories.
       - ${HOME}/code:${HOME}/code
+      - ${HOME}/insp:${HOME}/insp
 
   # NOTE: standalone worker compose files for remote deployments live in
   # workers/ (e.g. workers/worker-claude-compose.yml). They pull pre-built

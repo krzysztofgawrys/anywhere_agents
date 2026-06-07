@@ -163,6 +163,87 @@ async def handle_websocket(
         manager.disconnect(connection_id)
 
 
+_EFFORTS = ["low", "medium", "high", "max"]
+
+
+async def _fetch_models() -> list[dict[str, Any]]:
+    """Fetch the list of available Claude models from the Anthropic API.
+
+    Tries credentials in order:
+      1. ANTHROPIC_API_KEY env var (x-api-key header)
+      2. Bootstrap-persisted API key from encrypted credentials store
+      3. Claude.ai OAuth token from ~/.claude/.credentials.json (Bearer)
+
+    Falls back to an empty list on any error so the hub uses its own
+    type-default fallback instead of breaking the connection.
+    """
+    import httpx
+    import json as _json
+    from pathlib import Path
+
+    headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        headers["x-api-key"] = api_key
+    else:
+        # Try bootstrap-persisted API key first.
+        from worker_shared.sdk.credentials_store import load_credentials
+        stored = load_credentials("claude")
+        if stored is not None:
+            data = stored.get("data") or {}
+            key = data.get("api_key") if isinstance(data, dict) else None
+            if isinstance(key, str) and key:
+                headers["x-api-key"] = key
+        if "x-api-key" not in headers:
+            # Fall back to Claude.ai OAuth token.
+            creds_path = Path.home() / ".claude" / ".credentials.json"
+            if creds_path.is_file():
+                try:
+                    creds = _json.loads(creds_path.read_text())
+                    token = creds.get("claudeAiOauth", {}).get("accessToken")
+                    if isinstance(token, str) and token:
+                        headers["Authorization"] = f"Bearer {token}"
+                except Exception:
+                    pass
+
+    if "x-api-key" not in headers and "Authorization" not in headers:
+        return []
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                "https://api.anthropic.com/v1/models",
+                headers=headers,
+            )
+        if resp.status_code != 200:
+            return []
+        raw_models = resp.json().get("data", [])
+
+        out: list[dict[str, Any]] = []
+        for m in raw_models:
+            if not isinstance(m, dict):
+                continue
+            mid = m.get("id")
+            if not isinstance(mid, str) or not mid:
+                continue
+            entry: dict[str, Any] = {
+                "id": mid,
+                "name": m.get("display_name") or mid,
+            }
+            # `capabilities` may be absent or JSON null; coerce to {} so
+            # membership test never raises (a null would make `in` blow up
+            # and abort the whole listing).
+            caps = m.get("capabilities") or {}
+            if isinstance(caps, dict) and "effort" in caps:
+                entry["efforts"] = _EFFORTS
+                entry["default_effort"] = "high"
+            out.append(entry)
+        return out
+    except Exception:
+        return []
+
+
 async def _send_error(send: Any, code: str, message: str) -> None:
     await send({"type": "error", "payload": {"code": code, "message": message}})
 
@@ -238,6 +319,11 @@ async def _route(
             cancel_auth(request_id, "User cancelled the bootstrap")
         return terminal
 
+    if msg_type == "list_models":
+        models = await _fetch_models()
+        await send({"type": "models", "payload": {"models": models}})
+        return terminal
+
     if msg_type == "list_projects":
         projects = await list_projects(db)
         await send({"type": "projects", "payload": {"projects": projects}})
@@ -301,6 +387,7 @@ async def _route(
             project_id=project_id,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,
+            effort=payload.get("effort") or None,
         )
         return terminal
 
@@ -322,6 +409,7 @@ async def _route(
             force=force,
             auto_approve=project["auto_approve"],
             model=payload.get("model") or None,
+            effort=payload.get("effort") or None,
         )
         return terminal
 
@@ -345,6 +433,15 @@ async def _route(
         await send({
             "type": "system",
             "payload": {"subtype": "model_changed", "data": {"model": model}},
+        })
+        return terminal
+
+    if msg_type == "set_effort":
+        effort = payload.get("effort") or None
+        await sessions.set_effort(effort)
+        await send({
+            "type": "system",
+            "payload": {"subtype": "effort_changed", "data": {"effort": effort}},
         })
         return terminal
 

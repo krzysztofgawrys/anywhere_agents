@@ -26,7 +26,7 @@ from src.workers.registry import WorkerInfo, load_workers
 
 logger = structlog.get_logger()
 
-HEARTBEAT_TIMEOUT = 300
+HEARTBEAT_TIMEOUT = 600
 
 # How often to retry a worker that failed to connect (or disconnected).
 # Per-WS background tasks; cancelled when the frontend WS disconnects.
@@ -36,11 +36,12 @@ RETRY_INTERVAL_S = 30.0
 # the initial value of `worker_models[w.id]` so the frontend's /model
 # autocomplete has something sane immediately, even before the background
 # list_models query returns. Indexed by worker type from workers.json.
-_DEFAULT_MODELS_BY_TYPE: dict[str, list[dict[str, str]]] = {
+_CLAUDE_EFFORTS = ["low", "medium", "high", "max"]
+_DEFAULT_MODELS_BY_TYPE: dict[str, list[dict[str, Any]]] = {
     "claude": [
-        {"id": "claude-opus-4-6", "name": "Claude Opus 4.6"},
-        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6"},
-        {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
+        {"id": "claude-opus-4-6", "name": "Claude Opus 4.6", "efforts": _CLAUDE_EFFORTS, "default_effort": "high"},
+        {"id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "efforts": _CLAUDE_EFFORTS, "default_effort": "high"},
+        {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5", "efforts": _CLAUDE_EFFORTS, "default_effort": "high"},
     ],
 }
 
@@ -54,7 +55,8 @@ _PROJECT_BOUND = frozenset({
 # Message types that route to the active worker (session-bound, no project_id)
 _SESSION_BOUND = frozenset({
     "prompt", "interrupt", "approve_tool", "deny_tool", "set_model",
-    "user_input_response", "terminal_input", "terminal_resize", "terminal_close",
+    "set_effort", "user_input_response", "terminal_input", "terminal_resize",
+    "terminal_close",
 })
 
 # Response types from worker that carry project_id - need remapping back
@@ -145,16 +147,23 @@ async def handle_websocket(
         models = resp.get("payload", {}).get("models")
         if not isinstance(models, list) or not models:
             return
-        # Normalize to {id, name} only - drop SDK-specific fields the frontend
-        # doesn't render.
-        normalized: list[dict[str, str]] = []
+        # Normalize to {id, name} + optional effort fields.
+        normalized: list[dict[str, Any]] = []
         for m in models:
             if not isinstance(m, dict):
                 continue
             mid = m.get("id")
             if not isinstance(mid, str) or not mid:
                 continue
-            normalized.append({"id": mid, "name": m.get("name") or mid})
+            entry: dict[str, Any] = {"id": mid, "name": m.get("name") or mid}
+            # Pass through per-model effort levels for the /effort picker.
+            efforts = m.get("efforts")
+            if isinstance(efforts, list) and efforts:
+                entry["efforts"] = efforts
+            default_effort = m.get("default_effort")
+            if isinstance(default_effort, str) and default_effort:
+                entry["default_effort"] = default_effort
+            normalized.append(entry)
         if not normalized:
             return
         worker_models[w.id] = normalized
@@ -366,6 +375,16 @@ async def handle_websocket(
                         await _fetch_and_push_aggregate()
                     except Exception as e:
                         logger.warning("retry_post_push_failed", worker=w.id, error=str(e))
+                    # Tell the frontend a worker came back so it can
+                    # automatically re-sync any active session without
+                    # requiring the user to manually switch sessions.
+                    try:
+                        await websocket.send_json({
+                            "type": "worker_reconnected",
+                            "payload": {"worker_id": w.id},
+                        })
+                    except Exception:
+                        pass
                     return
         except asyncio.CancelledError:
             return

@@ -12,5 +12,12 @@
     "label": "Remote Copilot",
     "mode": "inbound",
     "secret": "changeme"
+  },
+  {
+    "id": "elec",
+    "type": "claude",
+    "label": "Elec",
+    "url": "ws://worker-claude-elec:8002/ws",
+    "secret": "changeme"
   }
 ]

@@ -81,12 +81,14 @@ class Session:
         resume_session_id: str | None = None,
         auto_approve: bool = False,
         model: str | None = None,
+        effort: str | None = None,
     ) -> None:
         self._send = send
         self._cwd = cwd
         self._session_id = resume_session_id or session_id or str(uuid.uuid4())
         self._resume = resume_session_id
         self._model = model
+        self._effort = effort
         self._copilot_session: CopilotSession | None = None
         self._unsubscribe: Callable[[], None] | None = None
         self._permissions = PermissionBroker()
@@ -252,6 +254,19 @@ class Session:
         if isinstance(actual_id, str) and actual_id:
             self._session_id = actual_id
 
+        # Apply the persisted/selected reasoning effort. The Copilot SDK only
+        # accepts effort via set_model(model, reasoning_effort=...), so it
+        # cannot be passed at create/resume time. Without this the first turn
+        # of a new or resumed session runs at the SDK default effort and
+        # ignores the user's choice, even though session_started reports it.
+        if self._effort and self._model and self._copilot_session is not None:
+            try:
+                await self._copilot_session.set_model(
+                    self._model, reasoning_effort=self._effort
+                )
+            except Exception as e:
+                logger.warning("copilot_apply_effort_on_init_failed", error=str(e))
+
         logger.info(
             "copilot_session_started",
             session_id=self._session_id,
@@ -267,6 +282,7 @@ class Session:
                 "resumed": bool(self._resume),
                 "auto_approve": self._permissions.is_auto_approve,
                 "model": self._model,
+                "effort": self._effort,
             },
         })
 
@@ -378,7 +394,10 @@ class Session:
         if self._copilot_session is None or not model:
             return
         try:
-            await self._copilot_session.set_model(model)
+            kwargs: dict[str, Any] = {}
+            if self._effort:
+                kwargs["reasoning_effort"] = self._effort
+            await self._copilot_session.set_model(model, **kwargs)
             self._model = model
             logger.info("copilot_model_changed", model=model, session_id=self._session_id)
         except Exception as e:
@@ -387,6 +406,34 @@ class Session:
                 "type": "error",
                 "payload": {"code": "set_model_failed", "message": str(e)},
             })
+
+    async def set_effort(self, effort: str | None) -> None:
+        """Change the reasoning effort level.
+
+        Copilot SDK sets effort via set_model(model, reasoning_effort=...).
+        If the session is active and has a model, apply immediately;
+        otherwise store for the next set_model or session start.
+        """
+        self._effort = effort
+        if self._copilot_session is not None and self._model:
+            try:
+                # Mirror set_model: only pin reasoning_effort when one is
+                # selected. Passing "medium" on a None ("reset to default")
+                # would silently override the model's real default effort.
+                kwargs: dict[str, Any] = {}
+                if effort:
+                    kwargs["reasoning_effort"] = effort
+                await self._copilot_session.set_model(self._model, **kwargs)
+                logger.info(
+                    "copilot_effort_changed",
+                    effort=effort,
+                    model=self._model,
+                    session_id=self._session_id,
+                )
+            except Exception as e:
+                logger.warning("copilot_set_effort_failed", error=str(e))
+        else:
+            logger.info("effort_stored", effort=effort, session_id=self._session_id)
 
     def rebind(self, send: SendFn, *, parked: bool = False) -> None:
         self._send = send
@@ -402,6 +449,7 @@ class Session:
                 "auto_approve": self._permissions.is_auto_approve,
                 "is_busy": self._busy,
                 "model": self._model,
+                "effort": self._effort,
             },
         })
         await self._permissions.resend_pending_user_inputs(self._send)

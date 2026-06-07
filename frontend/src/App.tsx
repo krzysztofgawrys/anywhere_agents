@@ -39,6 +39,7 @@ function App() {
   const planMode = useChatStore((s) => s.planMode);
   const setPlanMode = useChatStore((s) => s.setPlanMode);
   const selectedModel = useChatStore((s) => s.model);
+  const selectedEffort = useChatStore((s) => s.effort);
   const streamingActivity = useChatStore((s) => s.streamingActivity);
   const pendingPermissions = useChatStore((s) => s.pendingPermissions);
   const pendingUserInputs = useChatStore((s) => s.pendingUserInputs);
@@ -105,11 +106,20 @@ function App() {
   // SDK hadn't flushed to JSONL yet at the time of our initial history fetch.
   // Cleared once we refetch (or after a fallback timeout).
   const pendingHistoryRefreshRef = useRef(false);
+  // Ref kept in sync with resumeLastSession so onServerMessage can call it
+  // without adding resumeLastSession to its deps array (which would cause a
+  // TDZ error - resumeLastSession is defined later in the component body).
+  const resumeLastSessionRef = useRef<() => void>(() => {});
   // Last `prompt` message the user submitted - retained so we can auto-resend
   // when a worker restart drops its in-memory session and the next prompt
   // bounces back with `no_session`. Cleared after a successful resend attempt
   // so a second `no_session` doesn't loop.
   const lastPromptRef = useRef<ClientMessage | null>(null);
+  // True when send() returned false for lastPromptRef (WS was down at the time
+  // the user submitted the prompt). Used on reconnect to re-deliver the dropped
+  // message without confusing it with an old prompt that the backend already
+  // processed (in which case send() had returned true and this flag is false).
+  const promptWasDropped = useRef(false);
   // Queued prompt to send after an interrupt completes. When the user clicks
   // Stop with text in the composer, we queue it here and send it once the
   // backend confirms the interrupted turn finished (via `result` message).
@@ -139,6 +149,7 @@ function App() {
 
   const LS_KEY = "claude_web_last_session";
   const LS_MODEL_PREFIX = "claude_web_model:";
+  const LS_EFFORT_PREFIX = "claude_web_effort:";
 
   const persistSession = useCallback((projectId: number, sessionId: string) => {
     try {
@@ -166,15 +177,41 @@ function App() {
     }
   }, []);
 
-  // Persist model whenever it changes on an active session so a subsequent
-  // reload restores the exact choice. Each session stores its own model
-  // independently - different workers expose different model sets.
+  /** Save the effort choice for a specific session. */
+  const persistSessionEffort = useCallback((sessionId: string, effort: string | null) => {
+    try {
+      if (effort) {
+        localStorage.setItem(LS_EFFORT_PREFIX + sessionId, effort);
+      } else {
+        localStorage.removeItem(LS_EFFORT_PREFIX + sessionId);
+      }
+    } catch {}
+  }, []);
+
+  /** Read the persisted effort for a specific session. */
+  const readSessionEffort = useCallback((sessionId: string): string | null => {
+    try {
+      return localStorage.getItem(LS_EFFORT_PREFIX + sessionId);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Persist model and effort whenever they change on an active session so a
+  // subsequent reload restores the exact choices. Each session stores its own
+  // values independently - different workers expose different options.
   useEffect(() => {
     const sessionId = useChatStore.getState().activeSessionId;
     if (sessionId !== null) {
       persistSessionModel(sessionId, selectedModel);
     }
   }, [selectedModel, persistSessionModel]);
+  useEffect(() => {
+    const sessionId = useChatStore.getState().activeSessionId;
+    if (sessionId !== null) {
+      persistSessionEffort(sessionId, selectedEffort);
+    }
+  }, [selectedEffort, persistSessionEffort]);
 
   // Terminal state - must be declared before onServerMessage uses killTerminal.
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -248,9 +285,11 @@ function App() {
             payload: {
               project_id: projectId,
               session_id: sessionId,
-              // Preserve the model across the worker restart - otherwise the
-              // SDK slow-path resume would silently fall back to the default.
+              // Preserve the model and effort across the worker restart -
+              // otherwise the SDK slow-path resume would silently fall back
+              // to the defaults.
               model: useChatStore.getState().model,
+              effort: useChatStore.getState().effort,
             },
           });
           sendRef.current?.(pending);
@@ -258,6 +297,13 @@ function App() {
           // condition we recovered from automatically.
           return;
         }
+      }
+      if (msg.type === "result") {
+        // A turn completed - clear the dropped-prompt tracker so a future
+        // reconnect doesn't mistake a stale lastPromptRef for a re-delivery
+        // candidate (the backend already processed this prompt).
+        lastPromptRef.current = null;
+        promptWasDropped.current = false;
       }
       if (msg.type === "result" && pendingPromptRef.current) {
         // The interrupted turn just completed. Mark its assistant message
@@ -328,6 +374,23 @@ function App() {
         setFsDirectory(null);
         return;
       }
+      if (msg.type === "worker_reconnected") {
+        // A worker dropped and came back (e.g. busy during hub ping, network
+        // blip). The frontend WS to the hub stayed alive so no reconnect was
+        // triggered. Re-sync the active session so the UI doesn't stay stuck -
+        // but ONLY when the worker that reconnected is the one hosting the
+        // active session. A blanket resume would disturb an unrelated session
+        // on a different worker (spurious slow-path SDK resume, lock churn).
+        const projectId = activeProjectIdRef.current;
+        const proj =
+          projectId !== null
+            ? useProjectsStore.getState().projects.find((p) => p.id === projectId)
+            : undefined;
+        if (proj && proj.worker_id === msg.payload.worker_id) {
+          resumeLastSessionRef.current();
+        }
+        return;
+      }
       if (msg.type === "terminal_output") {
         terminalWriteRef.current?.(msg.payload.data);
         return;
@@ -384,6 +447,24 @@ function App() {
         }
       } else {
         handleChatMsg(msg);
+        // If session_started confirmed the backend is idle while the local state
+        // was streaming, handleChatMsg above just cleared the streaming indicators.
+        // Check whether the prompt was actually dropped (WS was down when the user
+        // submitted it) and, if so, re-deliver it now that the session is ready.
+        if (msg.type === "session_started" && !msg.payload.is_busy
+            && promptWasDropped.current && lastPromptRef.current) {
+          const droppedPrompt = lastPromptRef.current;
+          lastPromptRef.current = null;
+          promptWasDropped.current = false;
+          // Restore streaming indicators - the user message is already in the UI
+          // (appendUserPrompt was called before the failed send), so we only need
+          // to re-enter the streaming state and re-deliver to the backend.
+          useChatStore.setState({
+            status: "streaming" as const,
+            streamingActivity: { kind: "waiting" as const },
+          });
+          sendRef.current?.(droppedPrompt);
+        }
       }
     },
     [
@@ -448,8 +529,15 @@ function App() {
     if (model === null) {
       model = readSessionModel(sessionId);
       if (model !== null) {
-        // Rehydrate so the UI badge and subsequent resume/new calls use it.
         useChatStore.getState().setModel(model);
+      }
+    }
+    // Same for effort.
+    let effort: string | null = useChatStore.getState().effort;
+    if (effort === null) {
+      effort = readSessionEffort(sessionId);
+      if (effort !== null) {
+        useChatStore.getState().setEffort(effort);
       }
     }
 
@@ -457,7 +545,7 @@ function App() {
       // Page is visible - claim the session lock and reload history.
       sendRef.current?.({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId, model },
+        payload: { project_id: projectId, session_id: sessionId, model, effort },
       });
     }
     // Always reload history so background output becomes visible when user returns.
@@ -465,7 +553,13 @@ function App() {
       type: "session_history",
       payload: { project_id: projectId, session_id: sessionId, limit: 30 },
     });
-  }, [readSessionModel]);
+  }, [readSessionModel, readSessionEffort]);
+
+  // Keep the ref in sync so onServerMessage can call resumeLastSession without
+  // creating a deps-ordering TDZ problem (onServerMessage is defined earlier).
+  useEffect(() => {
+    resumeLastSessionRef.current = resumeLastSession;
+  }, [resumeLastSession]);
 
   const onConnect = useCallback(() => {
     // Fires only on the first WS connection of this page load (e.g. user tapped
@@ -510,6 +604,25 @@ function App() {
   useEffect(() => {
     sendRef.current = send;
   }, [send]);
+
+  // Refresh history when the tab comes back to the foreground. While the tab
+  // is hidden the browser throttles JS timers and the WS may have dropped,
+  // meaning streaming events (and the final `result`) were never delivered.
+  // A fresh session_history fetch catches any messages produced while away.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const projectId = activeProjectIdRef.current;
+      const sessionId = useChatStore.getState().activeSessionId;
+      if (projectId === null || sessionId === null) return;
+      sendRef.current?.({
+        type: "session_history",
+        payload: { project_id: projectId, session_id: sessionId, limit: 30 },
+      });
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -631,7 +744,9 @@ function App() {
         },
       };
       lastPromptRef.current = promptMsg;
-      send(promptMsg);
+      // Track whether the send was dropped (WS not open) so we can re-deliver
+      // on the next reconnect without resending a prompt the backend already got.
+      promptWasDropped.current = !send(promptMsg);
     },
     [send, appendUserPrompt, planMode]
   );
@@ -699,6 +814,31 @@ function App() {
     }));
   }, [activeProjectId, projects, workersList]);
 
+  // Dynamic /effort autocomplete - sourced from the active worker's model
+  // effort levels. Each model can expose different levels (Claude: low/medium/
+  // high/max, Copilot: depends on model + subscription).
+  const effortCommands = useMemo(() => {
+    if (activeProjectId == null) return [];
+    const project = projects.find((p) => p.id === activeProjectId);
+    if (!project || !project.worker_id) return [];
+    const w = workersList.find((wi) => wi.id === project.worker_id);
+    if (!w || !w.models || w.models.length === 0) return [];
+    // Collect unique effort levels from the active model (or all models).
+    const activeModel = w.models.find((m) => m.id === selectedModel);
+    const source = activeModel ?? w.models[0];
+    const efforts = source?.efforts;
+    if (!efforts || efforts.length === 0) return [];
+    return efforts.map((e: string) => ({
+      name: `effort ${e}`,
+      description: `Set effort to ${e}`,
+    }));
+  }, [activeProjectId, projects, workersList, selectedModel]);
+
+  const extraCommands = useMemo(
+    () => [...modelCommands, ...effortCommands],
+    [modelCommands, effortCommands],
+  );
+
   const onCommand = useCallback(
     (name: string) => {
       // Dynamic /model <id> handler - matches any model id from the active
@@ -708,6 +848,15 @@ function App() {
         if (modelId) {
           useChatStore.getState().setModel(modelId);
           send({ type: "set_model", payload: { model: modelId } });
+          return;
+        }
+      }
+      // Dynamic /effort <level> handler
+      if (name.startsWith("effort ") && name !== "effort default") {
+        const level = name.slice("effort ".length).trim();
+        if (level) {
+          useChatStore.getState().setEffort(level);
+          send({ type: "set_effort", payload: { effort: level } });
           return;
         }
       }
@@ -729,12 +878,16 @@ function App() {
           if (activeProjectId != null) {
             killTerminal();
             resetChat();
-            send({ type: "new_session", payload: { project_id: activeProjectId, model: selectedModel } });
+            send({ type: "new_session", payload: { project_id: activeProjectId, model: selectedModel, effort: selectedEffort } });
           }
           break;
         case "model default":
           useChatStore.getState().setModel(null);
           send({ type: "set_model", payload: { model: null } });
+          break;
+        case "effort default":
+          useChatStore.getState().setEffort(null);
+          send({ type: "set_effort", payload: { effort: null } });
           break;
         case "plan":
           setPlanMode(true);
@@ -744,16 +897,16 @@ function App() {
           break;
       }
     },
-    [resetChat, activeProjectId, send, killTerminal, setPlanMode, selectedModel],
+    [resetChat, activeProjectId, send, killTerminal, setPlanMode, selectedModel, selectedEffort],
   );
 
   const onNewSession = useCallback(
     (projectId: number) => {
       killTerminal();
       resetChat();
-      send({ type: "new_session", payload: { project_id: projectId, model: selectedModel } });
+      send({ type: "new_session", payload: { project_id: projectId, model: selectedModel, effort: selectedEffort } });
     },
-    [resetChat, send, killTerminal, selectedModel]
+    [resetChat, send, killTerminal, selectedModel, selectedEffort]
   );
 
   const onPickSession = useCallback(
@@ -770,12 +923,16 @@ function App() {
       }
       killTerminal();
       resetChat();
-      // Restore the target session's persisted model (not the previous
-      // session's model from the stale closure). reset() just cleared
-      // Zustand, so we read from per-session localStorage.
+      // Restore the target session's persisted model and effort (not the
+      // previous session's values from the stale closure). reset() just
+      // cleared Zustand, so we read from per-session localStorage.
       const model = readSessionModel(sessionId);
       if (model !== null) {
         useChatStore.getState().setModel(model);
+      }
+      const effort = readSessionEffort(sessionId);
+      if (effort !== null) {
+        useChatStore.getState().setEffort(effort);
       }
       send({
         type: "session_history",
@@ -783,10 +940,10 @@ function App() {
       });
       send({
         type: "resume_session",
-        payload: { project_id: projectId, session_id: sessionId, model },
+        payload: { project_id: projectId, session_id: sessionId, model, effort },
       });
     },
-    [resetChat, send, killTerminal, readSessionModel]
+    [resetChat, send, killTerminal, readSessionModel, readSessionEffort]
   );
 
   const onTakeover = useCallback(() => {
@@ -795,6 +952,10 @@ function App() {
     if (model !== null) {
       useChatStore.getState().setModel(model);
     }
+    const effort = readSessionEffort(pendingLock.sessionId);
+    if (effort !== null) {
+      useChatStore.getState().setEffort(effort);
+    }
     send({
       type: "resume_session",
       payload: {
@@ -802,10 +963,11 @@ function App() {
         session_id: pendingLock.sessionId,
         force: true,
         model,
+        effort,
       },
     });
     setPendingLock(null);
-  }, [pendingLock, send, setPendingLock, readSessionModel]);
+  }, [pendingLock, send, setPendingLock, readSessionModel, readSessionEffort]);
 
   const onAllowTool = useCallback(
     (toolUseId: string) => {
@@ -925,6 +1087,14 @@ function App() {
                 <span className="hover:text-gray-300" title="Change with /model">
                   {selectedModel ? selectedModel.replace("claude-", "").split("-202")[0] : "default"}
                 </span>
+                {selectedEffort && (
+                  <>
+                    <span className="text-gray-600">/</span>
+                    <span className="text-purple-400 hover:text-purple-300" title="Change with /effort">
+                      {selectedEffort}
+                    </span>
+                  </>
+                )}
                 <span className="text-gray-600">|</span>
                 <span className={planMode ? "text-blue-400" : ""} title="Toggle with /plan or /act">
                   {planMode ? "plan" : "act"}
@@ -1081,7 +1251,7 @@ function App() {
             onCommand={onCommand}
             onSubmit={onSubmit}
             onInterrupt={onInterrupt}
-            extraCommands={modelCommands}
+            extraCommands={extraCommands}
           />
         </div>
       </div>

@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     project_id INTEGER NOT NULL REFERENCES projects(id),
     model TEXT,
+    effort TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -48,6 +49,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
 MIGRATIONS = [
     # Add last_session_mtime if missing
     "ALTER TABLE projects ADD COLUMN last_session_mtime REAL",
+    # Add effort column to sessions (may not exist on first run)
+    "ALTER TABLE sessions ADD COLUMN effort TEXT",
 ]
 
 
@@ -84,35 +87,57 @@ class Database:
             await conn.close()
 
 
-    # ── Session model helpers ──────────────────────────────────────────
+    # ── Session preference helpers ────────────────────────────────────
 
-    async def upsert_session_model(
+    async def upsert_session(
         self,
         session_id: str,
         project_id: int,
-        model: str | None,
+        *,
+        model: str | None = None,
+        effort: str | None = None,
     ) -> None:
-        """Create or update a session row with the given model."""
+        """Create or update a session row with model and/or effort."""
         async with self.connect() as conn:
             await conn.execute(
-                """INSERT INTO sessions (id, project_id, model, updated_at)
-                   VALUES (?, ?, ?, datetime('now'))
+                """INSERT INTO sessions (id, project_id, model, effort, updated_at)
+                   VALUES (?, ?, ?, ?, datetime('now'))
                    ON CONFLICT(id) DO UPDATE SET
                        model = excluded.model,
+                       effort = excluded.effort,
                        updated_at = excluded.updated_at""",
-                (session_id, project_id, model),
+                (session_id, project_id, model, effort),
             )
             await conn.commit()
 
-    async def get_session_model(self, session_id: str) -> str | None:
-        """Return the persisted model for *session_id*, or None."""
+    async def update_session_field(
+        self,
+        session_id: str,
+        field: str,
+        value: str | None,
+    ) -> None:
+        """Update a single field on an existing session row."""
+        if field not in ("model", "effort"):
+            raise ValueError(f"Invalid session field: {field}")
+        async with self.connect() as conn:
+            await conn.execute(
+                f"UPDATE sessions SET {field} = ?, updated_at = datetime('now') WHERE id = ?",
+                (value, session_id),
+            )
+            await conn.commit()
+
+    async def get_session_prefs(
+        self, session_id: str
+    ) -> tuple[str | None, str | None]:
+        """Return (model, effort) for *session_id*, or (None, None)."""
         async with self.connect() as conn:
             row = await conn.execute_fetchall(
-                "SELECT model FROM sessions WHERE id = ?", (session_id,)
+                "SELECT model, effort FROM sessions WHERE id = ?",
+                (session_id,),
             )
             if row:
-                return row[0][0]
-            return None
+                return row[0][0], row[0][1]
+            return None, None
 
 
 # Module-level singleton; tests can override via dependency injection
