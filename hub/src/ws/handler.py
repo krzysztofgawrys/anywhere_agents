@@ -26,7 +26,7 @@ from src.workers.registry import WorkerInfo, load_workers
 
 logger = structlog.get_logger()
 
-HEARTBEAT_TIMEOUT = 600
+HEARTBEAT_TIMEOUT = 300
 
 # How often to retry a worker that failed to connect (or disconnected).
 # Per-WS background tasks; cancelled when the frontend WS disconnects.
