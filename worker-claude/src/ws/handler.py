@@ -142,8 +142,14 @@ async def handle_websocket(
 
             msg_type = message.get("type")
             payload = message.get("payload") or {}
+            # Hub tags request/response messages (list_models, list_projects)
+            # with a unique _req_id; echo it on the reply so the hub correlates
+            # exactly instead of matching by response type.
+            req_id = message.get("_req_id")
             try:
-                terminal = await _route(msg_type, payload, sessions, send, connection_id, terminal)
+                terminal = await _route(
+                    msg_type, payload, sessions, send, connection_id, terminal, req_id
+                )
             except Exception as route_err:
                 logger.error("route_error", msg_type=msg_type, error=str(route_err), exc_info=True)
                 await send({
@@ -257,6 +263,7 @@ async def _route(
     send: Any,
     connection_id: str,
     terminal: TerminalSession | None = None,
+    req_id: str | None = None,
 ) -> TerminalSession | None:
     """Dispatch WS messages to handlers."""
 
@@ -323,12 +330,18 @@ async def _route(
 
     if msg_type == "list_models":
         models = await _fetch_models()
-        await send({"type": "models", "payload": {"models": models}})
+        resp: dict[str, Any] = {"type": "models", "payload": {"models": models}}
+        if req_id:
+            resp["_req_id"] = req_id
+        await send(resp)
         return terminal
 
     if msg_type == "list_projects":
         projects = await list_projects(db)
-        await send({"type": "projects", "payload": {"projects": projects}})
+        resp = {"type": "projects", "payload": {"projects": projects}}
+        if req_id:
+            resp["_req_id"] = req_id
+        await send(resp)
         return terminal
 
     if msg_type == "list_sessions":

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections.abc import Callable, Coroutine
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -159,8 +160,20 @@ class WorkerConnection:
         self._on_disconnect = on_disconnect
         self._transport: _Transport | None = None
         self._reader_task: asyncio.Task[None] | None = None
-        # Request/response correlation: response_type -> Future
-        self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        # Pending request/response futures keyed by a unique _req_id, value
+        # (response_type, future). Workers echo the _req_id we send so we
+        # correlate the response to the exact request - this fixes both two
+        # concurrent same-type requests colliding AND an unsolicited push
+        # (e.g. `projects` after create_project) aliasing onto an in-flight
+        # list_projects. _supports_req_id flips True the first time a worker
+        # echoes an id; after that a message WITHOUT _req_id is treated as
+        # unsolicited and never matched to a pending request.
+        self._pending: dict[str, tuple[str, asyncio.Future[dict[str, Any]]]] = {}
+        self._supports_req_id = False
+        # Per-response-type lock. Only load-bearing on the OLD-worker fallback
+        # path (match by response_type), where it keeps two concurrent
+        # same-type requests from overwriting each other; harmless otherwise.
+        self._request_locks: dict[str, asyncio.Lock] = {}
 
     async def connect(self) -> None:
         """Outbound mode: open WS to worker with auth header and device label."""
@@ -227,19 +240,22 @@ class WorkerConnection:
         The response is intercepted before the on_message callback.
         """
         loop = asyncio.get_event_loop()
-        future: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._pending[response_type] = future
-        await self.send(message)
-        try:
-            return await asyncio.wait_for(future, timeout=timeout)
-        except TimeoutError:
-            self._pending.pop(response_type, None)
-            raise
+        lock = self._request_locks.setdefault(response_type, asyncio.Lock())
+        async with lock:
+            req_id = uuid.uuid4().hex
+            future: asyncio.Future[dict[str, Any]] = loop.create_future()
+            self._pending[req_id] = (response_type, future)
+            await self.send({**message, "_req_id": req_id})
+            try:
+                return await asyncio.wait_for(future, timeout=timeout)
+            except TimeoutError:
+                self._pending.pop(req_id, None)
+                raise
 
     async def close(self) -> None:
         """Close the worker connection and stop the reader."""
         # Cancel pending requests
-        for fut in self._pending.values():
+        for _rt, fut in self._pending.values():
             if not fut.done():
                 fut.cancel()
         self._pending.clear()
@@ -269,13 +285,35 @@ class WorkerConnection:
                 except json.JSONDecodeError:
                     continue
 
-                # Check if this is a pending request/response
-                msg_type = msg.get("type")
-                if msg_type and msg_type in self._pending:
-                    future = self._pending.pop(msg_type)
-                    if not future.done():
-                        future.set_result(msg)
+                # Correlate responses. Workers echo our _req_id, so we match
+                # exactly. A worker that doesn't echo it (older build) falls
+                # back to matching by response_type - safe because the per-type
+                # lock in request() keeps at most one such request in flight
+                # per type.
+                req_id = msg.get("_req_id")
+                if req_id is not None:
+                    self._supports_req_id = True
+                    entry = self._pending.pop(req_id, None)
+                    if entry is not None:
+                        _rt, future = entry
+                        if not future.done():
+                            future.set_result(msg)
+                    # else: late/unknown id (request already timed out) - drop.
                     continue
+
+                # No _req_id: unsolicited push from a req_id-capable worker, or
+                # a response from an older worker that doesn't echo it.
+                if not self._supports_req_id:
+                    msg_type = msg.get("type")
+                    match = next(
+                        (rid for rid, (rt, _f) in self._pending.items() if rt == msg_type),
+                        None,
+                    )
+                    if match is not None:
+                        _rt, future = self._pending.pop(match)
+                        if not future.done():
+                            future.set_result(msg)
+                        continue
 
                 await self._on_message(msg)
         except websockets.exceptions.ConnectionClosed:
