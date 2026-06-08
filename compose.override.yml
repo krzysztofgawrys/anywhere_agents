@@ -36,6 +36,11 @@ services:
       - HUB_URL=${HUB_URL:-http://hub:8001}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/db.sqlite
+      # Project Knowledge (agent-curated RAG). Persist the local embedding
+      # model on the isolated elec state volume so it downloads once.
+      - KNOWLEDGE_EMBED_CACHE=/home/app/.claude-web/fastembed
+      # Short idle window so consolidation is easy to observe while testing.
+      - KNOWLEDGE_CONSOLIDATE_IDLE_SEC=${KNOWLEDGE_CONSOLIDATE_IDLE_SEC:-120}
     volumes:
       - ${HOME}/.claude:/home/app/.claude
       - ${HOME}/.claude.json:/home/app/.claude.json

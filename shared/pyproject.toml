@@ -8,6 +8,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "cryptography>=43.0.0",
     "structlog>=24.4.0",
+    "numpy>=1.26",
 ]
 
 [build-system]
@@ -37,3 +38,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# fastembed ships no type stubs; it's an optional local-embeddings backend
+# imported lazily in worker_shared.knowledge.embed.
+[[tool.mypy.overrides]]
+module = ["fastembed", "fastembed.*"]
+ignore_missing_imports = true

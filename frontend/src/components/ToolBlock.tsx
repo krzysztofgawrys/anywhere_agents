@@ -12,6 +12,12 @@ export function ToolBlock({ name, input, result, isError }: Props) {
   const [expanded, setExpanded] = useState(false);
   const hasResult = result !== undefined;
 
+  // MCP tool names arrive as `mcp__<server>__<tool>` which is far too long
+  // for the mobile header. Render a compact `server:tool` label instead.
+  const label = name.startsWith("mcp__")
+    ? name.slice(5).replace(/__/g, ":")
+    : name;
+
   const summary = summarizeInput(name, input);
   const diff = extractDiff(name, input);
 
@@ -28,7 +34,7 @@ export function ToolBlock({ name, input, result, isError }: Props) {
       >
         <span className="flex items-center gap-2 min-w-0">
           <span className="text-blue-400 shrink-0">{expanded ? "▾" : "▸"}</span>
-          <span className="text-yellow-400 shrink-0">{name}</span>
+          <span className="text-yellow-400 shrink-0">{label}</span>
           <span className="text-gray-400 truncate">{summary}</span>
         </span>
         <span className="text-xs shrink-0 flex items-center gap-1.5">

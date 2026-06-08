@@ -43,6 +43,41 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_id);
+
+-- ── Project Knowledge (agent-curated RAG memory) ──────────────────────
+-- One row per stored knowledge entry; chunks + embeddings live below.
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'agent',
+    tags TEXT,
+    content_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_docs_project
+    ON knowledge_documents(project_id);
+
+-- Chunked + embedded slices of a document. `embedding` is a float32
+-- numpy array serialized to bytes; retrieval is a brute-force cosine in
+-- Python (per-project bases are small because they are agent-curated).
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id INTEGER NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    dim INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_project
+    ON knowledge_chunks(project_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_document
+    ON knowledge_chunks(document_id);
 """
 
 # Inline migrations for pre-existing databases.

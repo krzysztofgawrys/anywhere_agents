@@ -27,7 +27,10 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
-
+from worker_shared.db import db
+from worker_shared.knowledge import service as knowledge_service
+from worker_shared.knowledge.config import load_config
+from worker_shared.projects.service import get_project_by_path
 from worker_shared.sdk.bootstrap import (
     BootstrapError,
     request_credentials,
@@ -35,6 +38,7 @@ from worker_shared.sdk.bootstrap import (
 from worker_shared.sdk.credentials_store import load_credentials
 from worker_shared.sdk.push_notify import emit_push_notify
 
+from src.sdk import knowledge_tools as kt
 from src.sdk.permissions import PermissionBroker, _fallback_id
 
 _AGENT_TYPE = "claude"
@@ -85,6 +89,16 @@ _USER_INPUT_TOOLS: frozenset[str] = frozenset({
     "AskUserQuestion",
     "ask_followup_question",
     "ask_user",
+})
+
+# Tool calls that count as "meaningful work" for the knowledge
+# consolidation gate - an idle session only consolidates if it edited
+# something this run (avoids burning tokens on read-only/no-op idles).
+_WORK_TOOLS: frozenset[str] = frozenset({
+    "Edit",
+    "Write",
+    "MultiEdit",
+    "NotebookEdit",
 })
 
 
@@ -193,6 +207,22 @@ class Session:
         # when credentials were already on disk (synchronous start path).
         self._bootstrap_task: asyncio.Task[None] | None = None
 
+        # ── Project Knowledge (agent-curated RAG) ───────────────────────
+        # Resolved from cwd in _sdk_init; None when the cwd is not a
+        # registered project (knowledge is keyed by project_id).
+        self._project_id: int | None = None
+        self._knowledge_cfg = load_config()
+        # Set when the turn did meaningful work (Edit/Write); gates the
+        # idle consolidation turn so we don't burn tokens on no-op idles.
+        self._knowledge_dirty = False
+        # True while a background consolidation turn is in flight, so the
+        # idle timer / user prompts don't re-enter it.
+        self._consolidating = False
+        # Suppress user-facing text/thinking while a consolidation turn
+        # runs (its output is maintenance, not a chat reply).
+        self._suppress_output = False
+        self._idle_timer: asyncio.Task[None] | None = None
+
     @property
     def session_id(self) -> str:
         return self._session_id
@@ -252,7 +282,13 @@ class Session:
         # include_partial_messages=True turns on real token-by-token streaming:
         # the SDK emits StreamEvent objects with content_block_delta events
         # we forward as fine-grained text_delta / thinking events.
-        options = ClaudeAgentOptions(
+        # Resolve the project_id (knowledge is keyed by it). None when the
+        # cwd is not a registered project - knowledge wiring is then skipped.
+        if self._cwd:
+            project = await get_project_by_path(db, self._cwd)
+            self._project_id = project["id"] if project else None
+
+        opts: dict[str, Any] = dict(
             cwd=self._cwd,
             setting_sources=["user", "project"],
             permission_mode="default",
@@ -262,6 +298,27 @@ class Session:
             model=self._model,
             effort=self._effort,
         )
+
+        # ── Project Knowledge wiring ────────────────────────────────────
+        # Always expose the tools + directive when enabled and the project
+        # is known (even on an empty base) so the agent can start building
+        # it - otherwise an empty project could never save its first note.
+        # allowed_tools PRE-APPROVES these (auto-run, no permission prompt)
+        # without restricting the agent's normal tools (that is `tools`).
+        if self._knowledge_cfg.enabled and self._project_id is not None:
+            opts["mcp_servers"] = {
+                kt.SERVER_NAME: kt.build_knowledge_server(
+                    self._project_id, on_change=self._on_knowledge_changed
+                )
+            }
+            opts["allowed_tools"] = kt.tool_allow_patterns()
+            opts["system_prompt"] = {
+                "type": "preset",
+                "preset": "claude_code",
+                "append": kt.KNOWLEDGE_DIRECTIVE,
+            }
+
+        options = ClaudeAgentOptions(**opts)
         self._client = ClaudeSDKClient(options=options)
         await self._client.connect()
         logger.info(
@@ -298,6 +355,10 @@ class Session:
         return claude_has_credentials()
 
     async def stop(self) -> None:
+        # Cancel the pending idle-consolidation timer, if armed.
+        if self._idle_timer is not None and not self._idle_timer.done():
+            self._idle_timer.cancel()
+            self._idle_timer = None
         # Cancel all live tail tasks first so they don't try to send into a
         # disconnected WS after the SDK shuts down.
         for tail in list(self._task_tails.values()):
@@ -572,6 +633,7 @@ class Session:
                     self._permissions.disarm_one_shot()
                     self._busy = False
                     self._idle_event.set()
+                    self._on_turn_end()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -590,26 +652,31 @@ class Session:
         # (stream=True) or wait for the final AssistantMessage and forward whole
         # text/thinking blocks (stream=False).
         if isinstance(msg, StreamEvent):
-            if self._stream_enabled:
+            if self._stream_enabled and not self._suppress_output:
                 await self._dispatch_stream_event(msg)
             return
 
         if isinstance(msg, AssistantMessage):
             for block in msg.content:
                 if isinstance(block, ToolUseBlock):
-                    await self._send({
-                        "type": "tool_call",
-                        "payload": {
-                            "session_id": self._session_id,
-                            "tool_use_id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        },
-                    })
+                    # Editing/writing marks the session as having done
+                    # consolidatable work this run.
+                    if block.name in _WORK_TOOLS:
+                        self._knowledge_dirty = True
+                    if not self._suppress_output:
+                        await self._send({
+                            "type": "tool_call",
+                            "payload": {
+                                "session_id": self._session_id,
+                                "tool_use_id": block.id,
+                                "name": block.name,
+                                "input": block.input,
+                            },
+                        })
                 elif not self._stream_enabled and isinstance(block, TextBlock):
                     # Streaming OFF: emit the whole text block now (deltas were
                     # suppressed). ON: already streamed by _dispatch_stream_event.
-                    if block.text:
+                    if block.text and not self._suppress_output:
                         await self._send({
                             "type": "text_delta",
                             "payload": {
@@ -618,7 +685,7 @@ class Session:
                             },
                         })
                 elif not self._stream_enabled and isinstance(block, ThinkingBlock):
-                    if block.thinking:
+                    if block.thinking and not self._suppress_output:
                         await self._send({
                             "type": "thinking",
                             "payload": {
@@ -630,6 +697,8 @@ class Session:
         elif isinstance(msg, UserMessage):
             for block in _iter_blocks(msg.content):
                 if isinstance(block, ToolResultBlock):
+                    if self._suppress_output:
+                        continue
                     await self._send({
                         "type": "tool_result",
                         "payload": {
@@ -726,6 +795,10 @@ class Session:
                 })
 
         elif isinstance(msg, ResultMessage):
+            # Background consolidation turn: swallow its result entirely (no
+            # push, no chat 'result' bubble). _on_turn_end clears the flag.
+            if self._suppress_output:
+                return
             # Always emit push_notify on result, via HTTP directly to the hub.
             # We deliberately do NOT use the WS callback (self._send) here:
             # the most important case for push is precisely when the client
@@ -902,6 +975,94 @@ class Session:
         Kept as a method for the existing call sites in this file.
         """
         await emit_push_notify(title=title, body=body)
+
+    # ── Project Knowledge: UI push + idle consolidation ──────────────
+
+    async def _on_knowledge_changed(self) -> None:
+        """Push a lightweight `knowledge_updated` after a save/update/delete."""
+        if self._project_id is None:
+            return
+        try:
+            entries = await knowledge_service.list_entries(db, self._project_id)
+        except Exception as e:
+            logger.warning("knowledge_list_failed", error=str(e))
+            return
+        items = [
+            {
+                "id": e["id"],
+                "title": e["title"],
+                "source": e["source"],
+                "tags": e["tags"],
+                "created_at": e["created_at"],
+                "updated_at": e["updated_at"],
+            }
+            for e in entries
+        ]
+        await self._send({
+            "type": "knowledge_updated",
+            "payload": {"project_id": self._project_id, "items": items},
+        })
+
+    def _on_turn_end(self) -> None:
+        """Called after every ResultMessage. Drives idle consolidation."""
+        if self._consolidating:
+            # The turn that just ended WAS the consolidation turn.
+            self._consolidating = False
+            self._suppress_output = False
+            self._knowledge_dirty = False
+            return
+        self._schedule_idle_consolidation()
+
+    def _schedule_idle_consolidation(self) -> None:
+        """(Re)arm the idle timer if this session did consolidatable work."""
+        if self._idle_timer is not None and not self._idle_timer.done():
+            self._idle_timer.cancel()
+            self._idle_timer = None
+        sec = self._knowledge_cfg.consolidate_idle_sec
+        if (
+            not self._knowledge_cfg.enabled
+            or self._project_id is None
+            or sec <= 0
+            or not self._knowledge_dirty
+        ):
+            return
+        self._idle_timer = asyncio.create_task(self._idle_consolidate_after(sec))
+
+    async def _idle_consolidate_after(self, sec: int) -> None:
+        try:
+            await asyncio.sleep(sec)
+        except asyncio.CancelledError:
+            return
+        if self._busy or self._consolidating or not self._knowledge_dirty:
+            return
+        await self._run_consolidation()
+
+    async def _run_consolidation(self) -> None:
+        """Fire a background consolidation turn (output suppressed)."""
+        if self._client is None:
+            return
+        async with self._lock:
+            if self._busy or self._consolidating:
+                return
+            self._consolidating = True
+            self._suppress_output = True
+            self._busy = True
+            self._idle_event.clear()
+            logger.info(
+                "knowledge_consolidation_started",
+                session_id=self._session_id,
+                project_id=self._project_id,
+            )
+            try:
+                await self._client.query(
+                    kt.CONSOLIDATION_PROMPT, session_id=self._session_id
+                )
+            except Exception as e:
+                logger.warning("knowledge_consolidation_failed", error=str(e))
+                self._consolidating = False
+                self._suppress_output = False
+                self._busy = False
+                self._idle_event.set()
 
     async def _ensure_credentials(self) -> bool:
         """Make sure the Claude SDK has something to authenticate with.
