@@ -31,6 +31,11 @@ workers/worker-codex-compose.yml
 workers/worker-copilot-compose.yml
 workers.json
 
+# Local-only elec worker (electronics/USB toolchain). Co-located dev worker
+# specific to one machine's hardware; kept out of the shared repo.
+compose.override.yml
+docker/worker-claude-elec.Dockerfile
+
 # IDE
 .idea/
 .vscode/
