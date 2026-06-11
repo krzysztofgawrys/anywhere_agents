@@ -23,6 +23,7 @@ type Props = {
   disabled: boolean;
   streaming: boolean;
   autoApproveActive: boolean;
+  contextPercent?: number | null;
   /** Extra slash commands (e.g. custom commands loaded from the worker). */
   extraCommands?: SlashCommand[];
   /** Called when the user selects a slash command from autocomplete. */
@@ -64,6 +65,7 @@ export function Composer({
   disabled,
   streaming,
   autoApproveActive,
+  contextPercent,
   extraCommands,
   onCommand,
   onSubmit,
@@ -274,10 +276,19 @@ export function Composer({
             <span>Auto-approve tools for this prompt</span>
           </label>
         )}
-        {autoApproveActive && (
-          <div className="text-xs text-yellow-300/80 mb-2 flex items-center gap-1.5">
-            <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-            Auto-approve is ON for this project
+        {(autoApproveActive || contextPercent != null) && (
+          <div className="text-xs mb-2 flex items-center justify-between">
+            {autoApproveActive ? (
+              <div className="text-yellow-300/80 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                Auto-approve is ON for this project
+              </div>
+            ) : <div />}
+            {contextPercent != null && (
+              <span className={`font-mono tabular-nums ${contextPercent >= 80 ? "text-red-400" : contextPercent >= 50 ? "text-yellow-400" : "text-gray-500"}`}>
+                ctx {contextPercent}%
+              </span>
+            )}
           </div>
         )}
         <div className="flex gap-2 items-end relative">

@@ -450,6 +450,12 @@ async def _route(
         await apply_set_effort(payload, sessions, send)
         return terminal
 
+    if msg_type == "get_context_usage":
+        usage = await sessions.get_context_usage()
+        if usage is not None:
+            await send({"type": "context_usage", "payload": usage})
+        return terminal
+
     if msg_type == "prompt":
         text = payload.get("text", "")
         raw_images = payload.get("images") or []

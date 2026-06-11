@@ -470,6 +470,16 @@ class Session:
                 "payload": {"code": "set_model_failed", "message": str(e)},
             })
 
+    async def get_context_usage(self) -> dict | None:
+        """Return context window usage stats from CLI."""
+        if self._client is None:
+            return None
+        try:
+            return await self._client.get_context_usage()
+        except Exception as e:
+            logger.warning("context_usage_failed", error=str(e))
+            return None
+
     async def set_effort(self, effort: str | None) -> None:
         """Change the effort level. Claude SDK only supports this at session init,
         so we store the preference and it takes effect on the next session start."""

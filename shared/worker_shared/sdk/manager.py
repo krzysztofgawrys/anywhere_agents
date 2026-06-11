@@ -299,6 +299,11 @@ class SessionManager:
                     self._current.session_id, "effort", effort,
                 )
 
+    async def get_context_usage(self) -> dict | None:
+        if self._current is not None:
+            return await self._current.get_context_usage()
+        return None
+
     async def interrupt(self) -> None:
         if self._current is not None:
             await self._current.interrupt()

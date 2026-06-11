@@ -113,6 +113,10 @@ class SessionProtocol(Protocol):
         """Cancel the in-flight agent turn, if any."""
         ...
 
+    async def get_context_usage(self) -> dict | None:
+        """Return context window usage stats."""
+        ...
+
     # ── Prompt + model control ──────────────────────────────────────
 
     async def send_prompt(

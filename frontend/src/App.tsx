@@ -280,6 +280,7 @@ function App() {
         // candidate (the backend already processed this prompt).
         lastPromptRef.current = null;
         promptWasDropped.current = false;
+        send({ type: "get_context_usage", payload: {} });
       }
       if (msg.type === "result" && pendingPromptRef.current) {
         // The interrupted turn just completed. Mark its assistant message
@@ -350,6 +351,10 @@ function App() {
         setFsDirectory(null);
         return;
       }
+      if (msg.type === "context_usage") {
+        setContextPercent(Math.round(msg.payload.percentage));
+        return;
+      }
       if (msg.type === "worker_reconnected") {
         // A worker dropped and came back (e.g. busy during hub ping, network
         // blip). The frontend WS to the hub stayed alive so no reconnect was
@@ -393,6 +398,8 @@ function App() {
             send({ type: "list_sessions", payload: { project_id: projectId } });
           }
         }
+        setContextPercent(null);
+        send({ type: "get_context_usage", payload: {} });
       }
       if (msg.type === "session_history") {
         // Restore active project on reconnect (project_id is always in the payload).
@@ -612,6 +619,7 @@ function App() {
   }, []);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [contextPercent, setContextPercent] = useState<number | null>(null);
 
   // Search state
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1228,6 +1236,7 @@ function App() {
             disabled={!connected || !activeSessionId || readOnly}
             streaming={status === "streaming"}
             autoApproveActive={autoApprove}
+            contextPercent={contextPercent}
             onCommand={onCommand}
             onSubmit={onSubmit}
             onInterrupt={onInterrupt}

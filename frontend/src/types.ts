@@ -136,6 +136,8 @@ export type ClientMessage =
       };
     }
   | { type: "interrupt"; payload: Record<string, never> }
+  | { type: "compact"; payload: Record<string, never> }
+  | { type: "get_context_usage"; payload: Record<string, never> }
   | { type: "approve_tool"; payload: { tool_use_id: string } }
   | { type: "deny_tool"; payload: { tool_use_id: string; reason?: string } }
   | { type: "list_directory"; payload: { project_id: number; path?: string } }
@@ -372,4 +374,5 @@ export type ServerMessage =
   | { type: "terminal_ready"; payload: Record<string, never> }
   | { type: "terminal_output"; payload: { data: string } }
   | { type: "terminal_closed"; payload: { exit_code: number } }
+  | { type: "context_usage"; payload: { totalTokens: number; maxTokens: number; percentage: number } }
   | { type: "worker_reconnected"; payload: { worker_id: string } };
