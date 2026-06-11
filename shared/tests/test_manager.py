@@ -130,8 +130,15 @@ async def test_new_session_parks_old_and_releases_lock(tmp_path: Any) -> None:
     assert lm.info("new") is not None
 
 
-async def test_new_session_old_session_rebind_called(tmp_path: Any) -> None:
-    """Parked session gets rebind(noop, parked=True) so it doesn't write to dead WS."""
+async def test_new_session_old_session_keeps_live_send_when_parked(tmp_path: Any) -> None:
+    """Switching session (live WS) parks the old one but KEEPS it streaming.
+
+    The client is still connected - it just navigated elsewhere - so the
+    backgrounded session must keep forwarding its output to the live send.
+    The frontend filters that content out of the chat view by session_id and
+    uses it to light the sidebar's background-activity indicator. Muting here
+    (as on a real WS disconnect) would hide that activity entirely.
+    """
     old = _make_session("old")
     new = _make_session("new")
     mgr, _, _, reg = _make_manager(sessions=[old, new])
@@ -140,10 +147,12 @@ async def test_new_session_old_session_rebind_called(tmp_path: Any) -> None:
         await mgr.new_session(str(tmp_path))
         await mgr.new_session(str(tmp_path))
 
-    # registry.park() calls rebind(noop, parked=True)
     old.rebind.assert_called_once()
-    _, kwargs = old.rebind.call_args
+    args, kwargs = old.rebind.call_args
     assert kwargs.get("parked") is True
+    # Rebound to the manager's live send - NOT a no-op - so background output
+    # still reaches the frontend.
+    assert args[0] is mgr._send
 
 
 # ── resume_session: fast path (parked in registry) ─────────────────────
@@ -320,6 +329,29 @@ async def test_stop_with_no_session_is_noop() -> None:
     with patch("worker_shared.sdk.manager.registry", reg):
         await mgr.stop()  # should not raise
     assert reg.parked_count == 0
+
+
+async def test_stop_mutes_parked_session(tmp_path: Any) -> None:
+    """On WS disconnect the socket is gone, so the parked session is muted.
+
+    Contrast with a session switch (test_new_session_old_session_keeps_live_send_
+    when_parked): there the WS is still alive and the session keeps streaming.
+    Here stop() must rebind to a no-op send (NOT the manager's live send) so the
+    still-running stream task doesn't write to a dead WebSocket.
+    """
+    s = _make_session("s1")
+    mgr, _, _, reg = _make_manager(sessions=[s])
+
+    with patch("worker_shared.sdk.manager.registry", reg):
+        await mgr.new_session(str(tmp_path))
+        s.rebind.reset_mock()  # drop the start-time bind; assert on disconnect
+        await mgr.stop()
+
+    s.rebind.assert_called_once()
+    args, kwargs = s.rebind.call_args
+    assert kwargs.get("parked") is True
+    # Muted: rebound to a no-op, NOT the manager's live send.
+    assert args[0] is not mgr._send
 
 
 # ── Lock revocation ──────────────────────────────────────────────────

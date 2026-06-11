@@ -329,10 +329,17 @@ class SessionManager:
         another client (or the same client switching back) can reclaim it.
         The in-progress agent turn keeps running; the registry TTL will
         clean it up eventually if nobody resumes it.
+
+        Unlike :meth:`stop` (WS disconnect), the client WS is still alive here -
+        the user merely switched to another session. We hand the live send to
+        the registry so the backgrounded session keeps streaming its output to
+        the frontend (which uses it to light the sidebar's background-activity
+        indicator). The frontend filters this content out of the chat view by
+        session_id, so it doesn't bleed into the session on screen.
         """
         if self._current is not None:
             sid = self._current.session_id
-            registry.park(self._current)
+            registry.park(self._current, background_send=self._send)
             await self._locks.release(sid, self._connection_id)
             self._current = None
 

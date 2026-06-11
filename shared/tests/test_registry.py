@@ -61,9 +61,32 @@ async def test_park_rebinds_with_noop_and_cancels_permissions(reg: SessionRegist
     s = _make_session("s1")
     reg.park(s)
     s.rebind.assert_called_once()
-    _, kwargs = s.rebind.call_args
+    args, kwargs = s.rebind.call_args
     assert kwargs.get("parked") is True
+    # Default (WS disconnect): muted with an internally-created no-op send.
+    noop = args[0]
+    assert asyncio.iscoroutinefunction(noop)
     s.permissions.cancel_permissions.assert_called_once()
+
+
+async def test_park_with_background_send_keeps_streaming(reg: SessionRegistry) -> None:
+    """Parking with background_send (session switch on a live WS) keeps the
+    session bound to that live send instead of muting it, so its background
+    output still reaches the frontend. Permissions are still cancelled and an
+    expiry timer is still armed."""
+    s = _make_session("s1")
+
+    async def live_send(msg: Any) -> None:  # noqa: ARG001
+        pass
+
+    reg.park(s, background_send=live_send)
+    s.rebind.assert_called_once()
+    args, kwargs = s.rebind.call_args
+    assert kwargs.get("parked") is True
+    assert args[0] is live_send  # NOT muted
+    s.permissions.cancel_permissions.assert_called_once()
+    assert reg.has("s1")
+    assert reg._expiry_tasks.get("s1") is not None
 
 
 # ── Expiry ─────────────────────────────────────────────────────────────

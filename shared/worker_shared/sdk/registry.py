@@ -56,17 +56,30 @@ class SessionRegistry:
         self._sessions: dict[str, Session] = {}
         self._expiry_tasks: dict[str, asyncio.Task[None]] = {}
 
-    def park(self, session: Session) -> None:
-        """Park a session after its WS disconnects.
+    def park(self, session: Session, *, background_send: Any | None = None) -> None:
+        """Park a running session in the registry.
 
         The session keeps running; an expiry timer is started so it gets
         cleaned up if no client reclaims it within :data:`DETACH_TTL` seconds.
 
-        Critically:
-        - Replace ``session._send`` with a no-op so the running stream task
-          doesn't crash when it tries to write to the now-closed WebSocket.
-        - Cancel any pending permission / user-input futures so the SDK loop
-          can continue executing tool calls without blocking forever.
+        Two parking modes, distinguished by ``background_send``:
+
+        - **WS disconnect** (``background_send=None``, the default): the socket
+          is gone, so ``session._send`` is replaced with a no-op. Without this
+          the running stream task would raise every time it tried to write to
+          the closed WebSocket.
+        - **Session switch on a live WS** (``background_send`` provided): the
+          client is still connected but viewing another session. We rebind the
+          session to that live send so its streamed output keeps flowing to the
+          frontend, tagged by ``session_id``. The frontend drops this content
+          from the chat view but uses it to flag background activity (the blue
+          dot in the sidebar). Muting here would hide that activity entirely.
+
+        In both modes, pending allow/deny permission futures are cancelled - the
+        agent can't wait on a human decision for a session nobody is watching.
+        User-input (AskUserQuestion) futures are intentionally kept alive: the
+        agent stays blocked on them, and after reconnect notify_reconnected()
+        re-sends the question.
         """
         sid = session.session_id
         # Cancel any prior expiry task (shouldn't happen, but be safe)
@@ -74,21 +87,23 @@ class SessionRegistry:
         if existing_task:
             existing_task.cancel()
 
-        # Swap in a silent no-op send so stream messages don't blow up.
-        async def _noop_send(msg: Any) -> None:  # noqa: ARG001
-            pass
+        if background_send is None:
+            # Swap in a silent no-op send so stream messages don't blow up.
+            async def _noop_send(msg: Any) -> None:  # noqa: ARG001
+                pass
 
-        session.rebind(_noop_send, parked=True)
+            session.rebind(_noop_send, parked=True)
+        else:
+            # Keep streaming to the live WS; just flag the session backgrounded.
+            session.rebind(background_send, parked=True)
 
-        # Cancel only allow/deny permission futures - the agent can't wait for
-        # a human decision while detached. User-input (AskUserQuestion) futures
-        # are intentionally kept alive: the agent stays blocked on them, and
-        # after reconnect notify_reconnected() re-sends the question.
-        session.permissions.cancel_permissions("Client disconnected - session running in background")
+        session.permissions.cancel_permissions("Client switched away - session running in background")
 
         self._sessions[sid] = session
         self._expiry_tasks[sid] = asyncio.create_task(self._expire(sid))
-        logger.info("session_parked", session_id=sid, ttl_s=DETACH_TTL)
+        logger.info(
+            "session_parked", session_id=sid, ttl_s=DETACH_TTL, muted=background_send is None
+        )
 
     def take(self, session_id: str) -> Session | None:
         """Claim a parked session. Cancels its expiry timer.
