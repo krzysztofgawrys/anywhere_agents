@@ -231,11 +231,6 @@ Hub + multi-agent workers running in Docker.
     (Office.js task-pane add-in + an MCP server on `EXCEL_PORT`, default
     `3847`). Runs natively (`start.ps1`), not in Docker. Supports both server
     and inbound (reverse) modes like the other workers.
-  - A co-located **`elec`** variant of worker-claude ships in
-    `compose.override.yml` (auto-merged): a second Claude worker serving
-    `~/elec` with USB passthrough for an electronics toolchain, isolated state,
-    registered in `workers.json` as id `elec`. Remove that file + the
-    `workers.json` entry to undo.
 - **Shared** (`shared/worker_shared/`): SDK-agnostic modules (db, files,
   terminal, locks, projects service, session registry) consumed by every
   worker via a uv path source. Adding a new agent SDK = one new worker
@@ -608,7 +603,6 @@ scripts/install-hooks.sh    Enable the hooks (sets core.hooksPath)
 docker/
 ├── hub.Dockerfile                Multi-stage: node (frontend) - uv (deps) - python:3.13-slim
 ├── worker-claude.Dockerfile      Multi-stage: uv (deps) - python:3.13-slim + Node.js + Claude CLI
-├── worker-claude-elec.Dockerfile worker-claude + serial/USB toolchain (the `elec` worker)
 ├── worker-copilot.Dockerfile     Multi-stage: uv (deps) - python:3.13-slim
 │                                 (github-copilot-sdk wheel bundles the Copilot CLI
 │                                 binary so no separate Node install)
@@ -618,8 +612,6 @@ docker/
 
 - `compose.yml` - hub + local worker-claude + cloudflared (worker-copilot
   and worker-codex commented out as examples)
-- `compose.override.yml` - auto-merged; adds the co-located `elec` worker
-  (worker-claude + USB passthrough). Delete to disable.
 - `workers/worker-claude-compose.yml.example` - standalone worker-claude for a remote machine (GHCR image)
 - `workers/worker-copilot-compose.yml.example` - standalone worker-copilot for a remote machine (GHCR image)
 - `workers/worker-codex-compose.yml.example` - standalone worker-codex for a remote machine (GHCR image)
