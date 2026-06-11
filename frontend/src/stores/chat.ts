@@ -225,7 +225,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (SESSION_SCOPED_TYPES.has(msg.type)) {
       const active = get().activeSessionId;
       const sid = (msg.payload as { session_id?: string }).session_id;
-      if (active !== null && sid !== undefined && sid !== active) return;
+      if (sid !== undefined && sid !== active) return;
     }
     switch (msg.type) {
       case "session_started":

@@ -918,6 +918,10 @@ function App() {
       }
       killTerminal();
       resetChat();
+      // Lock the session filter to the target session immediately so
+      // straggler messages from the previous (still-streaming) session
+      // are dropped instead of bleeding into this view.
+      useChatStore.setState({ activeSessionId: sessionId });
       // Restore the target session's persisted model (not the previous
       // session's value from the stale closure). reset() just cleared Zustand,
       // so we read from per-session localStorage. Effort is restored server-
