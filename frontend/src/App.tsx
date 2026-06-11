@@ -863,10 +863,7 @@ function App() {
           appendUserPrompt("/compact");
           send({
             type: "prompt",
-            payload: {
-              text: "Provide a concise summary of our conversation so far: key decisions made, files changed, current state, and any open issues. Be brief - this is to save context window space.",
-              stream: true,
-            },
+            payload: { text: "/compact", stream: true },
           });
           break;
         case "new":
