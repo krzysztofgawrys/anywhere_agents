@@ -354,6 +354,24 @@ async def _route(
             await _send_error(send, "not_found", f"project {project_id} not found")
             return terminal
         items = list_sessions(project["path"])
+        # A freshly created session has no .jsonl on disk yet (the SDK writes
+        # it lazily, on/after the first prompt), so list_sessions can't see it.
+        # Merge in the live in-memory session so it shows in the sidebar the
+        # moment it's created, not only after the first message is flushed.
+        # Once its .jsonl exists, the disk entry takes over (dedup by id).
+        live = sessions.current
+        if (
+            live is not None
+            and sessions.current_project_id == project_id
+            and not any(it["id"] == live.session_id for it in items)
+        ):
+            items.insert(0, {
+                "id": live.session_id,
+                "title": None,
+                "preview": None,
+                "message_count": 0,
+                "mtime": time.time(),
+            })
         await send({
             "type": "sessions",
             "payload": {"project_id": project_id, "sessions": items},

@@ -62,6 +62,11 @@ class SessionManager:
     def current(self) -> SessionProtocol | None:
         return self._current
 
+    @property
+    def current_project_id(self) -> int | None:
+        """Project id of the currently-attached session, if any."""
+        return self._current_project_id
+
     # ── Public lifecycle ─────────────────────────────────────────────
 
     async def new_session(

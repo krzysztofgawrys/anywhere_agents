@@ -151,7 +151,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       pendingUserInputs: [],
     }),
 
-  setHistory: (messages, hasMore, oldestUuid) =>
+  setHistory: (messages, hasMore, oldestUuid) => {
+    const s0 = get();
+    // Guard against a JSONL-flush race. The SDK writes a new session's
+    // transcript to disk lazily, so during the first streaming turn the
+    // optimistic in-memory messages (the user's just-sent prompt + the live
+    // assistant bubble) are not on disk yet. A session_history fetch fired
+    // mid-turn (WS reconnect, tab foreground) then returns an empty/short
+    // page that would wipe them - the "new session loses its chat history
+    // until I refresh" bug. While streaming, ignore a page that can only lose
+    // content; the post-`result` refetch reconciles once the SDK has flushed.
+    if (
+      s0.status === "streaming" &&
+      s0.messages.length > 0 &&
+      messages.length <= s0.messages.length
+    ) {
+      return;
+    }
     set((s) => ({
       messages,
       // Don't downgrade from "streaming" - if session_started just told us the
@@ -170,7 +186,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       hasMore,
       oldestUuid,
       loadingOlder: false,
-    })),
+    }));
+  },
 
   prependHistory: (older, hasMore, oldestUuid) =>
     set((s) => ({

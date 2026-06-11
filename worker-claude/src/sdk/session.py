@@ -299,6 +299,16 @@ class Session:
             effort=self._effort,
         )
 
+        # For a NEW session, force the CLI to persist the transcript under OUR
+        # session_id (passes `--session-id <uuid>`). Without this the CLI mints
+        # its own id, writes the JSONL under that name, and our id (handed to
+        # the frontend + stored in SQLite) points at a file that doesn't exist -
+        # so reading history back on a session switch or reload finds nothing.
+        # Only for new sessions: a resume passes `--resume` with the already-
+        # correct on-disk id, and the two flags must not be combined.
+        if self._resume is None:
+            opts["session_id"] = self._session_id
+
         # ── Project Knowledge wiring ────────────────────────────────────
         # Always expose the tools + directive when enabled and the project
         # is known (even on an empty base) so the agent can start building
