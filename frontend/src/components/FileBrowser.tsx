@@ -25,6 +25,11 @@ export function FileBrowser({ send }: Props) {
   const cancelEdit = useFilesStore((s) => s.cancelEdit);
   const setEditContent = useFilesStore((s) => s.setEditContent);
   const beginSave = useFilesStore((s) => s.beginSave);
+  const selectionMode = useFilesStore((s) => s.selectionMode);
+  const selected = useFilesStore((s) => s.selected);
+  const enterSelection = useFilesStore((s) => s.enterSelection);
+  const toggleSelect = useFilesStore((s) => s.toggleSelect);
+  const clearSelection = useFilesStore((s) => s.clearSelection);
 
   // Uploads pipeline is global (see stores/uploads.ts + UploadOverlay). We
   // only need to enqueue here and observe the tick so the browser re-lists
@@ -64,6 +69,8 @@ export function FileBrowser({ send }: Props) {
       if (e.key !== "Escape") return;
       if (editing) {
         cancelEdit();
+      } else if (selectionMode) {
+        clearSelection();
       } else if (file) {
         closeFile();
       } else {
@@ -72,7 +79,7 @@ export function FileBrowser({ send }: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [project, file, editing, close, closeFile, cancelEdit]);
+  }, [project, file, editing, selectionMode, close, closeFile, cancelEdit, clearSelection]);
 
   const saveFile = () => {
     if (!project || !file) return;
@@ -194,6 +201,51 @@ export function FileBrowser({ send }: Props) {
       type: "read_file",
       payload: { project_id: project.id, path },
     });
+  };
+
+  // ── Selection actions (download / zip) ────────────────────────────────────
+  const selectedPaths = Object.keys(selected);
+  const selectedCount = selectedPaths.length;
+  const firstSelected = selectedPaths[0];
+  const singleFilePath =
+    selectedCount === 1 && firstSelected && selected[firstSelected] === "file"
+      ? firstSelected
+      : null;
+
+  const downloadDisabledReason = !project.workerId
+    ? "This worker doesn't support downloads"
+    : null;
+
+  const downloadSingle = () => {
+    if (!project.workerId || !singleFilePath) return;
+    const params = new URLSearchParams({
+      worker_id: project.workerId,
+      project_path: project.path,
+      path: singleFilePath,
+    });
+    triggerDownload(`/api/download?${params.toString()}`);
+  };
+
+  const downloadZip = () => {
+    if (!project.workerId || selectedCount === 0) return;
+    const dirName = directory?.path ? directory.path.split("/").pop()! : project.name;
+    const params = new URLSearchParams({
+      worker_id: project.workerId,
+      project_path: project.path,
+      base: directory?.path ?? "",
+      name: `${dirName}.zip`,
+    });
+    for (const p of selectedPaths) params.append("path", p);
+    triggerDownload(`/api/zip?${params.toString()}`);
+  };
+
+  const onEntryActivate = (entry: DirectoryEntry, path: string) => {
+    if (selectionMode) {
+      toggleSelect(path, entry.kind);
+      return;
+    }
+    if (entry.kind === "dir") navigateTo(path);
+    else openFile(path);
   };
 
   const currentPath = directory?.path ?? "";
@@ -318,7 +370,10 @@ export function FileBrowser({ send }: Props) {
             loading={loading}
             directory={directory}
             onNavigate={navigateTo}
-            onOpenFile={openFile}
+            selectionMode={selectionMode}
+            selected={selected}
+            onActivate={onEntryActivate}
+            onLongPress={(entry, path) => enterSelection(path, entry.kind)}
           />
         )}
 
@@ -353,6 +408,45 @@ export function FileBrowser({ send }: Props) {
         )}
       </div>
 
+      {selectionMode && !file && (
+        <div className="border-t border-gray-800 bg-gray-900/95 px-3 md:px-4 py-2.5 flex items-center gap-3 shrink-0">
+          <span className="text-sm text-gray-300">
+            {selectedCount} selected
+          </span>
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={downloadSingle}
+            disabled={!singleFilePath || !!downloadDisabledReason}
+            title={
+              downloadDisabledReason ??
+              (singleFilePath
+                ? "Download file"
+                : "Select a single file to download it directly")
+            }
+            className="text-xs text-white px-3 py-1.5 rounded border border-blue-600 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Download
+          </button>
+          <button
+            type="button"
+            onClick={downloadZip}
+            disabled={selectedCount === 0 || !!downloadDisabledReason}
+            title={downloadDisabledReason ?? "Download selection as a .zip"}
+            className="text-xs text-white px-3 py-1.5 rounded border border-blue-600 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Zip
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="text-xs text-gray-300 hover:text-white px-3 py-1.5 rounded border border-gray-700 hover:border-gray-500"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
     </div>
   );
 }
@@ -361,10 +455,21 @@ type ListingProps = {
   loading: boolean;
   directory: { path: string; parent: string | null; entries: DirectoryEntry[] } | null;
   onNavigate: (path: string) => void;
-  onOpenFile: (path: string) => void;
+  selectionMode: boolean;
+  selected: Record<string, "file" | "dir">;
+  onActivate: (entry: DirectoryEntry, path: string) => void;
+  onLongPress: (entry: DirectoryEntry, path: string) => void;
 };
 
-function DirectoryListing({ loading, directory, onNavigate, onOpenFile }: ListingProps) {
+function DirectoryListing({
+  loading,
+  directory,
+  onNavigate,
+  selectionMode,
+  selected,
+  onActivate,
+  onLongPress,
+}: ListingProps) {
   if (loading && !directory) {
     return <div className="text-sm text-gray-500 p-4">Loading…</div>;
   }
@@ -397,29 +502,146 @@ function DirectoryListing({ loading, directory, onNavigate, onOpenFile }: Listin
       {directory.entries.map((entry) => {
         const path = childPath(entry.name);
         return (
-          <li key={entry.name}>
-            <button
-              type="button"
-              onClick={() =>
-                entry.kind === "dir" ? onNavigate(path) : onOpenFile(path)
-              }
-              className="w-full text-left flex items-center gap-3 px-3 md:px-4 py-2.5 hover:bg-gray-800/50"
-              title={entry.name}
-            >
-              {entry.kind === "dir" ? <FolderIcon /> : <FileIcon />}
-              <span className="flex-1 text-sm truncate text-gray-100">
-                {entry.name}
-              </span>
-              {entry.kind === "file" && entry.size !== null && (
-                <span className="text-xs text-gray-500 font-mono shrink-0">
-                  {formatSize(entry.size)}
-                </span>
-              )}
-            </button>
-          </li>
+          <EntryRow
+            key={entry.name}
+            entry={entry}
+            path={path}
+            selectionMode={selectionMode}
+            isSelected={!!selected[path]}
+            onActivate={onActivate}
+            onLongPress={onLongPress}
+          />
         );
       })}
     </ul>
+  );
+}
+
+type EntryRowProps = {
+  entry: DirectoryEntry;
+  path: string;
+  selectionMode: boolean;
+  isSelected: boolean;
+  onActivate: (entry: DirectoryEntry, path: string) => void;
+  onLongPress: (entry: DirectoryEntry, path: string) => void;
+};
+
+const LONG_PRESS_MS = 450;
+const LONG_PRESS_MOVE_TOLERANCE = 10;
+
+function EntryRow({
+  entry,
+  path,
+  selectionMode,
+  isSelected,
+  onActivate,
+  onLongPress,
+}: EntryRowProps) {
+  // Long-press = touch held for LONG_PRESS_MS without moving. A timer drives
+  // it; touchmove/touchend/touchcancel abort. `pressFiredRef` both swallows
+  // the synthetic click that follows the press and de-dupes a contextmenu
+  // event that some browsers also raise for the same gesture.
+  const timerRef = useRef<number | null>(null);
+  const pressFiredRef = useRef(false);
+  const startRef = useRef<{ x: number; y: number } | null>(null);
+
+  const clearTimer = () => {
+    if (timerRef.current !== null) {
+      window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  };
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    pressFiredRef.current = false;
+    const t = e.touches[0];
+    startRef.current = t ? { x: t.clientX, y: t.clientY } : null;
+    clearTimer();
+    timerRef.current = window.setTimeout(() => {
+      pressFiredRef.current = true;
+      onLongPress(entry, path);
+    }, LONG_PRESS_MS);
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    if (!startRef.current) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const dx = Math.abs(t.clientX - startRef.current.x);
+    const dy = Math.abs(t.clientY - startRef.current.y);
+    if (dx > LONG_PRESS_MOVE_TOLERANCE || dy > LONG_PRESS_MOVE_TOLERANCE) {
+      clearTimer();
+    }
+  };
+  const onTouchEnd = () => clearTimer();
+
+  const onContextMenu = (e: React.MouseEvent) => {
+    // Desktop right-click (and some long-press paths) -> enter selection.
+    e.preventDefault();
+    if (pressFiredRef.current) return;
+    pressFiredRef.current = true;
+    onLongPress(entry, path);
+  };
+
+  const onClick = () => {
+    // Swallow the click synthesized right after a long press fired.
+    if (pressFiredRef.current) {
+      pressFiredRef.current = false;
+      return;
+    }
+    onActivate(entry, path);
+  };
+
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onClick}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onTouchCancel={onTouchEnd}
+        onContextMenu={onContextMenu}
+        style={{ WebkitTouchCallout: "none" }}
+        className={`w-full text-left flex items-center gap-3 px-3 md:px-4 py-2.5 select-none ${
+          isSelected ? "bg-blue-900/40 hover:bg-blue-900/50" : "hover:bg-gray-800/50"
+        }`}
+        title={entry.name}
+        aria-pressed={selectionMode ? isSelected : undefined}
+      >
+        {selectionMode && (
+          <CheckMark checked={isSelected} />
+        )}
+        {entry.kind === "dir" ? <FolderIcon /> : <FileIcon />}
+        <span className="flex-1 text-sm truncate text-gray-100">
+          {entry.name}
+        </span>
+        {entry.kind === "file" && entry.size !== null && (
+          <span className="text-xs text-gray-500 font-mono shrink-0">
+            {formatSize(entry.size)}
+          </span>
+        )}
+      </button>
+    </li>
+  );
+}
+
+function CheckMark({ checked }: { checked: boolean }) {
+  return (
+    <span
+      className={`shrink-0 w-5 h-5 rounded border flex items-center justify-center ${
+        checked ? "bg-blue-600 border-blue-600" : "border-gray-600 bg-transparent"
+      }`}
+    >
+      {checked && (
+        <svg width="12" height="12" viewBox="0 0 20 20" fill="white">
+          <path
+            fillRule="evenodd"
+            d="M16.7 5.3a1 1 0 010 1.4l-7.5 7.5a1 1 0 01-1.4 0l-3.5-3.5a1 1 0 011.4-1.4L8.5 12l6.8-6.7a1 1 0 011.4 0z"
+            clipRule="evenodd"
+          />
+        </svg>
+      )}
+    </span>
   );
 }
 
@@ -528,6 +750,19 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
       <code>{file.content ?? ""}</code>
     </pre>
   );
+}
+
+/** Trigger a browser download for a same-origin URL via a transient anchor.
+ *  The server sets Content-Disposition: attachment, so the page is not
+ *  navigated away; on mobile this hands off to the OS download/share sheet.
+ *  CF Access auth rides along on the CF_Authorization cookie. */
+function triggerDownload(url: string): void {
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function formatSize(bytes: number): string {

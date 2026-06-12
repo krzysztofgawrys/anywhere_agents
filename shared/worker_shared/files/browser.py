@@ -20,12 +20,16 @@ from __future__ import annotations
 import base64
 import os
 import os.path
-from typing import Any
+import zipfile
+from typing import IO, Any
 
 # Cap file reads at 2 MiB. Anything larger surfaces a `too_large` flag so the
 # UI can show a "download" / "open externally" hint instead of trying to render
 # megabytes of text through a WebSocket.
 MAX_FILE_BYTES = 2 * 1024 * 1024
+# Cap total uncompressed bytes a single zip request may bundle. A runaway
+# selection (e.g. node_modules) would otherwise pin CPU/disk on the worker.
+MAX_ZIP_TOTAL_BYTES = 1024 * 1024 * 1024  # 1 GiB
 # A small leading sample is enough to detect binary content via NUL bytes.
 TEXT_SAMPLE_BYTES = 8192
 
@@ -486,3 +490,136 @@ def write_file(project_path: str, rel_path: str, content: str) -> dict[str, Any]
 
     clean_rel = (rel_path or "").strip("/")
     return {"path": clean_rel, "size": len(raw)}
+
+
+def resolve_download_path(project_path: str, rel_path: str) -> dict[str, Any]:
+    """Resolve a single file inside the project for raw HTTP download.
+
+    Unlike `read_file` this does NOT cap at MAX_FILE_BYTES or load the body -
+    the caller streams the file off disk. Returns the sanitized absolute path
+    so a FileResponse/StreamingResponse can serve it.
+
+    Returns: { abs_path, name, size }
+    """
+    # ── Inline path sanitizer ──────────────────────────────────────────
+    # Same realpath + startswith barrier as the rest of this module; CodeQL
+    # does not propagate sanitizer recognition across helper boundaries so it
+    # is duplicated here immediately before the filesystem sink.
+    rel = (rel_path or "").lstrip("/")
+    if ".." in rel.split("/"):
+        raise FileBrowserError("forbidden", "Path traversal not allowed")
+    real_root = os.path.realpath(project_path)
+    if not os.path.isdir(real_root):
+        raise FileBrowserError("not_found", "Project root not found")
+    real_target = os.path.realpath(os.path.join(real_root, rel))
+    if not real_target.startswith(real_root):
+        raise FileBrowserError("forbidden", "Path escapes project root")
+    # ───────────────────────────────────────────────────────────────────
+
+    if not os.path.exists(real_target):
+        raise FileBrowserError("not_found", f"File not found: {rel_path}")
+    if not os.path.isfile(real_target):
+        raise FileBrowserError("not_file", "Path is not a file")
+
+    try:
+        size = os.path.getsize(real_target)
+    except OSError as exc:
+        raise FileBrowserError("io_error", str(exc)) from exc
+
+    name = os.path.basename(real_target) or "download.bin"
+    return {"abs_path": real_target, "name": name, "size": size}
+
+
+def _arcname(base_rel: str, clean_rel: str) -> str:
+    """Archive member name for `clean_rel` relative to the selection base dir."""
+    base = (base_rel or "").strip("/")
+    if base and clean_rel.startswith(base + "/"):
+        return clean_rel[len(base) + 1 :]
+    if base and clean_rel == base:
+        return os.path.basename(clean_rel)
+    return clean_rel
+
+
+def build_zip(
+    project_path: str,
+    base_rel: str,
+    rel_paths: list[str],
+    out: IO[bytes],
+) -> int:
+    """Write a zip of the given project-relative paths into `out`.
+
+    `rel_paths` may name files and/or directories (directories are added
+    recursively). Each member is sandbox-checked against the project root and
+    members reachable only through an escaping symlink are skipped. Archive
+    names are made relative to `base_rel` (the directory the selection was made
+    in) so the zip is not deeply nested.
+
+    Returns the number of files written. Raises FileBrowserError on an empty or
+    invalid selection, or when the total uncompressed size exceeds the cap.
+    """
+    if not rel_paths:
+        raise FileBrowserError("bad_request", "No paths selected")
+
+    real_root = os.path.realpath(project_path)
+    if not os.path.isdir(real_root):
+        raise FileBrowserError("not_found", "Project root not found")
+
+    def _safe_target(rel_path: str) -> str:
+        # ── Inline path sanitizer (per member) ─────────────────────────
+        rel = (rel_path or "").lstrip("/")
+        if ".." in rel.split("/"):
+            raise FileBrowserError("forbidden", "Path traversal not allowed")
+        real_target = os.path.realpath(os.path.join(real_root, rel))
+        if not real_target.startswith(real_root):
+            raise FileBrowserError("forbidden", "Path escapes project root")
+        # ───────────────────────────────────────────────────────────────
+        return real_target
+
+    written = 0
+    total = 0
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for rel_path in rel_paths:
+            real_target = _safe_target(rel_path)
+            if not os.path.exists(real_target):
+                raise FileBrowserError("not_found", f"Path not found: {rel_path}")
+            clean_rel = _rel_str(real_root, real_target)
+
+            if os.path.isfile(real_target):
+                try:
+                    total += os.path.getsize(real_target)
+                except OSError:
+                    continue
+                if total > MAX_ZIP_TOTAL_BYTES:
+                    raise FileBrowserError("too_large", "Selection too large to zip")
+                zf.write(real_target, _arcname(base_rel, clean_rel))
+                written += 1
+                continue
+
+            if os.path.isdir(real_target):
+                # followlinks=False: do not descend into symlinked directories.
+                for dirpath, _dirs, files in os.walk(real_target, followlinks=False):
+                    for fname in files:
+                        member = os.path.join(dirpath, fname)
+                        # Re-sanitize each walked member: a file symlink could
+                        # point outside the root even when its parent dir does
+                        # not. realpath + startswith catches and skips it.
+                        real_member = os.path.realpath(member)
+                        if not real_member.startswith(real_root):
+                            continue
+                        if not os.path.isfile(real_member):
+                            continue
+                        try:
+                            total += os.path.getsize(real_member)
+                        except OSError:
+                            continue
+                        if total > MAX_ZIP_TOTAL_BYTES:
+                            raise FileBrowserError(
+                                "too_large", "Selection too large to zip"
+                            )
+                        member_rel = _rel_str(real_root, os.path.realpath(member))
+                        zf.write(real_member, _arcname(base_rel, member_rel))
+                        written += 1
+
+    if written == 0:
+        raise FileBrowserError("not_found", "Nothing to zip")
+    return written

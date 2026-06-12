@@ -24,7 +24,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.auth.cf_access import verify_cf_access_token
@@ -367,6 +367,154 @@ async def _upload_via_inbound_ws(
     raise HTTPException(
         status_code=502,
         detail=f"unexpected worker response: type={msg_type}",
+    )
+
+
+def _worker_http_base(worker: WorkerInfo) -> str:
+    """Derive a worker's HTTP base URL from its WS URL in workers.json."""
+    http_base = worker.url.replace("ws://", "http://", 1).replace("wss://", "https://", 1)
+    if http_base.endswith("/ws"):
+        http_base = http_base[: -len("/ws")]
+    return http_base
+
+
+async def _auth_download_request(request: Request) -> dict[str, Any]:
+    """CF Access gate shared by /api/download and /api/zip.
+
+    Browser-triggered downloads navigate (anchor click) rather than fetch, so
+    the JWT arrives as the CF_Authorization cookie; we also accept the standard
+    header for parity with /api/upload. Returns the claims or raises 401.
+    """
+    token = request.headers.get("cf-access-jwt-assertion") or request.cookies.get(
+        "CF_Authorization"
+    )
+    claims = await verify_cf_access_token(token)
+    if claims is None:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    return claims
+
+
+async def _stream_from_worker(
+    method: str,
+    url: str,
+    *,
+    worker: WorkerInfo,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+) -> StreamingResponse:
+    """Proxy a download/zip response from an outbound worker back to the client.
+
+    Streams the body so large files/zips never buffer fully in the hub. The
+    worker's Content-Disposition + Content-Type are forwarded verbatim. On a
+    non-200 the (small JSON error) body is read eagerly and returned as-is.
+    """
+    client = httpx.AsyncClient(timeout=None)
+    req = client.build_request(
+        method,
+        url,
+        params=params,
+        json=json_body,
+        headers={"X-Worker-Secret": worker.secret},
+    )
+    try:
+        resp = await client.send(req, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        logger.warning("download_proxy_worker_unreachable", worker_id=worker.id, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"worker {worker.id} unreachable") from exc
+
+    if resp.status_code != 200:
+        body = await resp.aread()
+        await resp.aclose()
+        await client.aclose()
+        try:
+            content = json.loads(body)
+        except ValueError:
+            content = {"code": "bad_gateway", "message": body.decode("utf-8", "replace")[:200]}
+        return JSONResponse(status_code=resp.status_code, content=content)  # type: ignore[return-value]
+
+    async def body_iter() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in resp.aiter_bytes():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    headers = {}
+    if "content-disposition" in resp.headers:
+        headers["Content-Disposition"] = resp.headers["content-disposition"]
+    if "content-length" in resp.headers:
+        headers["Content-Length"] = resp.headers["content-length"]
+    return StreamingResponse(
+        body_iter(),
+        media_type=resp.headers.get("content-type", "application/octet-stream"),
+        headers=headers,
+    )
+
+
+@app.get("/api/download")
+async def download_proxy(
+    request: Request,
+    worker_id: str,
+    project_path: str,
+    path: str,
+) -> StreamingResponse:
+    """Stream a single project file from a worker for browser download.
+
+    CF Access auth (cookie or header), then proxy to the worker's
+    /internal/download. Inbound (reverse-mode) workers have no hub→worker HTTP
+    path so they are unsupported here for now.
+    """
+    await _auth_download_request(request)
+    worker = next((w for w in load_workers() if w.id == worker_id), None)
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"unknown worker {worker_id}")
+    if worker.mode == "inbound":
+        raise HTTPException(status_code=501, detail="download not supported for inbound workers")
+
+    url = f"{_worker_http_base(worker)}/internal/download"
+    return await _stream_from_worker(
+        "GET", url, worker=worker, params={"project_path": project_path, "path": path}
+    )
+
+
+@app.get("/api/zip")
+async def zip_proxy(
+    request: Request,
+    worker_id: str,
+    project_path: str,
+    base: str = "",
+    name: str = "files.zip",
+) -> StreamingResponse:
+    """Zip a set of project paths on a worker and stream the archive back.
+
+    Paths arrive as repeated `path` query params so the whole thing is a plain
+    anchor navigation (best mobile save UX). CF Access auth, then POST the list
+    to the worker's /internal/zip.
+    """
+    await _auth_download_request(request)
+    paths = request.query_params.getlist("path")
+    if not paths:
+        raise HTTPException(status_code=400, detail="at least one path required")
+
+    worker = next((w for w in load_workers() if w.id == worker_id), None)
+    if worker is None:
+        raise HTTPException(status_code=404, detail=f"unknown worker {worker_id}")
+    if worker.mode == "inbound":
+        raise HTTPException(status_code=501, detail="zip not supported for inbound workers")
+
+    url = f"{_worker_http_base(worker)}/internal/zip"
+    return await _stream_from_worker(
+        "POST",
+        url,
+        worker=worker,
+        json_body={
+            "project_path": project_path,
+            "base": base,
+            "paths": paths,
+            "filename": name,
+        },
     )
 
 

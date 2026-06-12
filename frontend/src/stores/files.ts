@@ -43,6 +43,12 @@ type FilesState = {
   /** True while a write_file request is in flight. */
   saving: boolean;
 
+  /** Multi-select mode in the directory listing (entered via long-press). */
+  selectionMode: boolean;
+  /** Selected entries in the current directory, keyed by project-relative
+   *  path -> kind. Cleared whenever the listing changes (navigate/close). */
+  selected: Record<string, "file" | "dir">;
+
   open: (project: ProjectRef) => void;
   close: () => void;
   /** Mark we're about to navigate (so the UI can show a spinner). */
@@ -59,6 +65,12 @@ type FilesState = {
   setEditContent: (content: string) => void;
   /** Mark a save in progress. */
   beginSave: () => void;
+  /** Enter selection mode and select the given entry (long-press). */
+  enterSelection: (path: string, kind: "file" | "dir") => void;
+  /** Toggle one entry's selection (tap while in selection mode). */
+  toggleSelect: (path: string, kind: "file" | "dir") => void;
+  /** Leave selection mode and clear the selection. */
+  clearSelection: () => void;
   handleServerMessage: (msg: ServerMessage) => void;
 };
 
@@ -71,6 +83,8 @@ export const useFilesStore = create<FilesState>((set, get) => ({
   editing: false,
   editContent: "",
   saving: false,
+  selectionMode: false,
+  selected: {},
 
   open: (project) =>
     set({
@@ -82,6 +96,8 @@ export const useFilesStore = create<FilesState>((set, get) => ({
       editing: false,
       editContent: "",
       saving: false,
+      selectionMode: false,
+      selected: {},
     }),
 
   close: () =>
@@ -94,9 +110,11 @@ export const useFilesStore = create<FilesState>((set, get) => ({
       editing: false,
       editContent: "",
       saving: false,
+      selectionMode: false,
+      selected: {},
     }),
 
-  beginNavigate: () => set({ loading: true, error: null, file: null, editing: false, editContent: "", saving: false }),
+  beginNavigate: () => set({ loading: true, error: null, file: null, editing: false, editContent: "", saving: false, selectionMode: false, selected: {} }),
   beginOpenFile: (path) =>
     set({
       loading: true,
@@ -122,6 +140,24 @@ export const useFilesStore = create<FilesState>((set, get) => ({
 
   beginSave: () => set({ saving: true, error: null }),
 
+  enterSelection: (path, kind) =>
+    set({ selectionMode: true, selected: { [path]: kind } }),
+
+  toggleSelect: (path, kind) =>
+    set((s) => {
+      const next = { ...s.selected };
+      if (next[path]) {
+        delete next[path];
+      } else {
+        next[path] = kind;
+      }
+      // Leaving zero selected keeps selection mode on so the user can pick
+      // again without re-long-pressing; Cancel is the explicit exit.
+      return { selected: next };
+    }),
+
+  clearSelection: () => set({ selectionMode: false, selected: {} }),
+
   handleServerMessage: (msg) => {
     const state = get();
     if (!state.project) return;
@@ -139,6 +175,8 @@ export const useFilesStore = create<FilesState>((set, get) => ({
         editing: false,
         editContent: "",
         saving: false,
+        selectionMode: false,
+        selected: {},
       });
       return;
     }

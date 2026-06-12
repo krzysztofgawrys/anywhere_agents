@@ -35,16 +35,33 @@ Inbound-mode env vars:
 """
 
 import os
+import tempfile
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, WebSocket, status
-from fastapi.responses import JSONResponse
+from fastapi import (
+    Body,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    status,
+)
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.background import BackgroundTask
 
 from worker_shared.db import db
-from worker_shared.files import FileBrowserError, upload_file
+from worker_shared.files import (
+    FileBrowserError,
+    build_zip,
+    resolve_download_path,
+    upload_file,
+)
 from worker_shared.projects.service import get_project_by_path
 from worker_shared.sdk.registry import registry
 
@@ -215,6 +232,113 @@ async def internal_upload(
         "size": result["size"],
         "renamed": result["renamed"],
     })
+
+
+def _content_disposition(filename: str) -> str:
+    """RFC 6266 Content-Disposition value, ASCII-safe with a UTF-8 fallback.
+
+    Non-ASCII names break a bare `filename="..."`, so we always emit a
+    sanitized ASCII fallback plus a `filename*` with the percent-encoded
+    UTF-8 original for clients that understand it.
+    """
+    from urllib.parse import quote
+
+    ascii_name = filename.encode("ascii", "replace").decode("ascii").replace('"', "")
+    return (
+        f'attachment; filename="{ascii_name}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    )
+
+
+@app.get("/internal/download")
+async def internal_download(
+    project_path: str,
+    path: str,
+    x_worker_secret: str | None = Header(default=None),
+) -> FileResponse:
+    """Hub-only endpoint streaming a single project file for download.
+
+    Auth + project validation mirror /internal/upload. No size cap (the body
+    streams off disk via FileResponse), so this is also the escape hatch for
+    files too large for the WS-based preview.
+    """
+    if WORKER_SECRET and x_worker_secret != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    project = await get_project_by_path(db, project_path)
+    if not project:
+        raise HTTPException(status_code=403, detail="unknown project path")
+    safe_project_path: str = project["path"]
+
+    try:
+        info = resolve_download_path(safe_project_path, path)
+    except FileBrowserError as exc:
+        logger.warning("download_http_failed", code=exc.code, message=exc.message, path=path)
+        status_code = 404 if exc.code in ("not_found", "not_file") else 400
+        return JSONResponse(  # type: ignore[return-value]
+            status_code=status_code,
+            content={"code": exc.code, "message": exc.message},
+        )
+
+    logger.info("download_http_ok", project_path=safe_project_path, path=info["name"], size=info["size"])
+    return FileResponse(
+        info["abs_path"],
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": _content_disposition(info["name"])},
+    )
+
+
+@app.post("/internal/zip")
+async def internal_zip(
+    body: dict = Body(...),  # noqa: B008
+    x_worker_secret: str | None = Header(default=None),
+) -> FileResponse:
+    """Hub-only endpoint that zips a set of project paths and streams it back.
+
+    Body: { project_path, base, paths: [...], filename? }. `base` is the
+    directory the selection was made in (used to flatten archive names);
+    `paths` are project-root-relative files and/or directories.
+    """
+    if WORKER_SECRET and x_worker_secret != WORKER_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    project_path = body.get("project_path")
+    base = body.get("base", "") or ""
+    paths = body.get("paths")
+    zip_name = body.get("filename") or "files.zip"
+    if not isinstance(project_path, str) or not isinstance(paths, list):
+        raise HTTPException(status_code=400, detail="project_path and paths required")
+
+    project = await get_project_by_path(db, project_path)
+    if not project:
+        raise HTTPException(status_code=403, detail="unknown project path")
+    safe_project_path: str = project["path"]
+
+    # Build into a temp file (not memory) so large selections don't pin RAM,
+    # then stream it back and unlink via a background task once sent.
+    tmp = tempfile.NamedTemporaryFile(prefix="aa-zip-", suffix=".zip", delete=False)
+    try:
+        with tmp:
+            written = build_zip(safe_project_path, base, [str(p) for p in paths], tmp)
+    except FileBrowserError as exc:
+        os.unlink(tmp.name)
+        logger.warning("zip_http_failed", code=exc.code, message=exc.message)
+        status_code = 404 if exc.code == "not_found" else 400
+        return JSONResponse(  # type: ignore[return-value]
+            status_code=status_code,
+            content={"code": exc.code, "message": exc.message},
+        )
+    except Exception:
+        os.unlink(tmp.name)
+        raise
+
+    logger.info("zip_http_ok", project_path=safe_project_path, files=written, name=zip_name)
+    return FileResponse(
+        tmp.name,
+        media_type="application/zip",
+        headers={"Content-Disposition": _content_disposition(zip_name)},
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
 
 
 @app.websocket("/ws")
