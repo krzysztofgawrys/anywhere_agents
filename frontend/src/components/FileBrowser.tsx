@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ClientMessage, DirectoryEntry } from "../types";
 import { useFilesStore } from "../stores/files";
 import { useUploadsStore, type UploadItem } from "../stores/uploads";
+import { Markdown } from "./Markdown";
 
 type Props = {
   send: (msg: ClientMessage) => boolean;
@@ -38,6 +39,9 @@ export function FileBrowser({ send }: Props) {
   // drag.
   const dragDepthRef = useRef(0);
   const [isDragOver, setIsDragOver] = useState(false);
+  // Markdown files open in rendered preview by default; "Raw" in the header
+  // switches to the plain source view. Reset on every file open.
+  const [mdPreview, setMdPreview] = useState(true);
 
   // First-open: ask the server for the project root.
   // Guard on `directory || file`, NOT on `loading` - open() leaves loading=false
@@ -171,6 +175,7 @@ export function FileBrowser({ send }: Props) {
   if (!project) return null;
 
   const canEdit = file && file.encoding === "utf-8" && !file.tooLarge && file.content !== null;
+  const isMarkdownFile = !!canEdit && !!file && /\.(md|markdown)$/i.test(file.path);
 
   const navigateTo = (path: string) => {
     if (!project) return;
@@ -183,6 +188,7 @@ export function FileBrowser({ send }: Props) {
 
   const openFile = (path: string) => {
     if (!project) return;
+    setMdPreview(true);
     beginOpenFile(path);
     send({
       type: "read_file",
@@ -228,6 +234,16 @@ export function FileBrowser({ send }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {isMarkdownFile && !editing && (
+            <button
+              type="button"
+              onClick={() => setMdPreview((p) => !p)}
+              className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
+              title={mdPreview ? "Show raw markdown source" : "Show rendered markdown"}
+            >
+              {mdPreview ? "Raw" : "Preview"}
+            </button>
+          )}
           {file && canEdit && !editing && (
             <button
               type="button"
@@ -321,6 +337,7 @@ export function FileBrowser({ send }: Props) {
             onEditChange={setEditContent}
             onSave={saveFile}
             saving={saving}
+            renderMarkdown={isMarkdownFile && mdPreview}
           />
         )}
 
@@ -420,9 +437,11 @@ type FileViewerProps = {
   onEditChange: (content: string) => void;
   onSave: () => void;
   saving: boolean;
+  /** Render UTF-8 content as markdown (rendered .md preview) instead of <pre>. */
+  renderMarkdown: boolean;
 };
 
-function FileViewer({ file, editing, editContent, onEditChange, onSave, saving }: FileViewerProps) {
+function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, renderMarkdown }: FileViewerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Focus textarea when entering edit mode.
@@ -492,6 +511,14 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving }
           spellCheck={false}
           disabled={saving}
         />
+      </div>
+    );
+  }
+
+  if (renderMarkdown) {
+    return (
+      <div className="prose prose-invert prose-sm md:prose-base max-w-none break-words p-3 md:p-4">
+        <Markdown>{file.content ?? ""}</Markdown>
       </div>
     );
   }

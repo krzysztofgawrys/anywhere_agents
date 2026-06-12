@@ -1,8 +1,6 @@
 import React from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
-import rehypeHighlight from "rehype-highlight";
 import type { ChatMessage } from "../types";
+import { Markdown } from "./Markdown";
 import { ToolBlock } from "./ToolBlock";
 
 type Props = { message: ChatMessage; searchQuery?: string };
@@ -16,22 +14,6 @@ function highlightText(text: string, query: string): React.ReactNode {
       : part
   );
 }
-
-// Wide content (tables, code blocks) scrolls horizontally *inside* the bubble
-// instead of stretching it past the viewport.
-const mdComponents: Components = {
-  table: ({ node: _node, ...props }) => (
-    <div className="overflow-x-auto my-2 -mx-1 px-1">
-      <table {...props} />
-    </div>
-  ),
-  pre: ({ node: _node, ...props }) => (
-    <pre className="overflow-x-auto" {...props} />
-  ),
-  a: ({ node: _node, ...props }) => (
-    <a {...props} target="_blank" rel="noopener noreferrer" />
-  ),
-};
 
 export function Message({ message, searchQuery }: Props) {
   const isUser = message.role === "user";
@@ -91,13 +73,7 @@ export function Message({ message, searchQuery }: Props) {
                 key={i}
                 className="prose prose-invert prose-sm md:prose-base max-w-none break-words"
               >
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
-                  rehypePlugins={[rehypeHighlight]}
-                  components={mdComponents}
-                >
-                  {block.text}
-                </ReactMarkdown>
+                <Markdown>{block.text}</Markdown>
               </div>
             );
           }
