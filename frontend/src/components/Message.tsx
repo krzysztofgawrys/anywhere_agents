@@ -153,7 +153,7 @@ export function Message({ message, searchQuery }: Props) {
           return null;
         })}
         {!message.finished && !isUser && message.blocks.length === 0 && (
-          <span className="flex items-center gap-1 text-gray-400 py-1" aria-label="Claude is typing">
+          <span className="flex items-center gap-1 text-gray-400 py-1" aria-label="Agent is typing">
             <span className="typing-dot" />
             <span className="typing-dot" />
             <span className="typing-dot" />

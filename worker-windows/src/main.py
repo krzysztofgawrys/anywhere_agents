@@ -185,7 +185,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         _active_modules.clear()
 
 
-app = FastAPI(title="Claude Web Worker (Windows)", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Agents Anywhere Worker (Windows)", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

@@ -206,7 +206,7 @@ async def handle_websocket(
             if msg_type == "push_notify":
                 payload = msg.get("payload", {})
                 await push_manager.notify_all(
-                    payload.get("title", "Claude finished"),
+                    payload.get("title", "Agent finished"),
                     payload.get("body", ""),
                 )
                 return

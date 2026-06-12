@@ -1,4 +1,4 @@
-# Claude Web Worker (GitHub Copilot SDK) - standalone compose for remote machines
+# Agents Anywhere Worker (GitHub Copilot SDK) - standalone compose for remote machines
 #
 # ⚠️  This is the EXAMPLE/template. Copy it to worker-copilot-compose.yml
 #     (which is gitignored) and fill in real secrets there. NEVER commit the

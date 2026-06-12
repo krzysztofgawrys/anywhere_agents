@@ -1,6 +1,6 @@
 {
-  "name": "Claude Web",
-  "short_name": "Claude",
+  "name": "Agents Anywhere",
+  "short_name": "Agents",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#111827",

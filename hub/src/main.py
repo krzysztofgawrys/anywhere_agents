@@ -60,7 +60,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     logger.info("hub_shutdown")
 
 
-app = FastAPI(title="Claude Web Hub", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Agents Anywhere Hub", version="0.1.0", lifespan=lifespan)
 
 # Prefer a volume-mounted static dir (for live dev rebuilds from worker-claude)
 # over the baked-in copy from the Docker image build.
@@ -98,7 +98,7 @@ async def push_unsubscribe(body: dict = Body(...)) -> JSONResponse:
 @app.post("/api/push/test")
 async def push_test() -> JSONResponse:
     subs = len(push_manager._subscriptions)  # type: ignore[attr-defined]
-    await push_manager.notify_all("Claude finished", "Task completed - tap to view.")
+    await push_manager.notify_all("Agent finished", "Task completed - tap to view.")
     return JSONResponse({"subscribers": subs})
 
 
@@ -123,7 +123,7 @@ async def internal_push(
     if not expected or x_worker_secret != expected:
         raise HTTPException(status_code=401, detail="unauthorized")
     await push_manager.notify_all(
-        body.get("title", "Claude finished"),
+        body.get("title", "Agent finished"),
         body.get("body", ""),
     )
     return JSONResponse({"ok": True})

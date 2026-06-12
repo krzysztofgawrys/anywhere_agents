@@ -457,8 +457,8 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
   if (file.tooLarge) {
     return (
       <div className="m-3 p-4 rounded bg-yellow-950/30 border border-yellow-800 text-sm text-yellow-200">
-        File is too large to preview ({formatSize(file.size)}). Open it from a
-        Claude prompt instead.
+        File is too large to preview ({formatSize(file.size)}). Open it from an
+        agent prompt instead.
       </div>
     );
   }

@@ -1,4 +1,4 @@
-"""Shared modules for Claude Web workers.
+"""Shared modules for Agents Anywhere workers.
 
 Re-exports nothing - submodules are imported explicitly by callers:
     from worker_shared.db import db

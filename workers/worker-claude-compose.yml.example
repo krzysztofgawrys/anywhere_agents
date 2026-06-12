@@ -1,4 +1,4 @@
-# Claude Web Worker (Claude SDK) - standalone compose for remote machines
+# Agents Anywhere Worker (Claude SDK) - standalone compose for remote machines
 #
 # Two deployment modes. Pick ONE by setting WORKER_MODE in .env:
 #

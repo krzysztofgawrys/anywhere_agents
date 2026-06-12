@@ -1,4 +1,4 @@
-/* Service Worker - handles Web Push notifications for Claude Web */
+/* Service Worker - handles Web Push notifications for Agents Anywhere */
 
 self.addEventListener('install', () => {
   self.skipWaiting();
@@ -15,7 +15,7 @@ self.addEventListener('fetch', (event) => {
 });
 
 self.addEventListener('push', (event) => {
-  let title = 'Claude';
+  let title = 'Agents Anywhere';
   let body = '';
   let icon = '/icon-192-v2.png';
 

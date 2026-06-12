@@ -304,7 +304,7 @@ function App() {
         // Skip local notification when Web Push is active - the server
         // already sends a push_notify that the SW displays.
         if (!hasPushSubscription) {
-          notifyIfHidden("Claude finished", "Task completed - tap to view.");
+          notifyIfHidden("Agent finished", "Task completed - tap to view.");
         }
       }
       if (msg.type === "result" && pendingHistoryRefreshRef.current) {
@@ -1016,7 +1016,7 @@ function App() {
               </svg>
             </button>
             <h1 className="text-base md:text-lg font-semibold truncate">
-              {activeCwd ? truncatePath(activeCwd) : "Claude Web"}
+              {activeCwd ? truncatePath(activeCwd) : "Agents Anywhere"}
             </h1>
             <div className="flex items-center gap-1.5 shrink-0">
               <div

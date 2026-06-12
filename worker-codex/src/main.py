@@ -115,7 +115,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await stop_client()
 
 
-app = FastAPI(title="Claude Web Worker (Codex)", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Agents Anywhere Worker (Codex)", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

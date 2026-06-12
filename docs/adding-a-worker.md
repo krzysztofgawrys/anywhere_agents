@@ -441,7 +441,7 @@ cp worker-copilot/src/main.py worker-<name>/src/main.py
 
 Then in that copy, change:
 - The module docstring header to `worker-<name>`.
-- `app = FastAPI(title="Claude Web Worker (<Name>)", ...)`
+- `app = FastAPI(title="Agents Anywhere Worker (<Name>)", ...)`
 - The `WORKER_TYPE` default in `_build_dialer()` and in the inbound-mode
   docstring (used as the `type` field when the worker registers with
   the hub in reverse mode).
