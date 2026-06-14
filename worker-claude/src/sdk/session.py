@@ -49,6 +49,22 @@ _BOOTSTRAP_INSTRUCTIONS = (
     "in the worker's local volume - the agent SDK rotates from there."
 )
 
+# Appended to every web-chat session's system prompt. The agent's replies are
+# rendered in the browser (mermaid diagrams, KaTeX math, syntax highlighting),
+# but that rendering is invisible to the model - so we tell it what the surface
+# supports. Kept short to avoid per-turn context bloat.
+_RENDER_DIRECTIVE = """
+## Output rendering
+
+Your replies are shown in a web chat that renders GitHub-flavored Markdown, LaTeX math via \
+KaTeX (`$inline$` and `$$block$$`), syntax-highlighted code blocks, and Mermaid diagrams. When \
+a diagram makes an explanation clearer (architecture, request/data flow, sequence, state \
+machine, ER, class hierarchy), emit a ```mermaid fenced block - it renders as an SVG the user \
+can zoom, pan, and download as SVG or PNG. Keep Mermaid node labels short and plain text: HTML \
+labels are disabled, so use `<br/>` for line breaks but no other markup. Reach for these when \
+they genuinely aid understanding; plain prose is fine for simple answers.
+""".strip()
+
 
 def claude_has_credentials() -> bool:
     """Module-level helper: True iff Claude SDK can authenticate now.
@@ -309,6 +325,12 @@ class Session:
         if self._resume is None:
             opts["session_id"] = self._session_id
 
+        # Tell the agent what its output surface can render (mermaid / math /
+        # highlighting). The web chat is the only surface worker-claude serves,
+        # so this applies to every session; the knowledge directive (when wired
+        # below) is appended after it into the single `append` the SDK accepts.
+        append = _RENDER_DIRECTIVE
+
         # ── Project Knowledge wiring ────────────────────────────────────
         # Always expose the tools + directive when enabled and the project
         # is known (even on an empty base) so the agent can start building
@@ -322,11 +344,13 @@ class Session:
                 )
             }
             opts["allowed_tools"] = kt.tool_allow_patterns()
-            opts["system_prompt"] = {
-                "type": "preset",
-                "preset": "claude_code",
-                "append": kt.KNOWLEDGE_DIRECTIVE,
-            }
+            append = f"{append}\n\n{kt.KNOWLEDGE_DIRECTIVE}"
+
+        opts["system_prompt"] = {
+            "type": "preset",
+            "preset": "claude_code",
+            "append": append,
+        }
 
         options = ClaudeAgentOptions(**opts)
         self._client = ClaudeSDKClient(options=options)
