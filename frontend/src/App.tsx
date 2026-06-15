@@ -1003,107 +1003,109 @@ function App() {
       />
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        <header className="border-b border-gray-800 px-3 md:px-4 py-2 md:py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 md:gap-3 min-w-0">
-            <button
-              type="button"
-              onClick={() => setSidebarOpen(true)}
-              className="md:hidden p-1 -ml-1 text-gray-400 hover:text-white"
-              aria-label="Open sidebar"
-            >
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                <path d="M3 5h14v2H3zm0 4h14v2H3zm0 4h14v2H3z" />
-              </svg>
-            </button>
-            <h1 className="text-base md:text-lg font-semibold truncate">
-              {activeCwd ? truncatePath(activeCwd) : "Agents Anywhere"}
-            </h1>
-            <div className="flex items-center gap-1.5 shrink-0">
+        <header className="border-b border-gray-800 px-3 md:px-4 py-2 flex items-start gap-2 md:gap-3">
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            className="md:hidden p-1 -ml-1 mt-0.5 text-gray-400 hover:text-white shrink-0"
+            aria-label="Open sidebar"
+          >
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <path d="M3 5h14v2H3zm0 4h14v2H3zm0 4h14v2H3z" />
+            </svg>
+          </button>
+          <div className="flex flex-col gap-1 min-w-0 flex-1">
+            {/* Top row: title/path */}
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-xs font-mono text-gray-300 truncate min-w-0">
+                {activeCwd ? truncatePath(activeCwd) : "Agents Anywhere"}
+              </h1>
+              {readOnly && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-300 border border-yellow-700/60 shrink-0">
+                  read-only
+                </span>
+              )}
+            </div>
+            {/* Bottom row: connection + controls */}
+            <div className="text-xs text-gray-500 flex items-center gap-2 md:gap-3 flex-wrap">
               <div
-                className={`w-2 h-2 rounded-full ${
+                className={`w-2 h-2 rounded-full shrink-0 ${
                   connected ? "bg-green-400" : "bg-red-400"
                 }`}
               />
-            </div>
-            {readOnly && (
-              <span className="text-xs px-2 py-0.5 rounded bg-yellow-900/40 text-yellow-300 border border-yellow-700/60">
-                read-only
-              </span>
-            )}
-          </div>
-          <div className="text-xs text-gray-500 shrink-0 flex items-center gap-3">
-            {messages.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setSearchOpen((v) => !v)}
-                className={`p-1 rounded border transition-colors ${
-                  searchOpen
-                    ? "bg-gray-700 text-gray-200 border-gray-600"
-                    : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
-                }`}
-                title="Search messages"
-                aria-label="Search messages"
-              >
-                <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="8.5" cy="8.5" r="5.5" />
-                  <line x1="13" y1="13" x2="18" y2="18" />
-                </svg>
-              </button>
-            )}
-            {(activeProjectId !== null || activeSessionId !== null) && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (terminalMounted) {
-                    setTerminalOpen((v) => !v);
-                  } else {
-                    setTerminalMounted(true);
-                    setTerminalOpen(true);
-                  }
-                }}
-                className={`text-xs px-2 py-1 rounded border transition-colors font-mono ${
-                  terminalOpen
-                    ? "bg-gray-700 text-gray-200 border-gray-600"
-                    : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
-                }`}
-                title="Toggle terminal"
-              >
-                &gt;_
-              </button>
-            )}
-            {activeSessionId && (
-              <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
-                <span className="hover:text-gray-300" title="Change with /model">
-                  {selectedModel ? selectedModel.replace("claude-", "").split("-202")[0] : "default"}
-                </span>
-                {selectedEffort && (
-                  <>
-                    <span className="text-gray-600">/</span>
-                    <span className="text-purple-400 hover:text-purple-300" title="Change with /effort">
-                      {selectedEffort}
-                    </span>
-                  </>
-                )}
-                <span className="text-gray-600">|</span>
-                <span className={planMode ? "text-blue-400" : ""} title="Toggle with /plan or /act">
-                  {planMode ? "plan" : "act"}
-                </span>
-                <span className="text-gray-600">|</span>
+              {messages.length > 0 && (
                 <button
                   type="button"
-                  onClick={onToggleAutoApprove}
-                  className={`hover:text-gray-300 transition-colors ${autoApprove ? "text-yellow-400" : ""}`}
-                  title={autoApprove ? "Auto-approve ON - click to disable" : "Click to auto-approve every tool"}
+                  onClick={() => setSearchOpen((v) => !v)}
+                  className={`p-1 rounded border transition-colors ${
+                    searchOpen
+                      ? "bg-gray-700 text-gray-200 border-gray-600"
+                      : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
+                  }`}
+                  title="Search messages"
+                  aria-label="Search messages"
                 >
-                  auto {autoApprove ? "on" : "off"}
+                  <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="8.5" cy="8.5" r="5.5" />
+                    <line x1="13" y1="13" x2="18" y2="18" />
+                  </svg>
                 </button>
-              </div>
-            )}
-            {activeSessionId && (
-              <span className="font-mono hidden md:inline" title={activeSessionId}>
-                {activeSessionId.slice(0, 8)}
-              </span>
-            )}
+              )}
+              {(activeProjectId !== null || activeSessionId !== null) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (terminalMounted) {
+                      setTerminalOpen((v) => !v);
+                    } else {
+                      setTerminalMounted(true);
+                      setTerminalOpen(true);
+                    }
+                  }}
+                  className={`text-xs px-2 py-0.5 rounded border transition-colors font-mono ${
+                    terminalOpen
+                      ? "bg-gray-700 text-gray-200 border-gray-600"
+                      : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700"
+                  }`}
+                  title="Toggle terminal"
+                >
+                  &gt;_
+                </button>
+              )}
+              {activeSessionId && (
+                <div className="flex items-center gap-1.5 text-[10px] text-gray-500">
+                  <span className="hover:text-gray-300" title="Change with /model">
+                    {selectedModel ? selectedModel.replace("claude-", "").split("-202")[0] : "default"}
+                  </span>
+                  {selectedEffort && (
+                    <>
+                      <span className="text-gray-600">/</span>
+                      <span className="text-purple-400 hover:text-purple-300" title="Change with /effort">
+                        {selectedEffort}
+                      </span>
+                    </>
+                  )}
+                  <span className="text-gray-600">|</span>
+                  <span className={planMode ? "text-blue-400" : ""} title="Toggle with /plan or /act">
+                    {planMode ? "plan" : "act"}
+                  </span>
+                  <span className="text-gray-600">|</span>
+                  <button
+                    type="button"
+                    onClick={onToggleAutoApprove}
+                    className={`hover:text-gray-300 transition-colors ${autoApprove ? "text-yellow-400" : ""}`}
+                    title={autoApprove ? "Auto-approve ON - click to disable" : "Click to auto-approve every tool"}
+                  >
+                    auto {autoApprove ? "on" : "off"}
+                  </button>
+                </div>
+              )}
+              {activeSessionId && (
+                <span className="font-mono hidden md:inline text-[10px]" title={activeSessionId}>
+                  {activeSessionId.slice(0, 8)}
+                </span>
+              )}
+            </div>
           </div>
         </header>
 
