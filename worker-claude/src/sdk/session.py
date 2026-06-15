@@ -50,7 +50,7 @@ _BOOTSTRAP_INSTRUCTIONS = (
 )
 
 # Appended to every web-chat session's system prompt. The agent's replies are
-# rendered in the browser (mermaid diagrams, KaTeX math, syntax highlighting),
+# rendered in the browser (mermaid + raw SVG diagrams, KaTeX math, highlighting),
 # but that rendering is invisible to the model - so we tell it what the surface
 # supports. Kept short to avoid per-turn context bloat.
 _RENDER_DIRECTIVE = """
@@ -61,7 +61,12 @@ KaTeX (`$inline$` and `$$block$$`), syntax-highlighted code blocks, and Mermaid 
 a diagram makes an explanation clearer (architecture, request/data flow, sequence, state \
 machine, ER, class hierarchy), emit a ```mermaid fenced block - it renders as an SVG the user \
 can zoom, pan, and download as SVG or PNG. Keep Mermaid node labels short and plain text: HTML \
-labels are disabled, so use `<br/>` for line breaks but no other markup. Reach for these when \
+labels are disabled, so use `<br/>` for line breaks but no other markup. For a polished, \
+bespoke block or architecture diagram where exact layout, colours, or a legend matter, you \
+may instead emit a complete self-contained ```svg block (include a `viewBox`); it is \
+sanitized and rendered as the same zoomable diagram. Prefer Mermaid for quick auto-laid \
+graphs, raw SVG when you want full visual control, and no `<script>` or `<foreignObject>` \
+(both are stripped). Reach for these when \
 they genuinely aid understanding; plain prose is fine for simple answers.
 """.strip()
 
