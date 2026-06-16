@@ -65,6 +65,14 @@ COPY shared/ /shared/
 COPY worker-copilot/src/ /app/src/
 COPY docker/entrypoint.sh /entrypoint.sh
 
+# `fetch`: browser-impersonating HTTP client (curl_cffi) for agents. Plain
+# `curl` is fingerprinted as a bot (JA3/JA4 TLS + HTTP/2) and silently reset by
+# Akamai/Cloudflare-fronted sites regardless of headers. `fetch` mimics a real
+# browser's TLS fingerprint and gets through. See docs/curl-akamai-bypass.md.
+RUN pip install --no-cache-dir curl_cffi
+COPY docker/fetch /usr/local/bin/fetch
+RUN chmod +x /usr/local/bin/fetch
+
 ENV HOME=/home/app \
     PATH="/app/.venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \

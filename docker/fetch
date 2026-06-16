@@ -1,0 +1,102 @@
+#!/usr/local/bin/python3
+"""
+fetch - a curl-like HTTP client that impersonates a real browser's TLS/HTTP-2
+fingerprint, so it gets through Akamai/Cloudflare/etc. bot-mitigation that
+silently resets plain `curl` (which is fingerprinted as a bot regardless of
+User-Agent headers).
+
+Backed by curl_cffi (libcurl + browser TLS impersonation). Use this instead of
+`curl` whenever a site returns nothing / resets the connection / 403s a bare
+curl. For normal/internal hosts plain `curl` is fine; reach for `fetch` only
+when curl is being blocked.
+
+Usage:
+  fetch URL                         # body to stdout, status to stderr
+  fetch URL -o file.pdf             # save body to file
+  fetch URL -H 'Accept: ...' -H ... # extra request headers (repeatable)
+  fetch URL -X POST -d 'body'       # method + request body
+  fetch URL --impersonate firefox   # pick a profile (default: chrome)
+  fetch URL --fail                  # exit 22 on HTTP >= 400 (like curl -f)
+  fetch URL -I                      # HEAD: print response headers only
+  fetch URL -s                      # silent: no status line on stderr
+
+Exit codes: 0 ok, 22 with --fail on HTTP>=400, 1 network/other error.
+"""
+import argparse
+import sys
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="fetch", add_help=True,
+                                 description="browser-impersonating curl replacement for WAF-blocked hosts")
+    ap.add_argument("url")
+    ap.add_argument("-o", "--output", help="write body to FILE instead of stdout")
+    ap.add_argument("-H", "--header", action="append", default=[], metavar="'K: V'",
+                    help="add request header (repeatable)")
+    ap.add_argument("-X", "--method", default=None, help="HTTP method (default GET, or POST if -d)")
+    ap.add_argument("-d", "--data", default=None, help="request body")
+    ap.add_argument("-A", "--user-agent", default=None, help="override User-Agent")
+    ap.add_argument("--impersonate", default="chrome",
+                    help="browser profile: chrome, chrome110, firefox, safari, edge, ... (default chrome)")
+    ap.add_argument("--max-time", type=float, default=60.0, help="timeout in seconds (default 60)")
+    ap.add_argument("-L", "--location", action="store_true", default=True,
+                    help="follow redirects (default on)")
+    ap.add_argument("--no-location", dest="location", action="store_false",
+                    help="do not follow redirects")
+    ap.add_argument("-I", "--head", action="store_true", help="HEAD request, print response headers")
+    ap.add_argument("--fail", action="store_true", help="exit 22 on HTTP status >= 400")
+    ap.add_argument("-s", "--silent", action="store_true", help="suppress the status line on stderr")
+    args = ap.parse_args()
+
+    try:
+        from curl_cffi import requests
+    except ImportError:
+        sys.stderr.write("fetch: curl_cffi not installed (pip install curl_cffi)\n")
+        return 1
+
+    headers = {}
+    for h in args.header:
+        if ":" not in h:
+            sys.stderr.write(f"fetch: bad header (need 'Key: Value'): {h}\n")
+            return 1
+        k, v = h.split(":", 1)
+        headers[k.strip()] = v.strip()
+    if args.user_agent:
+        headers["User-Agent"] = args.user_agent
+
+    method = args.method or ("HEAD" if args.head else ("POST" if args.data is not None else "GET"))
+
+    try:
+        r = requests.request(
+            method, args.url,
+            headers=headers or None,
+            data=args.data,
+            impersonate=args.impersonate,
+            timeout=args.max_time,
+            allow_redirects=args.location,
+        )
+    except Exception as e:  # network / TLS / timeout
+        sys.stderr.write(f"fetch: {type(e).__name__}: {e}\n")
+        return 1
+
+    if not args.silent:
+        sys.stderr.write(f"fetch: {r.status_code} {len(r.content)} bytes "
+                         f"{r.headers.get('content-type', '')}\n")
+
+    if args.head:
+        for k, v in r.headers.items():
+            sys.stdout.write(f"{k}: {v}\n")
+    elif args.output:
+        with open(args.output, "wb") as f:
+            f.write(r.content)
+    else:
+        sys.stdout.buffer.write(r.content)
+        sys.stdout.buffer.flush()
+
+    if args.fail and r.status_code >= 400:
+        return 22
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
