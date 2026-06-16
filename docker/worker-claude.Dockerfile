@@ -26,6 +26,18 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /root/.npm
 
+# GitHub CLI (`gh`): used by agents to read Dependabot alerts, manage PRs/issues
+# and call the GitHub API. Installed from the official release tarball so we
+# avoid the apt-repo + gnupg keyring dance on slim. `dpkg --print-architecture`
+# yields amd64/arm64, matching gh's release asset naming.
+ARG GH_VERSION=2.94.0
+RUN arch="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${arch}.tar.gz" -o /tmp/gh.tar.gz \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp \
+    && mv "/tmp/gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${arch}" \
+    && gh --version
+
 RUN mkdir -p /home/app && chmod 777 /home/app \
     && chmod a+w /etc/passwd /etc/group
 
