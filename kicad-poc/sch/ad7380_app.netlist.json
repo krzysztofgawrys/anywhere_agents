@@ -1,0 +1,28 @@
+{
+  "title": "AD7380 decoupling + SPI breakout (PoC)",
+  "project": "ad7380_app",
+  "libdirs": ["/tmp/kicad-symbols"],
+  "local_libs": {"Custom": "../AD7380BCPZ-RL.kicad_sym"},
+  "parts": [
+    {"ref": "U1", "lib_id": "Custom:AD7380BCPZ-RL", "value": "AD7380BCPZ-RL"},
+    {"ref": "C1", "lib_id": "Device:C", "value": "1uF"},
+    {"ref": "C2", "lib_id": "Device:C", "value": "1uF"},
+    {"ref": "C3", "lib_id": "Device:C", "value": "1uF"},
+    {"ref": "C4", "lib_id": "Device:C", "value": "100nF"},
+    {"ref": "C5", "lib_id": "Device:C", "value": "1uF"},
+    {"ref": "J1", "lib_id": "Connector_Generic:Conn_01x08", "value": "SPI"}
+  ],
+  "nets": [
+    {"name": "VCC",    "pins": ["U1.4", "C1.1", "J1.1"]},
+    {"name": "VLOGIC", "pins": ["U1.2", "C2.1"]},
+    {"name": "GND",    "pins": ["U1.1", "U1.10", "U1.17", "C1.2", "C2.2", "C3.2", "C4.2", "C5.2", "J1.2", "J1.8"]},
+    {"name": "REGCAP", "pins": ["U1.3", "C3.1"]},
+    {"name": "REFCAP", "pins": ["U1.9", "C4.1"]},
+    {"name": "REFIO",  "pins": ["U1.11", "C5.1"]},
+    {"name": "SCLK",   "pins": ["U1.16", "J1.3"]},
+    {"name": "SDI",    "pins": ["U1.15", "J1.4"]},
+    {"name": "CS",     "pins": ["U1.12", "J1.5"]},
+    {"name": "SDOA",   "pins": ["U1.13", "J1.6"]},
+    {"name": "SDOB",   "pins": ["U1.14", "J1.7"]}
+  ]
+}

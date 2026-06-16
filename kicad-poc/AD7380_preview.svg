@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 460 460" font-family="monospace" font-size="11">
+<rect x="0" y="0" width="460" height="460" fill="#fffef5"/>
+<rect x="128.4" y="128.4" width="203.2" height="203.2" fill="#fbf3c0" stroke="#7a0000" stroke-width="2"/>
+<text x="230" y="116.4" text-anchor="middle" font-weight="bold">AD7380BCPZ-RL</text>
+<line x1="108.08000000000001" y1="148.72" x2="128.4" y2="148.72" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="148.72" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="144.72" text-anchor="middle" fill="#444">8</text>
+<text x="144.4" y="124.72" text-anchor="start" fill="#003">AINA+</text>
+<line x1="108.08000000000001" y1="169.04" x2="128.4" y2="169.04" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="169.04" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="165.04" text-anchor="middle" fill="#444">7</text>
+<text x="144.4" y="145.04" text-anchor="start" fill="#003">AINA-</text>
+<line x1="108.08000000000001" y1="189.36" x2="128.4" y2="189.36" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="189.36" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="185.36" text-anchor="middle" fill="#444">6</text>
+<text x="144.4" y="165.36" text-anchor="start" fill="#003">AINB+</text>
+<line x1="108.08000000000001" y1="209.68" x2="128.4" y2="209.68" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="209.68" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="205.68" text-anchor="middle" fill="#444">5</text>
+<text x="144.4" y="185.68" text-anchor="start" fill="#003">AINB-</text>
+<line x1="108.08000000000001" y1="250.32" x2="128.4" y2="250.32" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="250.32" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="246.32" text-anchor="middle" fill="#444">11</text>
+<text x="144.4" y="226.32" text-anchor="start" fill="#003">REFIO</text>
+<line x1="108.08000000000001" y1="270.64" x2="128.4" y2="270.64" stroke="#7a0000" stroke-width="2"/>
+<circle cx="108.08000000000001" cy="270.64" r="3" fill="#c00"/>
+<text x="108.08000000000001" y="266.64" text-anchor="middle" fill="#444">9</text>
+<text x="144.4" y="246.64" text-anchor="start" fill="#003">REFCAP</text>
+<line x1="351.91999999999996" y1="148.72" x2="331.6" y2="148.72" stroke="#7a0000" stroke-width="2"/>
+<circle cx="351.91999999999996" cy="148.72" r="3" fill="#c00"/>
+<text x="351.91999999999996" y="144.72" text-anchor="middle" fill="#444">16</text>
+<text x="315.6" y="124.72" text-anchor="end" fill="#003">SCLK</text>
+<line x1="351.91999999999996" y1="169.04" x2="331.6" y2="169.04" stroke="#7a0000" stroke-width="2"/>
+<circle cx="351.91999999999996" cy="169.04" r="3" fill="#c00"/>
+<text x="351.91999999999996" y="165.04" text-anchor="middle" fill="#444">15</text>
+<text x="315.6" y="145.04" text-anchor="end" fill="#003">SDI</text>
+<line x1="351.91999999999996" y1="189.36" x2="331.6" y2="189.36" stroke="#7a0000" stroke-width="2"/>
+<circle cx="351.91999999999996" cy="189.36" r="3" fill="#c00"/>
+<text x="351.91999999999996" y="185.36" text-anchor="middle" fill="#444">12</text>
+<text x="315.6" y="165.36" text-anchor="end" fill="#003">CS</text>
+<line x1="351.91999999999996" y1="230.0" x2="331.6" y2="230.0" stroke="#7a0000" stroke-width="2"/>
+<circle cx="351.91999999999996" cy="230.0" r="3" fill="#c00"/>
+<text x="351.91999999999996" y="226.0" text-anchor="middle" fill="#444">13</text>
+<text x="315.6" y="206.0" text-anchor="end" fill="#003">SDOA</text>
+<line x1="351.91999999999996" y1="250.32" x2="331.6" y2="250.32" stroke="#7a0000" stroke-width="2"/>
+<circle cx="351.91999999999996" cy="250.32" r="3" fill="#c00"/>
+<text x="351.91999999999996" y="246.32" text-anchor="middle" fill="#444">14</text>
+<text x="315.6" y="226.32" text-anchor="end" fill="#003">SDOB/ALERT</text>
+<line x1="189.36" y1="108.08000000000001" x2="189.36" y2="128.4" stroke="#7a0000" stroke-width="2"/>
+<circle cx="189.36" cy="108.08000000000001" r="3" fill="#c00"/>
+<text x="189.36" y="104.08000000000001" text-anchor="middle" fill="#444">4</text>
+<text x="189.36" y="32.400000000000006" text-anchor="middle" fill="#003">VCC</text>
+<line x1="270.64" y1="108.08000000000001" x2="270.64" y2="128.4" stroke="#7a0000" stroke-width="2"/>
+<circle cx="270.64" cy="108.08000000000001" r="3" fill="#c00"/>
+<text x="270.64" y="104.08000000000001" text-anchor="middle" fill="#444">2</text>
+<text x="270.64" y="32.400000000000006" text-anchor="middle" fill="#003">VLOGIC</text>
+<line x1="169.04" y1="351.91999999999996" x2="169.04" y2="331.6" stroke="#7a0000" stroke-width="2"/>
+<circle cx="169.04" cy="351.91999999999996" r="3" fill="#c00"/>
+<text x="169.04" y="347.91999999999996" text-anchor="middle" fill="#444">1</text>
+<text x="169.04" y="379.6" text-anchor="middle" fill="#003">GND</text>
+<line x1="209.68" y1="351.91999999999996" x2="209.68" y2="331.6" stroke="#7a0000" stroke-width="2"/>
+<circle cx="209.68" cy="351.91999999999996" r="3" fill="#c00"/>
+<text x="209.68" y="347.91999999999996" text-anchor="middle" fill="#444">10</text>
+<text x="209.68" y="379.6" text-anchor="middle" fill="#003">GND</text>
+<line x1="250.32" y1="351.91999999999996" x2="250.32" y2="331.6" stroke="#7a0000" stroke-width="2"/>
+<circle cx="250.32" cy="351.91999999999996" r="3" fill="#c00"/>
+<text x="250.32" y="347.91999999999996" text-anchor="middle" fill="#444">3</text>
+<text x="250.32" y="379.6" text-anchor="middle" fill="#003">REGCAP</text>
+<line x1="290.96000000000004" y1="351.91999999999996" x2="290.96000000000004" y2="331.6" stroke="#7a0000" stroke-width="2"/>
+<circle cx="290.96000000000004" cy="351.91999999999996" r="3" fill="#c00"/>
+<text x="290.96000000000004" y="347.91999999999996" text-anchor="middle" fill="#444">17</text>
+<text x="290.96000000000004" y="379.6" text-anchor="middle" fill="#003">GND</text>
+</svg>
