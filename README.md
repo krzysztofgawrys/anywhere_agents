@@ -353,6 +353,12 @@ docker compose up -d --build hub
 ### Chat & streaming
 - Real-time WS streaming (text deltas, thinking blocks, tool calls)
 - Markdown + syntax highlight (ReactMarkdown + rehype-highlight)
+- LaTeX math via KaTeX (`$inline$` and `$$block$$`)
+- Diagram rendering (shared `Markdown.tsx`): Mermaid fenced blocks draw as
+  auto-laid-out diagrams; SVG - a fenced block or inline `<svg>`, sanitized
+  with DOMPurify - draws model-authored block diagrams. Both render inline with
+  a click-to-zoom lightbox (pan, download as SVG / PNG). The agent is told it
+  can emit either (worker `_RENDER_DIRECTIVE`)
 - LCS diff viewer for Edit / Write tool calls (green/red lines,
   truncation at 200 lines)
 - Activity bar (Thinking / Running tool / Sending) above the composer
