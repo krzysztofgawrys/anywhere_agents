@@ -205,6 +205,14 @@ class Bridge:
                                           "reference": ref, "value": value})
     def label(self, text, x_mm, y_mm, global_=True):
         return self._post("/label", {"text": text, "x_mm": x_mm, "y_mm": y_mm, "global": global_})
+    def save(self):
+        return self._post("/save", {})
+    def erc(self):
+        """Save the open schematic and run kicad-cli ERC headless; returns a
+        flattened violation list (errors/warnings/violations)."""
+        req = urllib.request.Request(self.url + "/erc", b"{}",
+                                     {"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req, timeout=200))   # ERC can be slow
 
 
 # ---------- netlist push ----------

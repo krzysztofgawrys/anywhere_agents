@@ -6,7 +6,7 @@ the environment, so kipy's KiCad() auto-connects to THIS instance. The worker
 (elsewhere) calls the endpoints below. Each mutation goes in a commit (undo).
 """
 import base64
-import os, sys, socket, subprocess, traceback, base64
+import os, sys, socket, subprocess, traceback, base64, json, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = 8761
@@ -275,6 +275,54 @@ def add_junction():
     j = st.Junction()
     j.proto.position.x_nm = from_mm(d["x"]); j.proto.position.y_nm = from_mm(d["y"])
     return jsonify(ok=True, created=len(_commit(sch, j, d.get("commit", "bridge: junction"))))
+
+
+def _sch_file(sch):
+    """Absolute path of the open root schematic on disk."""
+    proj = sch._doc.project
+    return os.path.join(proj.path, sch.name)   # sch.name = project.name + '.kicad_sch'
+
+
+@app.post("/save")
+def save_doc():
+    """Persist the open schematic to its .kicad_sch file."""
+    _, sch = schematic()
+    sch.save()
+    return jsonify(ok=True, path=_sch_file(sch))
+
+
+@app.post("/erc")
+def run_erc():
+    """Save the open schematic, then run `kicad-cli sch erc` on it (headless,
+    same KiCad install) and return a flattened violation list. There is no ERC
+    in the IPC API, so we drive the CLI - which needs a file - hence the save."""
+    k, sch = schematic()
+    sch.save()
+    schfile = _sch_file(sch)
+    cli = k.get_kicad_binary_path("kicad-cli")          # locate kicad-cli(.exe)
+    out = os.path.join(tempfile.gettempdir(), "bridge_erc.json")
+    cmd = [cli, "sch", "erc", "--format", "json", "-o", out,
+           "--severity-all", "--exit-code-violations", schfile]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    report = None
+    if os.path.exists(out):
+        with open(out, encoding="utf-8") as f:
+            report = json.load(f)
+    viols = []
+    for sh in (report or {}).get("sheets", []):
+        for v in sh.get("violations", []):
+            viols.append({
+                "severity": v.get("severity"),
+                "type": v.get("type"),
+                "description": v.get("description"),
+                "items": [it.get("description") for it in v.get("items", [])],
+            })
+    errors = sum(1 for v in viols if v["severity"] == "error")
+    warnings = sum(1 for v in viols if v["severity"] == "warning")
+    return jsonify(ok=True, exit_code=r.returncode, schfile=schfile,
+                   errors=errors, warnings=warnings, violation_count=len(viols),
+                   violations=viols, stderr=(r.stderr or "")[-2000:])
+
 
 def main():
     probe = socket.socket()
