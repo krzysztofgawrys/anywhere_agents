@@ -55,12 +55,36 @@ def _load_symdir(libdirs, nick, name):
     return None, None
 
 
-def load_symbol(lib_id, libdirs):
-    """Return a dict: {pins:[...], graphics:[...], props:{name:(x,y)}}, following extends."""
+def _match_local(p, name):
+    """Resolve a symbol by entryName from a local_libs entry: a .kicad_sym FILE or
+    a DIRECTORY of per-symbol .kicad_sym files."""
+    files = []
+    if os.path.isdir(p):
+        files = [os.path.join(p, f) for f in sorted(os.listdir(p)) if f.endswith(".kicad_sym")]
+    elif os.path.isfile(p):
+        files = [p]
+    for fp in files:
+        for s in SymbolLib.from_file(fp).symbols:
+            if s.entryName == name:
+                return s
+    return None
+
+
+def load_symbol(lib_id, libdirs, local_libs=None):
+    """Return a dict: {pins:[...], graphics:[...], props:{name:(x,y)}}, following extends.
+    Resolves the nick via local_libs (nick -> .kicad_sym file OR a directory of them)
+    first, otherwise via libdirs (<Nick>.kicad_symdir/<Name>.kicad_sym or flat
+    <Nick>.kicad_sym) - matching the file-mode generator's resolver."""
+    local_libs = local_libs or {}
     nick, name = lib_id.split(":", 1)
-    sym, path = _load_symdir(libdirs, nick, name)
-    if sym is None:
-        raise SystemExit(f"{lib_id}: not found in {libdirs}")
+    if nick in local_libs:
+        sym = _match_local(local_libs[nick], name)
+        if sym is None:
+            raise SystemExit(f"{lib_id}: no symbol {name!r} under {local_libs[nick]}")
+    else:
+        sym, _ = _load_symdir(libdirs, nick, name)
+        if sym is None:
+            raise SystemExit(f"{lib_id}: not found in {libdirs} / {list(local_libs)}")
     # gather pins+graphics across units; follow extends for geometry
     def collect(sym):
         pins, gfx = [], []
@@ -74,16 +98,19 @@ def load_symbol(lib_id, libdirs):
                 gfx.append(g)
         return pins, gfx
     pins, gfx = collect(sym)
-    guard = 0
-    while not pins and getattr(sym, "extends", None) and guard < 6:
-        parent, _ = _load_symdir(libdirs, nick, sym.extends)
+    walk, guard = sym, 0
+    while not pins and getattr(walk, "extends", None) and guard < 6:
+        if nick in local_libs:
+            parent = _match_local(local_libs[nick], walk.extends)
+        else:
+            parent, _ = _load_symdir(libdirs, nick, walk.extends)
         if parent is None:
             break
         pins, gfx = collect(parent)
-        sym2 = parent
+        walk = parent
         guard += 1
     props = {}
-    for pr in sym.properties:
+    for pr in sym.properties:          # fields from the resolved (derived) symbol
         props[pr.key] = (pr.position.X, pr.position.Y)
     return dict(nick=nick, name=name, pins=pins, graphics=gfx, props=props)
 
@@ -234,6 +261,7 @@ def push_netlist_live(spec, bridge, libdirs, origin=(60.0, 60.0), dx=30.0, dy=30
     EACH pin of every net (connect-by-name -> KiCad merges them). Agent supplies
     only the netlist."""
     scaffold = open(SCAFFOLD, "rb").read()
+    local_libs = spec.get("local_libs") or {}
     ox, oy = origin
     report = {"parts": [], "labels": 0, "label_errors": []}
     placed = {}
@@ -241,7 +269,7 @@ def push_netlist_live(spec, bridge, libdirs, origin=(60.0, 60.0), dx=30.0, dy=30
         x = part.get("x_mm", ox + (i % cols) * dx)
         y = part.get("y_mm", oy + (i // cols) * dy)
         try:
-            sym = load_symbol(part["lib_id"], libdirs)
+            sym = load_symbol(part["lib_id"], libdirs, local_libs)
             b64 = build_symbol_proto(sym, part["ref"], part.get("value", ""), x, y, scaffold)
             r = bridge.place_raw(b64, x, y, part["ref"], part.get("value", ""))
             if r.get("ok"):
@@ -277,6 +305,9 @@ def main(argv):
         else: a = a[1:]
     spec = json.load(open(spec_path))
     libdirs = spec.get("libdirs", libdirs)
+    base = os.path.dirname(os.path.abspath(spec_path))
+    spec["local_libs"] = {k: (v if os.path.isabs(v) else os.path.join(base, v))
+                          for k, v in (spec.get("local_libs") or {}).items()}
     bridge = Bridge(bridge_url)
     h = bridge.health(); print("bridge:", h.get("project"), h.get("symbols"), "symbols")
     rep = push_netlist_live(spec, bridge, libdirs)
