@@ -10,9 +10,8 @@ the bridge. Power symbols (GND/+V/-V) go in a band by sign.
 netlist part fields: ref, lib_id, value, role, near?
   role: input | core | output | decoupling | power | connector_in | connector_out
 """
-import json, sys, base64, urllib.request, urllib.error
+import json, sys, os, base64, urllib.request, urllib.error
 import kicad_live as KL
-import base64
 from kipy.proto.schematic import schematic_types_pb2 as S2
 
 GRID = 1.27
@@ -45,9 +44,11 @@ def _wh(sym):
 
 
 parts_spec_nets=[[]]
-def layout(parts, libdirs, origin=(80.0, 80.0), col_gap=35.0, row_gap=10.0):
+_local_libs=[{}]          # nick -> .kicad_sym file/dir, set by place_all (parity with kicad_live)
+def layout(parts, libdirs, origin=(80.0, 80.0), col_gap=35.0, row_gap=10.0, local_libs=None):
     """Return {ref: (x_mm, y_mm)} for the parts, by role bands."""
-    syms = {p["ref"]: KL.load_symbol(p["lib_id"], libdirs) for p in parts}
+    local_libs = local_libs if local_libs is not None else _local_libs[0]
+    syms = {p["ref"]: KL.load_symbol(p["lib_id"], libdirs, local_libs) for p in parts}
     pos = {}
     ox, oy = origin
     # columns by role
@@ -115,7 +116,8 @@ def place_all(spec, bridge_url):
     bridge = KL.Bridge(bridge_url)
     h = bridge.health(); print("sheet:", h.get("project"), h.get("symbols"), "symbols")
     parts_spec_nets[0] = spec.get("nets", [])
-    pos, syms = layout(spec["parts"], libdirs)
+    _local_libs[0] = spec.get("local_libs") or {}
+    pos, syms = layout(spec["parts"], libdirs, local_libs=_local_libs[0])
     scaffold = open(KL.SCAFFOLD, "rb").read()
     # plan all geometry BEFORE placing, so fields can dodge wires/flags/bodies
     wire_segs, flags, juncs = plan_geometry(spec, pos, syms)
@@ -134,7 +136,7 @@ def place_all(spec, bridge_url):
     # power flags, value field auto-placed too (Reference #PWRxx is hidden)
     nflag = 0
     for f in flags:
-        psym = KL.load_symbol(f["libid"], libdirs)
+        psym = KL.load_symbol(f["libid"], libdirs, _local_libs[0])
         fp = autoplace_fields(psym, f["x"], f["y"], f["ref"], f["value"], obs, orient=f["orient"])
         b64 = KL.build_symbol_proto(psym, f["ref"], f["value"], f["x"], f["y"], scaffold,
                                     orient=f["orient"], field_angle=0, field_pos=fp)
@@ -283,6 +285,11 @@ def autoplace_fields(sym, x, y, ref_text, val_text, obs, orient=0):
 
 
 if __name__ == "__main__":
-    spec = json.load(open(sys.argv[1]))
+    spec_path = sys.argv[1]
+    spec = json.load(open(spec_path))
+    # resolve local_libs paths relative to the spec file (parity with kicad_live)
+    base = os.path.dirname(os.path.abspath(spec_path))
+    spec["local_libs"] = {k: (v if os.path.isabs(v) else os.path.join(base, v))
+                          for k, v in (spec.get("local_libs") or {}).items()}
     url = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--bridge" else "http://172.23.48.1:8761"
     place_all(spec, url)
