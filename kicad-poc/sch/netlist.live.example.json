@@ -1,0 +1,8 @@
+{
+  "libdirs": ["/opt/kicad-symbols"],
+  "parts": [
+    {"ref": "U1", "lib_id": "Amplifier_Instrumentation:INA129", "value": "INA129", "x_mm": 120, "y_mm": 90},
+    {"ref": "R1", "lib_id": "Device:R", "value": "10k", "x_mm": 150, "y_mm": 90}
+  ],
+  "nets": []
+}

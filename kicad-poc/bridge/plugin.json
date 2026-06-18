@@ -1,0 +1,16 @@
+{
+  "identifier": "com.kgawrys.worker-bridge",
+  "name": "Worker Bridge",
+  "description": "HTTP bridge to the open schematic for an external worker/agent.",
+  "runtime": { "type": "python", "min_version": "3.11" },
+  "actions": [
+    {
+      "identifier": "start-bridge",
+      "name": "Start Worker Bridge",
+      "description": "Start the local HTTP bridge (port 8765) bound to THIS KiCad instance.",
+      "show-button": true,
+      "scopes": ["schematic"],
+      "entrypoint": "bridge_entry.py"
+    }
+  ]
+}
