@@ -1,0 +1,16 @@
+{"libdirs":["/tmp/locallib"],
+ "parts":[
+   {"ref":"J1","lib_id":"Connector:Conn_01x02_Pin","value":"IN","role":"input"},
+   {"ref":"U1","lib_id":"Amplifier_Instrumentation:INA129","value":"INA129","role":"core"},
+   {"ref":"Rg","lib_id":"Device:R","value":"49.4","near":"U1"},
+   {"ref":"C1","lib_id":"Device:C","value":"100n","near":"U1"},
+   {"ref":"C2","lib_id":"Device:C","value":"100n","near":"U1"},
+   {"ref":"J2","lib_id":"Connector:Conn_01x02_Pin","value":"OUT","role":"output"}
+ ],
+ "nets":[
+   {"name":"RG","pins":["U1.1","Rg.1"]},
+   {"name":"RG2","pins":["U1.8","Rg.2"]},
+   {"name":"V+","power":"power:+12V","pins":["U1.7","C1.1"]},
+   {"name":"V-","power":"power:-12V","pins":["U1.4","C2.1"]},
+   {"name":"GND","power":"power:GND","pins":["C1.2","C2.2"]}
+ ]}

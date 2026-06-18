@@ -257,6 +257,25 @@ def place_raw():
     created = _commit(sch, inst, d.get("commit", "bridge: place_raw"))
     return jsonify(ok=True, created=len(created), shifted_pins=sp, shifted_fields=sf)
 
+@app.post("/wire")
+def add_wire():
+    d = request.get_json(force=True)
+    _, sch = schematic()
+    ln = st.SchematicLine()
+    ln.proto.start.x_nm = from_mm(d["x1"]); ln.proto.start.y_nm = from_mm(d["y1"])
+    ln.proto.end.x_nm = from_mm(d["x2"]); ln.proto.end.y_nm = from_mm(d["y2"])
+    ln.proto.type = 1   # SLT_WIRE
+    return jsonify(ok=True, created=len(_commit(sch, ln, d.get("commit", "bridge: wire"))))
+
+
+@app.post("/junction")
+def add_junction():
+    d = request.get_json(force=True)
+    _, sch = schematic()
+    j = st.Junction()
+    j.proto.position.x_nm = from_mm(d["x"]); j.proto.position.y_nm = from_mm(d["y"])
+    return jsonify(ok=True, created=len(_commit(sch, j, d.get("commit", "bridge: junction"))))
+
 def main():
     probe = socket.socket()
     try:

@@ -28,6 +28,17 @@ SPO = {0: 1, 90: 3, 180: 2, 270: 4}          # lib pin angle -> SchematicPinOrie
 FILL = {"none": 1, "outline": 2, "background": 4}   # kicad_sym fill type -> GraphicFillType
 
 
+
+def _rot(x, y, deg):
+    """rotate lib coords CCW in lib space (Y-up) by deg in {0,90,180,270}."""
+    d = deg % 360
+    if d == 0:   return (x, y)
+    if d == 90:  return (-y, x)
+    if d == 180: return (-x, -y)
+    return (y, -x)             # 270
+
+_SSO = {0: 1, 90: 2, 180: 3, 270: 4}    # SchematicSymbolOrientation enum
+
 def _d(mm):
     x = B.Distance(); x.value_nm = int(round(mm * MM)); return x
 
@@ -81,10 +92,12 @@ def load_symbol(lib_id, libdirs):
 def _set_polygon(gshape, pts_lib, closed_fill):
     pl = gshape.polygon.polygons.add().outline
     for (x, y) in pts_lib:
-        n = pl.nodes.add(); n.point.x_nm = int(round(x * MM)); n.point.y_nm = int(round(-y * MM))
+        rx, ry = _rot(x, y, _ORIENT[0])
+        n = pl.nodes.add(); n.point.x_nm = int(round(rx * MM)); n.point.y_nm = int(round(-ry * MM))
     pl.closed = False
 
 
+_ORIENT = [0]
 def _graphic_child(scaffold_gfx_child, g):
     """Translate a kiutils graphic item -> a SchematicSymbolChild(SchematicGraphicShape).
     Returns None for unsupported shapes."""
@@ -99,12 +112,17 @@ def _graphic_child(scaffold_gfx_child, g):
     try: stroke_w = float(g.stroke.width) or 0.254
     except Exception: pass
     def V(dst, X, Y):
-        dst.x_nm = int(round(X * MM)); dst.y_nm = int(round(-Y * MM))   # (x, -y), relative
+        rx, ry = _rot(X, Y, _ORIENT[0])
+        dst.x_nm = int(round(rx * MM)); dst.y_nm = int(round(-ry * MM))
     if cls == "SyPolyLine":
         _set_polygon(gs.shape, [(p.X, p.Y) for p in g.points], fill)
     elif cls == "SyRect":
-        V(gs.shape.rectangle.top_left, g.start.X, g.start.Y)
-        V(gs.shape.rectangle.bottom_right, g.end.X, g.end.Y)
+        a = _rot(g.start.X, g.start.Y, _ORIENT[0]); b = _rot(g.end.X, g.end.Y, _ORIENT[0])
+        xs = (a[0], b[0]); ys = (-a[1], -b[1])     # schematic frame (Y-down)
+        gs.shape.rectangle.top_left.x_nm = int(round(min(xs) * MM))
+        gs.shape.rectangle.top_left.y_nm = int(round(min(ys) * MM))
+        gs.shape.rectangle.bottom_right.x_nm = int(round(max(xs) * MM))
+        gs.shape.rectangle.bottom_right.y_nm = int(round(max(ys) * MM))
     elif cls == "SyCircle":
         V(gs.shape.circle.center, g.center.X, g.center.Y)
         V(gs.shape.circle.radius_point, g.center.X + g.radius, g.center.Y)   # point ON the circle
@@ -121,7 +139,7 @@ def _graphic_child(scaffold_gfx_child, g):
     return c
 
 
-def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes):
+def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0):
     """Return base64 of a SchematicSymbolInstance for sym placed at (x_mm,y_mm)."""
     tx, ty = int(round(x_mm * MM)), int(round(y_mm * MM))
     tpl = S.SchematicSymbolInstance(); tpl.ParseFromString(scaffold_bytes)
@@ -134,6 +152,7 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes):
     d.id.library_nickname = sym["nick"]; d.id.entry_name = sym["name"]
     del d.items[:]
     # graphics (relative, Y-flip)
+    _ORIENT[0] = 0   # graphics stay lib-relative; KiCad transform rotates them
     for g in sym["graphics"]:
         try:
             child = _graphic_child(gfx_tpl, g)
@@ -145,9 +164,10 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes):
     for p in sym["pins"]:
         c = copy.deepcopy(pin_tpl); pp = S.SchematicPin(); c.item.Unpack(pp); pp.ClearField("id")
         c.unit.unit = 1
+        rx, ry = _rot(p["x"], p["y"], orient)
         pp.number = str(p["number"]); pp.name = p["name"] or ""
-        pp.position.x_nm = tx + int(round(p["x"] * MM)); pp.position.y_nm = ty - int(round(p["y"] * MM))
-        pp.length.CopyFrom(_d(p["length"])); pp.orientation = SPO.get(p["angle"], 1)
+        pp.position.x_nm = tx + int(round(rx * MM)); pp.position.y_nm = ty - int(round(ry * MM))
+        pp.length.CopyFrom(_d(p["length"])); pp.orientation = SPO.get(p["angle"] % 360, 1)   # raw lib; KiCad rotates via transform
         pp.electrical_type = EPT.get(p["etype"], 5); pp.shape = 1
         c.item.Pack(pp); d.items.append(c)
     # fields (use lib property positions, Y-flipped)
@@ -155,8 +175,10 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes):
         fld.text.text = val
         px, py = sym["props"].get(key, (2.54, 0.0))
         fld.text.position.x_nm = tx + int(round(px * MM)); fld.text.position.y_nm = ty - int(round(py * MM))
+        fld.text.attributes.angle.value_degrees = float(-orient)   # cancel the symbol transform -> field stays horizontal
     setf(inst.reference_field, ref, "Reference")
     setf(inst.value_field, value, "Value")
+    inst.transform.orientation = _SSO.get(orient % 360, 1)
     return base64.b64encode(inst.SerializeToString()).decode()
 
 
