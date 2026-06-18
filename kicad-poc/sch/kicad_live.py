@@ -139,7 +139,7 @@ def _graphic_child(scaffold_gfx_child, g):
     return c
 
 
-def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0):
+def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None):
     """Return base64 of a SchematicSymbolInstance for sym placed at (x_mm,y_mm)."""
     tx, ty = int(round(x_mm * MM)), int(round(y_mm * MM))
     tpl = S.SchematicSymbolInstance(); tpl.ParseFromString(scaffold_bytes)
@@ -173,9 +173,14 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0):
     # fields (use lib property positions, Y-flipped)
     def setf(fld, val, key):
         fld.text.text = val
-        px, py = sym["props"].get(key, (2.54, 0.0))
-        fld.text.position.x_nm = tx + int(round(px * MM)); fld.text.position.y_nm = ty - int(round(py * MM))
-        fld.text.attributes.angle.value_degrees = float(-orient)   # cancel the symbol transform -> field stays horizontal
+        if field_pos and key in field_pos:                       # absolute mm override (autoplaced)
+            ax, ay = field_pos[key]
+            fld.text.position.x_nm = int(round(ax * MM)); fld.text.position.y_nm = int(round(ay * MM))
+        else:
+            px, py = sym["props"].get(key, (2.54, 0.0))
+            fld.text.position.x_nm = tx + int(round(px * MM)); fld.text.position.y_nm = ty - int(round(py * MM))
+        fa = (-orient) if field_angle is None else field_angle
+        fld.text.attributes.angle.value_degrees = float(fa)   # keep field text horizontal/upright
     setf(inst.reference_field, ref, "Reference")
     setf(inst.value_field, value, "Value")
     inst.transform.orientation = _SSO.get(orient % 360, 1)

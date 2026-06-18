@@ -117,22 +117,43 @@ def place_all(spec, bridge_url):
     parts_spec_nets[0] = spec.get("nets", [])
     pos, syms = layout(spec["parts"], libdirs)
     scaffold = open(KL.SCAFFOLD, "rb").read()
+    # plan all geometry BEFORE placing, so fields can dodge wires/flags/bodies
+    wire_segs, flags, juncs = plan_geometry(spec, pos, syms)
+    obs = build_obstacles(spec, pos, syms, wire_segs, flags)
+
+    # main symbols, with each Reference/Value auto-placed clear of obstacles
     for p in spec["parts"]:
         if p["ref"] not in pos:
             print("  SKIP (no role/pos):", p["ref"]); continue
-        x, y = pos[p["ref"]]
-        b64 = KL.build_symbol_proto(syms[p["ref"]], p["ref"], p.get("value", ""), x, y, scaffold)
+        x, y = pos[p["ref"]]; sym = syms[p["ref"]]
+        fp = autoplace_fields(sym, x, y, p["ref"], p.get("value", ""), obs)
+        b64 = KL.build_symbol_proto(sym, p["ref"], p.get("value", ""), x, y, scaffold, field_pos=fp)
         r = bridge.place_raw(b64, x, y, p["ref"], p.get("value", ""))
         print(f"  {'OK ' if r.get('ok') else 'ERR'} {p['ref']:>4} {p.get('role',''):<12} @({x:.1f},{y:.1f}) {r.get('created', r)}")
-    route(spec, bridge, pos, syms)
+
+    # power flags, value field auto-placed too (Reference #PWRxx is hidden)
+    nflag = 0
+    for f in flags:
+        psym = KL.load_symbol(f["libid"], libdirs)
+        fp = autoplace_fields(psym, f["x"], f["y"], f["ref"], f["value"], obs, orient=f["orient"])
+        b64 = KL.build_symbol_proto(psym, f["ref"], f["value"], f["x"], f["y"], scaffold,
+                                    orient=f["orient"], field_angle=0, field_pos=fp)
+        if bridge.place_raw(b64, f["x"], f["y"], f["ref"], f["value"]).get("ok"): nflag += 1
+
+    # wires + junctions last
+    nw = 0
+    for (a, b) in wire_segs:
+        if bridge._post("/wire", {"x1": a[0], "y1": a[1], "x2": b[0], "y2": b[1]}).get("ok"): nw += 1
+    for j in juncs:
+        bridge._post("/junction", {"x": j[0], "y": j[1]})
+    print(f"  routed: {nw} wire segs, {nflag} power flags")
 
 
 
 
-# ---------------- routing ----------------
-import re as _re
-_POWER = _re.compile(r"^(gnd|ground|vcc|vdd|vee|vss|vbus|v\+|v-|[+-]?\d+v\d*)$", _re.I)
+# ---------------- routing geometry (planning, no I/O) ----------------
 _SPO = {0: "R", 90: "U", 180: "L", 270: "D"}
+STUB = 2.54
 
 def _pin_abs(ref_pin, pos, syms):
     ref, pin = ref_pin.split(".", 1)
@@ -143,103 +164,122 @@ def _pin_abs(ref_pin, pos, syms):
             return (px + p["x"], py - p["y"]), _SPO.get(p["angle"], "R")
     return None, None
 
-def _l_route(a, b, orient=None):
-    if abs(a[0]-b[0]) < 1e-6 or abs(a[1]-b[1]) < 1e-6:
-        return [(a, b)]
-    c = (b[0], a[1])                     # horizontal first (stub ends already off-pin)
-    return [(a, c), (c, b)]
+def _radial_stub(a, ref_pin, pos):
+    """Stub end: leave the pin tip outward, radially away from the part center."""
+    owner = ref_pin.split(".")[0]
+    cx, cy = pos.get(owner, (a[0], a[1]))
+    dx, dy = a[0] - cx, a[1] - cy
+    if abs(dx) >= abs(dy):
+        u = (STUB if dx >= 0 else -STUB, 0)
+    else:
+        u = (0, STUB if dy >= 0 else -STUB)
+    return (a[0] + u[0], a[1] + u[1])
 
-
-_FLAG_CACHE = {}
-def _flag_orient(psym, lib_id, pin_dir):
-    """Pick the orient that makes the power-flag graphic point in pin_dir (R/L/U/D)
-    so the flag sits beyond the pin, in the pin's outward direction."""
-    if lib_id not in _FLAG_CACHE:
-        sc = open(KL.SCAFFOLD, "rb").read(); m = {}
-        for o in (0, 90, 180, 270):
-            b = base64.b64decode(KL.build_symbol_proto(psym, "#X", "x", 100, 100, sc, orient=o))
-            inst = S2.SchematicSymbolInstance(); inst.ParseFromString(b)
-            xs = []; ys = []
-            for c in inst.definition.items:
-                if c.item.Is(S2.SchematicGraphicShape.DESCRIPTOR):
-                    g = S2.SchematicGraphicShape(); c.item.Unpack(g)
-                    if g.shape.HasField("polygon"):
-                        for n in g.shape.polygon.polygons[0].outline.nodes:
-                            xs.append(n.point.x_nm); ys.append(n.point.y_nm)
-            if xs:
-                cx = sum(xs) / len(xs); cy = sum(ys) / len(ys)
-                d = ("R" if cx > 3e5 else "L" if cx < -3e5 else
-                     "D" if cy > 3e5 else "U" if cy < -3e5 else "?")
-                m[d] = o
-        _FLAG_CACHE[lib_id] = m
-    return _FLAG_CACHE[lib_id].get(pin_dir, 0)
-
-
-def route(spec, bridge, pos, syms):
-    """Power nets -> a power symbol (GND/V+/V-) flag on every pin (no wire).
-    Other nets -> wires that LEAVE every pin along its axis (a stub outward),
-    then connect the stub ends orthogonally - so a wire never enters a pin
-    through the component body."""
-    STUB = 2.54
-    OUT = {"R": (1, 0), "L": (-1, 0), "U": (0, -1), "D": (0, 1)}   # schematic dirs
-    scaffold = open(KL.SCAFFOLD, "rb").read()
-    wires = flags = 0
-    pwr_idx = [0]
-    def stub_end(a, o):
-        dx, dy = OUT.get(o, (1, 0)); return (a[0] + STUB * dx, a[1] + STUB * dy)
+def plan_geometry(spec, pos, syms):
+    """Compute every wire segment, power-flag spec and junction WITHOUT posting,
+    so field auto-placement can treat them all as obstacles first."""
+    wire_segs = []; flags = []; juncs = []; pwr_idx = [0]
     for net in spec.get("nets", []):
-        pins = [( _pin_abs(pp, pos, syms), pp) for pp in net.get("pins", [])]
+        pins = [(_pin_abs(pp, pos, syms), pp) for pp in net.get("pins", [])]
         pins = [(a, o, pp) for (a, o), pp in pins if a is not None]
         pw = net.get("power")
-        if pw:                                   # power flag: IRON RULE - GND/positive=0, negative=180
-            psym = KL.load_symbol(pw, spec["libdirs"])
+        if pw:                                       # IRON RULE: GND/positive=0, negative 0 above / 180 below
             nm = pw.split(":")[-1].upper()
             negative = nm.startswith("-") or nm in ("VEE", "VSS", "V-")
             for a, o, pp in pins:
                 pwr_idx[0] += 1
-                ref = f"#PWR{pwr_idx[0]:02d}"
-                if negative:                       # 0 if ABOVE the element, 180 if BELOW
-                    owner = pp.split(".")[0]; ocy = pos.get(owner, (a[0], a[1]))[1]
+                if negative:
+                    ocy = pos.get(pp.split(".")[0], (a[0], a[1]))[1]
                     fo = 0 if a[1] < ocy else 180
                 else:
-                    fo = 0                          # GND + positive: always 0
-                b64 = KL.build_symbol_proto(psym, ref, net["name"], a[0], a[1], scaffold, orient=fo)
-                if bridge.place_raw(b64, a[0], a[1], ref, net["name"]).get("ok"): flags += 1
+                    fo = 0
+                flags.append({"libid": pw, "ref": f"#PWR{pwr_idx[0]:02d}",
+                              "value": net["name"], "x": a[0], "y": a[1], "orient": fo})
             continue
         if len(pins) < 2:
             continue
-        # IRON RULE 6: wire exits the pin TIP outward (radially away from the part
-        # body), never through the component. Direction = pin - component center.
-        def radial_stub(a, ref_pin):
-            owner = ref_pin.split(".")[0]
-            cx, cy = pos.get(owner, (a[0], a[1]))
-            dx, dy = a[0] - cx, a[1] - cy
-            if abs(dx) >= abs(dy):
-                u = (STUB if dx >= 0 else -STUB, 0)
-            else:
-                u = (0, STUB if dy >= 0 else -STUB)
-            return (a[0] + u[0], a[1] + u[1])
-        stubs = [(a, radial_stub(a, pp), o) for a, o, pp in pins]
-        # draw each pin's stub
-        for a, se, o in stubs:
-            if bridge._post("/wire", {"x1": a[0], "y1": a[1], "x2": se[0], "y2": se[1]}).get("ok"): wires += 1
-        # connect stub ends: star from stubs[0]. IRON RULE: the segment ARRIVING
-        # at a stub-end must be perpendicular to that stub, so the stub is the
-        # sole colinear path into the pin tip (no overshoot past the pin).
+        stubs = [(a, _radial_stub(a, pp, pos)) for a, o, pp in pins]
+        for a, se in stubs:
+            wire_segs.append((a, se))
         s0 = stubs[0][1]
-        for a, se, o in stubs[1:]:
-            vert = abs(se[1] - a[1]) > abs(se[0] - a[0])   # target stub vertical?
+        for a, se in stubs[1:]:                       # connect: approach a stub perpendicular to it
+            vert = abs(se[1] - a[1]) > abs(se[0] - a[0])
             if abs(s0[0]-se[0]) < 1e-6 or abs(s0[1]-se[1]) < 1e-6:
                 segs = [(s0, se)]
-            elif vert:                                     # approach vertical stub horizontally
+            elif vert:
                 corner = (s0[0], se[1]); segs = [(s0, corner), (corner, se)]
-            else:                                          # approach horizontal stub vertically
+            else:
                 corner = (se[0], s0[1]); segs = [(s0, corner), (corner, se)]
-            for (p, q) in segs:
-                if bridge._post("/wire", {"x1": p[0], "y1": p[1], "x2": q[0], "y2": q[1]}).get("ok"): wires += 1
+            wire_segs.extend(segs)
         if len(stubs) > 2:
-            bridge._post("/junction", {"x": s0[0], "y": s0[1]})
-    print(f"  routed: {wires} wire segs, {flags} power flags")
+            juncs.append(s0)
+    return wire_segs, flags, juncs
+
+
+# ---------------- field auto-placement (collision avoidance) ----------------
+def _body_rect(ref, pos, syms):
+    x, y = pos[ref]; x0, x1, y0, y1 = bbox(syms[ref])
+    return (x + x0, x + x1, y - y1, y - y0)          # abs, schematic Y-down
+
+def _seg_rect(p, q, t=0.5):
+    return (min(p[0], q[0]) - t, max(p[0], q[0]) + t,
+            min(p[1], q[1]) - t, max(p[1], q[1]) + t)
+
+def build_obstacles(spec, pos, syms, wire_segs, flags):
+    obs = []
+    for ref in pos:
+        obs.append(_body_rect(ref, pos, syms))
+    for (p, q) in wire_segs:
+        obs.append(_seg_rect(p, q))
+    for f in flags:                                   # flag graphic ~3.8mm tall + stem
+        obs.append((f["x"] - 1.8, f["x"] + 1.8, f["y"] - 3.81, f["y"] + 3.81))
+    return obs
+
+def _fbox(c, text, m=0.3):
+    w = max(len(str(text)), 1) * 1.27 * 0.85; h = 1.27
+    return (c[0] - w/2 - m, c[0] + w/2 + m, c[1] - h/2 - m, c[1] + h/2 + m)
+
+def _hit(b, o):
+    return not (b[1] <= o[0] or b[0] >= o[1] or b[3] <= o[2] or b[2] >= o[3])
+
+_G = 0.635
+def _snap(c): return (round(c[0]/_G)*_G, round(c[1]/_G)*_G)
+
+def _slide(c, text, obs, d, step=_G, maxd=20):
+    """Slide the field center in direction d until its bbox clears all obstacles."""
+    dx, dy = {"R": (1, 0), "L": (-1, 0), "U": (0, -1), "D": (0, 1)}[d]
+    cx, cy = c; n = 0
+    while n * step <= maxd:
+        if not any(_hit(_fbox((cx, cy), text), o) for o in obs):
+            return (cx, cy)
+        cx += dx * step; cy += dy * step; n += 1
+    return None
+
+def _place_field(c, text, obs):
+    """Iron rule: a field may not overlap a wire/element/pin. If the default
+    position collides, move it to the NEAREST fully-clear side (R/L/U/D)."""
+    if not any(_hit(_fbox(c, text), o) for o in obs):
+        return _snap(c)
+    best = None; bd = 1e9
+    for d in ("R", "L", "U", "D"):
+        p = _slide(c, text, obs, d)
+        if p is not None:
+            dist = abs(p[0]-c[0]) + abs(p[1]-c[1])
+            if dist < bd: bd = dist; best = p
+    return _snap(best if best is not None else c)
+
+def autoplace_fields(sym, x, y, ref_text, val_text, obs, orient=0):
+    """Return {'Reference':(x,y),'Value':(x,y)} (abs mm), each clear of obs.
+    The chosen boxes are appended to obs so later fields dodge them too."""
+    def deflt(key, fb):
+        px, py = sym["props"].get(key, fb)
+        rx, ry = KL._rot(px, py, orient)
+        return (x + rx, y - ry)
+    rpos = _place_field(deflt("Reference", (2.54, 1.27)), ref_text, obs)
+    obs.append(_fbox(rpos, ref_text))
+    vpos = _place_field(deflt("Value", (2.54, -1.27)), val_text, obs)
+    obs.append(_fbox(vpos, val_text))
+    return {"Reference": rpos, "Value": vpos}
 
 
 if __name__ == "__main__":
