@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientMessage, DirectoryEntry } from "../types";
 import { useFilesStore } from "../stores/files";
 import { useUploadsStore, type UploadItem } from "../stores/uploads";
@@ -461,6 +461,9 @@ type ListingProps = {
   onLongPress: (entry: DirectoryEntry, path: string) => void;
 };
 
+type SortKey = "name" | "mtime" | "size";
+type SortDir = "asc" | "desc";
+
 function DirectoryListing({
   loading,
   directory,
@@ -470,6 +473,38 @@ function DirectoryListing({
   onActivate,
   onLongPress,
 }: ListingProps) {
+  // Sort state lives here so it survives directory navigation (the component
+  // stays mounted). Default: name ascending (matches the server's order).
+  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      // Most useful default per column: names A->Z, but newest/biggest first.
+      setSortDir(key === "name" ? "asc" : "desc");
+    }
+  };
+
+  const sortedEntries = useMemo(() => {
+    const entries = directory?.entries ?? [];
+    const dirMul = sortDir === "asc" ? 1 : -1;
+    const byName = (a: DirectoryEntry, b: DirectoryEntry) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+    return [...entries].sort((a, b) => {
+      // Folders always group above files, regardless of sort direction.
+      if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+      let r = 0;
+      if (sortKey === "name") r = byName(a, b);
+      else if (sortKey === "mtime") r = a.mtime - b.mtime;
+      else r = (a.size ?? 0) - (b.size ?? 0);
+      if (r === 0) r = byName(a, b); // stable, readable tie-break
+      return r * dirMul;
+    });
+  }, [directory?.entries, sortKey, sortDir]);
+
   if (loading && !directory) {
     return <div className="text-sm text-gray-500 p-4">Loading…</div>;
   }
@@ -481,39 +516,91 @@ function DirectoryListing({
     directory.path ? `${directory.path}/${name}` : name;
 
   return (
-    <ul className="divide-y divide-gray-800">
-      {directory.parent !== null && (
-        <li>
-          <button
-            type="button"
-            onClick={() => onNavigate(directory.parent ?? "")}
-            className="w-full text-left flex items-center gap-3 px-3 md:px-4 py-2.5 hover:bg-gray-800/50"
-          >
-            <FolderUpIcon />
-            <span className="text-sm text-gray-300">..</span>
-          </button>
-        </li>
-      )}
-      {directory.entries.length === 0 && (
-        <li className="text-sm text-gray-600 px-4 py-6 text-center italic">
-          Empty directory
-        </li>
-      )}
-      {directory.entries.map((entry) => {
-        const path = childPath(entry.name);
-        return (
-          <EntryRow
-            key={entry.name}
-            entry={entry}
-            path={path}
-            selectionMode={selectionMode}
-            isSelected={!!selected[path]}
-            onActivate={onActivate}
-            onLongPress={onLongPress}
-          />
-        );
-      })}
-    </ul>
+    <>
+      <SortHeader
+        sortKey={sortKey}
+        sortDir={sortDir}
+        onSort={toggleSort}
+        selectionMode={selectionMode}
+      />
+      <ul className="divide-y divide-gray-800">
+        {directory.parent !== null && (
+          <li>
+            <button
+              type="button"
+              onClick={() => onNavigate(directory.parent ?? "")}
+              className="w-full text-left flex items-center gap-3 px-3 md:px-4 py-2.5 hover:bg-gray-800/50"
+            >
+              <FolderUpIcon />
+              <span className="text-sm text-gray-300">..</span>
+            </button>
+          </li>
+        )}
+        {sortedEntries.length === 0 && (
+          <li className="text-sm text-gray-600 px-4 py-6 text-center italic">
+            Empty directory
+          </li>
+        )}
+        {sortedEntries.map((entry) => {
+          const path = childPath(entry.name);
+          return (
+            <EntryRow
+              key={entry.name}
+              entry={entry}
+              path={path}
+              selectionMode={selectionMode}
+              isSelected={!!selected[path]}
+              onActivate={onActivate}
+              onLongPress={onLongPress}
+            />
+          );
+        })}
+      </ul>
+    </>
+  );
+}
+
+function SortHeader({
+  sortKey,
+  sortDir,
+  onSort,
+  selectionMode,
+}: {
+  sortKey: SortKey;
+  sortDir: SortDir;
+  onSort: (key: SortKey) => void;
+  selectionMode: boolean;
+}) {
+  const arrow = (key: SortKey) =>
+    sortKey === key ? (
+      <span className="text-[9px] leading-none">{sortDir === "asc" ? "▲" : "▼"}</span>
+    ) : null;
+  return (
+    <div className="sticky top-0 z-10 flex items-center gap-3 px-3 md:px-4 py-2 bg-gray-900/95 backdrop-blur border-b border-gray-800 text-xs font-medium text-gray-400 select-none">
+      {selectionMode && <span className="w-5 shrink-0" />}
+      <span className="w-[18px] shrink-0" />
+      <button
+        type="button"
+        onClick={() => onSort("name")}
+        className="flex-1 text-left inline-flex items-center gap-1 hover:text-gray-200"
+      >
+        Name {arrow("name")}
+      </button>
+      <button
+        type="button"
+        onClick={() => onSort("mtime")}
+        className="w-24 md:w-28 inline-flex items-center justify-end gap-1 hover:text-gray-200"
+      >
+        Modified {arrow("mtime")}
+      </button>
+      <button
+        type="button"
+        onClick={() => onSort("size")}
+        className="w-14 md:w-16 inline-flex items-center justify-end gap-1 hover:text-gray-200"
+      >
+        Size {arrow("size")}
+      </button>
+    </div>
   );
 }
 
@@ -591,6 +678,8 @@ function EntryRow({
     onActivate(entry, path);
   };
 
+  const dateLabel = formatDate(entry.mtime);
+
   return (
     <li>
       <button
@@ -615,11 +704,15 @@ function EntryRow({
         <span className="flex-1 text-sm truncate text-gray-100">
           {entry.name}
         </span>
-        {entry.kind === "file" && entry.size !== null && (
-          <span className="text-xs text-gray-500 font-mono shrink-0">
-            {formatSize(entry.size)}
-          </span>
-        )}
+        <time
+          className="w-24 md:w-28 text-right text-[11px] md:text-xs text-gray-500 font-mono shrink-0"
+          title={dateLabel.full}
+        >
+          {dateLabel.short}
+        </time>
+        <span className="w-14 md:w-16 text-right text-[11px] md:text-xs text-gray-500 font-mono shrink-0">
+          {entry.kind === "file" && entry.size !== null ? formatSize(entry.size) : ""}
+        </span>
       </button>
     </li>
   );
@@ -673,6 +766,29 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
     }
   }, [editing]);
 
+  // For PDFs, build a Blob URL from the base64 payload so the browser's native
+  // PDF viewer can render it in an <iframe>. (Data: URIs are blocked in iframes
+  // by many browsers; a blob: URL is not, and avoids re-encoding large files.)
+  const isPdf = file.path.toLowerCase().endsWith(".pdf");
+  const pdfUrl = useMemo(() => {
+    if (!isPdf || file.encoding !== "base64" || !file.content) return null;
+    try {
+      const bin = atob(file.content);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+    } catch {
+      return null;
+    }
+  }, [isPdf, file.encoding, file.content]);
+
+  // Revoke the object URL when it changes or the viewer unmounts.
+  useEffect(() => {
+    return () => {
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+    };
+  }, [pdfUrl]);
+
   if (file.loading && file.content === null) {
     return <div className="text-sm text-gray-500 p-4">Loading…</div>;
   }
@@ -705,6 +821,28 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
             alt={file.path}
             className="max-w-full max-h-[calc(100dvh-8rem)] rounded shadow"
           />
+        </div>
+      );
+    }
+    if (isPdf && pdfUrl) {
+      return (
+        <div className="p-3 md:p-4">
+          <iframe
+            src={pdfUrl}
+            title={file.path}
+            className="w-full h-[calc(100dvh-8rem)] rounded shadow bg-white"
+          />
+          <div className="mt-2 text-xs text-gray-400">
+            <a
+              href={pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-gray-200"
+            >
+              Open PDF in new tab
+            </a>{" "}
+            ({formatSize(file.size)})
+          </div>
         </div>
       );
     }
@@ -769,6 +907,24 @@ function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** mtime is a Unix timestamp in SECONDS (Python st_mtime). `short` is the
+ *  compact column label (time-of-day for this year, year otherwise); `full` is
+ *  the precise timestamp for the row's title tooltip. */
+function formatDate(mtimeSec: number): { short: string; full: string } {
+  if (!mtimeSec) return { short: "", full: "" };
+  const d = new Date(mtimeSec * 1000);
+  if (Number.isNaN(d.getTime())) return { short: "", full: "" };
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const short = sameYear
+    ? `${MONTHS[d.getMonth()]} ${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+    : `${MONTHS[d.getMonth()]} ${pad(d.getDate())} ${d.getFullYear()}`;
+  const full = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return { short, full };
 }
 
 function FolderIcon() {
