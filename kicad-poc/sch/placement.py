@@ -70,12 +70,14 @@ def _anchor_pin_pts(sat, anchor, syms, nets):
     return out
 
 def _place_cell(anchor, sats, syms, nets, gap=2.54):
-    """Anchor at local (0,0); each satellite is pushed outward from the anchor
-    pin it connects to until clear. Returns ({ref:(x,y)}, (x0,x1,y0,y1) bbox)."""
+    """Anchor at local (0,0). Satellites are grouped by which SIDE of the anchor
+    their connecting pin faces (L/R/T/B) and laid out as ALIGNED banks (columns
+    on the L/R sides, rows on the T/B sides) - not a radial fan, which produced
+    ugly diagonal 'legs'. Returns ({ref:(x,y)}, (x0,x1,y0,y1) bbox)."""
     sats = [s for s in sats if s != anchor]
     local = {anchor: (0.0, 0.0)}
-    obs = [_abs_rect(anchor, 0.0, 0.0, syms)]
-    ahw = (obs[0][1]-obs[0][0])/2; ahh = (obs[0][3]-obs[0][2])/2
+    ax0, ax1, ay0, ay1 = _abs_rect(anchor, 0.0, 0.0, syms)
+    ahw = (ax1-ax0)/2; ahh = (ay1-ay0)/2
     def sdir(s):
         pts = _anchor_pin_pts(s, anchor, syms, nets)
         if pts:
@@ -83,20 +85,35 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
         else:
             cx, cy = (ahw + 5.0, 0.0)
         return (cx, -cy)                              # lib Y-up -> schematic Y-down
-    for s in sorted(sats, key=lambda s: math.atan2(sdir(s)[1], sdir(s)[0])):
-        w, h = _wh(syms[s])
-        dx, dy = sdir(s); mag = math.hypot(dx, dy) or 1.0
-        ux, uy = dx/mag, dy/mag
-        cx = ux * (ahw + gap + w/2); cy = uy * (ahh + gap + h/2)
-        for _ in range(60):                           # slide outward until clear
-            r = (cx-w/2-gap/2, cx+w/2+gap/2, cy-h/2-gap/2, cy+h/2+gap/2)
-            if not any(_overlap(r, o) for o in obs):
-                break
-            cx += ux*1.27; cy += uy*1.27
-        local[s] = (snap(cx), snap(cy))
-        obs.append((cx-w/2-gap/2, cx+w/2+gap/2, cy-h/2-gap/2, cy+h/2+gap/2))
-    xs = [o[0] for o in obs] + [o[1] for o in obs]
-    ys = [o[2] for o in obs] + [o[3] for o in obs]
+    side = {}
+    for s in sats:
+        dx, dy = sdir(s)
+        side[s] = ('R' if dx >= 0 else 'L') if abs(dx) >= abs(dy) else ('B' if dy >= 0 else 'T')
+    PITCH = 8.89; CROSS = 11.43                       # along-edge / column spacing (grid mult.)
+    for sd in ('L', 'R', 'T', 'B'):
+        grp = sorted([s for s in sats if side[s] == sd])
+        if not grp:
+            continue
+        if sd in ('L', 'R'):                          # vertical column(s) beside the IC
+            per = max(1, int((2*ahh + 6) // PITCH))
+            sign = -1.0 if sd == 'L' else 1.0
+            for i, s in enumerate(grp):
+                c, r = divmod(i, per); cnt = min(per, len(grp) - c*per)
+                x = sign * (ahw + gap + 4.0 + c*CROSS)
+                y = (r - (cnt-1)/2) * PITCH
+                local[s] = (snap(x), snap(y))
+        else:                                         # horizontal row(s) above/below
+            per = max(1, int((2*ahw + 6) // PITCH))
+            sign = -1.0 if sd == 'T' else 1.0
+            for i, s in enumerate(grp):
+                r, c = divmod(i, per); cnt = min(per, len(grp) - r*per)
+                y = sign * (ahh + gap + 4.0 + r*CROSS)
+                x = (c - (cnt-1)/2) * PITCH
+                local[s] = (snap(x), snap(y))
+    xs = [ax0, ax1]; ys = [ay0, ay1]
+    for s in sats:
+        lx, ly = local[s]; w, h = _wh(syms[s])
+        xs += [lx-w/2, lx+w/2]; ys += [ly-h/2, ly+h/2]
     return local, (min(xs), max(xs), min(ys), max(ys))
 
 def _spread_cells(anchor, lb, page, margin, n=10, iters=140):
