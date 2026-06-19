@@ -164,10 +164,24 @@ def _spread_cells(anchor, lb, page, margin, n=10, iters=140):
             break
     return anchor
 
+def _decoup_rail(ref, nets):
+    """If ref is a 2-pin cap across a power rail and GND, return the rail net name
+    (e.g. '+5V'); else None. Such decoupling caps go in a bottom bank, not cells."""
+    rail = None; gnd = False
+    for net in nets:
+        names = [pp.split(".")[0] for pp in net.get("pins", [])]
+        if ref not in names:
+            continue
+        if _is_gnd_net(net):
+            gnd = True
+        elif net.get("power"):
+            rail = net.get("name")
+    return rail if (gnd and rail) else None
+
 def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, margin=15.0):
     """Cell-based layout: every role-bearing part is a cell anchor; its near-chain
-    satellites cluster around the anchor pins they connect to; cells are shelf-
-    packed by role band (input -> core -> output), left to right then wrapping."""
+    satellites cluster around the anchor pins they connect to. Decoupling caps are
+    pulled out into a horizontal bank at the BOTTOM, grouped by supply rail."""
     local_libs = local_libs if local_libs is not None else _local_libs[0]
     syms = {p["ref"]: KL.load_symbol(p["lib_id"], libdirs, local_libs) for p in parts}
     by = {p["ref"]: p for p in parts}
@@ -179,11 +193,18 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
             return r
         seen.add(r); n = p.get("near")
         return root(n, seen) if n in by else r
+    deco = {}                                          # decoupling caps -> supply rail
+    for r, p in by.items():
+        if p.get("lib_id", "").startswith(("Device:C", "Device:CP")):
+            rail = _decoup_rail(r, nets)
+            if rail:
+                deco[r] = rail
     anchors = [r for r, p in by.items() if p.get("role") in COL]
     members = defaultdict(list)
     for r, p in by.items():
-        if p.get("role") not in COL:
-            members[root(r)].append(r)
+        if p.get("role") in COL or r in deco:         # decoupling -> bottom bank, not a satellite
+            continue
+        members[root(r)].append(r)
     cell_roots = list(anchors) + [r for r in members if r not in anchors]
     cells = {a: _place_cell(a, members.get(a, []), syms, nets) for a in cell_roots}
     band = lambda a: COL.get(by[a].get("role"), 5)    # orphan roots last
@@ -191,8 +212,10 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     order = sorted(cell_roots, key=lambda a: (band(a), seq.index(a)))
     cw = lambda a: cells[a][1][1] - cells[a][1][0]
     ch = lambda a: cells[a][1][3] - cells[a][1][2]
-    # group cells into rows by a width budget (the page width if known)
-    pw, ph = page if page else (250.0 + 2*margin, 1e9)
+    # reserve a bottom strip for the decoupling bank; cells fill the rest
+    BANK_H = 34.0 if deco else 0.0
+    cell_page = (page[0], page[1] - BANK_H) if page else None
+    pw, ph = cell_page if cell_page else (250.0 + 2*margin, 1e9)
     row_budget = pw - 2*margin
     rows = []; cur = []; curw = 0.0
     for a in order:
@@ -204,8 +227,8 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     # (column-major so the signal-flow order runs left -> right), then de-overlap.
     anchor = {}; lb = {a: cells[a][1] for a in cell_roots}
     x_avail = pw - 2*margin; y_avail = ph - 2*margin
-    if page:
-        K = len(order)
+    if cell_page:
+        K = max(1, len(order))
         cols = max(1, round(math.sqrt(K * (x_avail / y_avail))))
         nrow = math.ceil(K / cols)
         for idx, a in enumerate(order):
@@ -214,7 +237,7 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
             cy = margin + (r + 0.5) * y_avail / nrow
             x0, x1, y0, y1 = cells[a][1]
             anchor[a] = (cx - (x0+x1)/2, cy - (y0+y1)/2)   # put cell center at grid point
-        anchor = _spread_cells(anchor, lb, page, margin)
+        anchor = _spread_cells(anchor, lb, cell_page, margin)
     else:
         cx = margin; cy = margin; rowh = 0.0
         for a in order:
@@ -225,6 +248,21 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
         ax, ay = anchor[a]
         for ref, (lx, ly) in cells[a][0].items():
             pos[ref] = (snap(ax + lx), snap(ay + ly))
+    # decoupling bank: a horizontal row at the bottom, grouped by supply rail
+    if deco and page:
+        PW, PH = page
+        by_rail = defaultdict(list)
+        for r, rr in deco.items():
+            by_rail[rr].append(r)
+        rails = sorted(by_rail, key=lambda rr: (rr.startswith("-"), rr))
+        PITCH = 7.62; GGAP = 12.0
+        total = sum(len(by_rail[rr]) * PITCH for rr in rails) + GGAP * (len(rails) - 1)
+        x = max(margin + 4.0, (PW - total) / 2)
+        yb = PH - margin - 9.0
+        for rr in rails:
+            for r in sorted(by_rail[rr]):
+                pos[r] = (snap(x), snap(yb)); x += PITCH
+            x += GGAP
     return pos, syms
 
 
