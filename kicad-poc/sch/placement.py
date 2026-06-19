@@ -201,9 +201,10 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
                 deco[r] = rail
     anchors = [r for r, p in by.items() if p.get("role") in COL]
     roleset = set(anchors)
-    # signal adjacency (ignore power/GND nets) -> assign each satellite to the cell
-    # of its NEAREST role-bearing part by real connectivity, not the (often wrong)
-    # `near` hint. Falls back to root(near) if a part has no signal path to a role.
+    # GROUPING IS THE AGENT'S CALL: a part's `group`/`near` (pointing at the IC /
+    # relay / block it belongs to) is BINDING and never overridden. Only when a
+    # part carries NO grouping hint do we infer it - nearest role-bearing part by
+    # signal-net BFS (this adjacency), as a safety net.
     adj = defaultdict(set)
     for net in nets:
         if net.get("power") or _is_gnd_net(net):
@@ -228,7 +229,8 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     for r, p in by.items():
         if p.get("role") in COL or r in deco:         # decoupling -> bottom bank, not a satellite
             continue
-        members[nearest_role(r) or root(r)].append(r)
+        g = p.get("group") or p.get("near")           # agent's grouping is BINDING - respect it
+        members[(root(g) if g in by else (nearest_role(r) or r))].append(r)
     cell_roots = list(anchors) + [r for r in members if r not in anchors]
     cells = {a: _place_cell(a, members.get(a, []), syms, nets) for a in cell_roots}
     band = lambda a: COL.get(by[a].get("role"), 5)    # orphan roots last
