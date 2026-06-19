@@ -262,6 +262,10 @@ def place_all(spec, bridge_url):
     for lb in labels:
         if bridge.label(lb["text"], lb["x"], lb["y"], global_=False).get("ok"): nlab += 1
     print(f"  routed: {nw} wire segs, {nflag} power flags, {nlab} net labels")
+    from collections import Counter
+    V = violations(spec, pos, syms, wire_segs, flags, labels)
+    print("  VIOLATIONS:", dict(Counter(x["type"] for x in V)), "total", len(V))
+    return V
 
 
 
@@ -354,15 +358,39 @@ def _seg_hits_box(p, q, box, m=0.3):
         return x0 < ax < x1 and min(ay, by) < y1 and max(ay, by) > y0
     return False
 
+def _route_stub(a, u, existing, boxes, owner, half, length=STUB):
+    """Route a stub from pin `a` outward (dir u) to an endpoint (for a flag or
+    label) on a free track: not colinear with any existing wire, not crossing a
+    foreign box, endpoint box clear. Jogs laterally to find a free track.
+    Returns (segs, endpoint)."""
+    perp = (-u[1], u[0])
+    for k in range(0, 9):                                  # lateral track search
+        for s in ((0,) if k == 0 else (k, -k)):
+            jog = (a[0] + perp[0]*s*1.27, a[1] + perp[1]*s*1.27)
+            for L in (length, length + 1.27, length + 2.54):
+                end = (jog[0] + u[0]*L, jog[1] + u[1]*L)
+                segs = ([(a, jog)] if s else []) + [(jog, end)]
+                if any(_colinear(sg, e) for sg in segs for e in existing):
+                    continue
+                if any(_seg_hits_box(p, q, boxes[r]) for (p, q) in segs
+                       for r in boxes if r != owner):
+                    continue
+                ib = (end[0]-half[0], end[0]+half[0], end[1]-half[1], end[1]+half[1])
+                if any(_overlap(ib, boxes[r]) for r in boxes if r != owner):
+                    continue
+                return segs, end
+    end = (a[0] + u[0]*length, a[1] + u[1]*length)
+    return [(a, end)], end
+
 def plan_geometry(spec, pos, syms):
     """Compute wire segments, power-flag specs, junctions and net LABELS WITHOUT
     posting. IRON RULES: no power node overlaps another; no label lands on a part
-    or power symbol; no wire crosses another element's box (body+pins) - a net
-    that cannot be wired clear falls back to connect-by-name labels."""
+    or power symbol; no wire crosses another element's box; no two wires share a
+    path (each stub gets a free track). Uncrossable local nets fall back to labels."""
     wire_segs = []; flags = []; juncs = []; labels = []; pwr_idx = [0]
     nets = spec.get("nets", [])
     eboxes = {r: _body_rect(r, pos, syms) for r in pos}    # element box = body+pins
-    obs = list(eboxes.values())                            # hard obstacles
+    allboxes = dict(eboxes)                                # + placed flags/labels
     def crosses_foreign(segs, owners):
         for (p, q) in segs:
             for r, bx in eboxes.items():
@@ -386,13 +414,14 @@ def plan_geometry(spec, pos, syms):
                 fo = 0 if a[1] < ocy else 180
             else:
                 fo = 0
-            u = _outdir(a, pp, pos)
-            fx, fy, moved = _slide_clear(a[0], a[1], _FLAG_HALF, u, obs, maxd=24)
-            if moved:
-                wire_segs.append((a, (fx, fy)))
-            flags.append({"libid": pw, "ref": f"#PWR{pwr_idx[0]:02d}",
-                          "value": net["name"], "x": fx, "y": fy, "orient": fo})
-            obs.append((fx-_FLAG_HALF[0], fx+_FLAG_HALF[0], fy-_FLAG_HALF[1], fy+_FLAG_HALF[1]))
+            owner = pp.split(".")[0]; u = _outdir(a, pp, pos)
+            ref = f"#PWR{pwr_idx[0]:02d}"
+            segs, end = _route_stub(a, u, wire_segs, allboxes, owner, _FLAG_HALF)
+            wire_segs.extend(segs)
+            flags.append({"libid": pw, "ref": ref, "value": net["name"],
+                          "x": end[0], "y": end[1], "orient": fo})
+            allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
+                                     end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
     # 2) signal nets: labels for wide/long nets, wires for small local ones
     for net in nets:
         if net.get("power"):
@@ -425,13 +454,12 @@ def plan_geometry(spec, pos, syms):
                 use_labels = True
         if use_labels:                                # connect-by-name label per pin
             for a, o, pp in pins:
-                u = _outdir(a, pp, pos)
+                owner = pp.split(".")[0]; u = _outdir(a, pp, pos)
                 hw = max(len(net["name"]), 1) * 1.27 * 0.85 / 2 + 0.4
-                sx, sy = a[0] + u[0]*STUB, a[1] + u[1]*STUB
-                lx, ly, _ = _slide_clear(sx, sy, (hw, 1.27/2 + 0.4), u, obs)
-                wire_segs.append((a, (lx, ly)))
-                labels.append({"text": net["name"], "x": lx, "y": ly})
-                obs.append((lx-hw, lx+hw, ly-1.06, ly+1.06))
+                segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06))
+                wire_segs.extend(segs)
+                labels.append({"text": net["name"], "x": end[0], "y": end[1]})
+                allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
         wire_segs.extend(net_segs)
         if net_junc is not None:
@@ -507,17 +535,6 @@ def autoplace_fields(sym, x, y, ref_text, val_text, obs, orient=0):
     return {"Reference": rpos, "Value": vpos}
 
 
-if __name__ == "__main__":
-    spec_path = sys.argv[1]
-    spec = json.load(open(spec_path))
-    # resolve local_libs paths relative to the spec file (parity with kicad_live)
-    base = os.path.dirname(os.path.abspath(spec_path))
-    spec["local_libs"] = {k: (v if os.path.isabs(v) else os.path.join(base, v))
-                          for k, v in (spec.get("local_libs") or {}).items()}
-    url = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--bridge" else "http://172.23.48.1:8761"
-    place_all(spec, url)
-
-
 # ---------------- violation detector (input for the agentic refine loop) ----------------
 def _colinear(s1, s2, tol=0.06, minov=0.6):
     (ax, ay), (bx, by) = s1; (cx, cy), (dx, dy) = s2
@@ -537,21 +554,28 @@ def violations(spec, pos, syms, wire_segs, flags, labels):
     for a, b in itertools.combinations(list(pos), 2):
         if _overlap(eb[a], eb[b]):
             v.append({"type": "ELEM_OVERLAP", "refs": [a, b]})
-    # wire crosses a foreign element box
-    for (p, q) in wire_segs:
+    for (p, q) in wire_segs:                                # wire crosses a foreign element box
         for r, E in eb.items():
             if _seg_hits_box(p, q, E):
-                # exclude segments that merely start/end on r's own pins
-                if not (_seg_hits_box(p, q, (E[0]+1.0, E[1]-1.0, E[2]+1.0, E[3]-1.0))):
+                if not _seg_hits_box(p, q, (E[0]+1.0, E[1]-1.0, E[2]+1.0, E[3]-1.0)):
                     continue
                 v.append({"type": "WIRE_CROSS_BOX", "box": r, "seg": [p, q]}); break
-    # two wires sharing a path (colinear overlap)
-    for i, j in itertools.combinations(range(len(wire_segs)), 2):
+    for i, j in itertools.combinations(range(len(wire_segs)), 2):   # two wires share a path
         if _colinear(wire_segs[i], wire_segs[j]):
             v.append({"type": "WIRE_COLINEAR", "segs": [wire_segs[i], wire_segs[j]]})
-    # flag boxes overlapping (touching allowed)
     fb = [(f, (f["x"]-_FLAG_HALF[0]+0.1, f["x"]+_FLAG_HALF[0]-0.1, f["y"]-_FLAG_HALF[1]+0.1, f["y"]+_FLAG_HALF[1]-0.1)) for f in flags]
     for (f1, b1), (f2, b2) in itertools.combinations(fb, 2):
         if _overlap(b1, b2):
             v.append({"type": "FLAG_OVERLAP", "refs": [f1["ref"], f2["ref"]]})
     return v
+
+
+if __name__ == "__main__":
+    spec_path = sys.argv[1]
+    spec = json.load(open(spec_path))
+    # resolve local_libs paths relative to the spec file (parity with kicad_live)
+    base = os.path.dirname(os.path.abspath(spec_path))
+    spec["local_libs"] = {k: (v if os.path.isabs(v) else os.path.join(base, v))
+                          for k, v in (spec.get("local_libs") or {}).items()}
+    url = sys.argv[3] if len(sys.argv) > 3 and sys.argv[2] == "--bridge" else "http://172.23.48.1:8761"
+    place_all(spec, url)
