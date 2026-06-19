@@ -312,7 +312,7 @@ def place_all(spec, bridge_url, pos_override=None):
     scaffold = open(KL.SCAFFOLD, "rb").read()
     # plan all geometry BEFORE placing, so fields can dodge wires/flags/bodies/labels
     wire_segs, flags, juncs, labels = plan_geometry(spec, pos, syms)
-    obs = build_obstacles(spec, pos, syms, wire_segs, flags, labels)
+    fpos, _fbm, obs = field_layout(spec, pos, syms, wire_segs, flags, labels)
 
     # main symbols, with each Reference/Value auto-placed clear of obstacles
     for p in spec["parts"]:
@@ -320,7 +320,7 @@ def place_all(spec, bridge_url, pos_override=None):
             print("  SKIP (no role/pos):", p["ref"]); continue
         x, y = pos[p["ref"]]; sym = syms[p["ref"]]; o = _orients[0].get(p["ref"], 0)
         fa = 0 if o % 180 == 0 else -o                # keep field text upright
-        fp = autoplace_fields(sym, x, y, p["ref"], p.get("value", ""), obs, orient=o)
+        fp = fpos[p["ref"]]
         b64 = KL.build_symbol_proto(sym, p["ref"], p.get("value", ""), x, y, scaffold,
                                     orient=o, field_angle=fa, field_pos=fp)
         r = bridge.place_raw(b64, x, y, p["ref"], p.get("value", ""))
@@ -653,6 +653,23 @@ def autoplace_fields(sym, x, y, ref_text, val_text, obs, orient=0):
     obs.append(_fbox(vpos, val_text))
     return {"Reference": rpos, "Value": vpos}
 
+def field_layout(spec, pos, syms, wire_segs, flags, labels):
+    """Auto-place every part's Reference/Value clear of bodies/pins/wires/labels
+    and each other. Returns ({ref: fieldpos}, {ref: {name: box}}, obs) - shared by
+    place_all (to emit) and violations (to verify)."""
+    obs = build_obstacles(spec, pos, syms, wire_segs, flags, labels)
+    fpos = {}; fbox = {}
+    for p in spec["parts"]:
+        r = p["ref"]
+        if r not in pos:
+            continue
+        x, y = pos[r]; o = _orients[0].get(r, 0)
+        fp = autoplace_fields(syms[r], x, y, r, p.get("value", ""), obs, orient=o)
+        fpos[r] = fp
+        fbox[r] = {"Reference": _fbox(fp["Reference"], r),
+                   "Value": _fbox(fp["Value"], p.get("value", ""))}
+    return fpos, fbox, obs
+
 
 # ---------------- violation detector (input for the agentic refine loop) ----------------
 def _colinear(s1, s2, tol=0.06, minov=0.6):
@@ -698,6 +715,16 @@ def violations(spec, pos, syms, wire_segs, flags, labels):
     for (f1, b1), (f2, b2) in itertools.combinations(fb, 2):
         if _overlap(b1, b2):
             v.append({"type": "FLAG_OVERLAP", "refs": [f1["ref"], f2["ref"]]})
+    # FIELD: a Reference/Value must not overlap any element box, pin or wire
+    _, fbox, _ = field_layout(spec, pos, syms, wire_segs, flags, labels)
+    wrects = [_seg_rect(p, q, 0.25) for (p, q) in wire_segs]
+    pinbx = [(pt[0]-0.5, pt[0]+0.5, pt[1]-0.5, pt[1]+0.5) for pt in pinpts.values()]
+    for r, boxes in fbox.items():
+        for nm, B in boxes.items():
+            if (any(_overlap(B, eb[r2]) for r2 in eb) or
+                    any(_overlap(B, w) for w in wrects) or
+                    any(_overlap(B, pb) for pb in pinbx)):
+                v.append({"type": "FIELD_OVERLAP", "field": "%s.%s" % (r, nm), "ref": r})
     return v
 
 
