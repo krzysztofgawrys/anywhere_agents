@@ -166,7 +166,7 @@ def _graphic_child(scaffold_gfx_child, g):
     return c
 
 
-def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None):
+def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None, power=None):
     """Return base64 of a SchematicSymbolInstance for sym placed at (x_mm,y_mm)."""
     tx, ty = int(round(x_mm * MM)), int(round(y_mm * MM))
     tpl = S.SchematicSymbolInstance(); tpl.ParseFromString(scaffold_bytes)
@@ -177,6 +177,11 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, fi
     inst.position.x_nm = tx; inst.position.y_nm = ty
     d = inst.definition
     d.id.library_nickname = sym["nick"]; d.id.entry_name = sym["name"]
+    # SchematicSymbolType: NORMAL=1, GLOBAL_POWER=2. Power symbols MUST be marked
+    # GLOBAL_POWER or KiCad won't connect them by name (every rail pin becomes an
+    # isolated undriven net). Auto-detect from the "power" library nickname.
+    is_power = power if power is not None else (sym.get("nick") == "power")
+    d.type = 2 if is_power else 1
     del d.items[:]
     # graphics (relative, Y-flip)
     _ORIENT[0] = 0   # graphics stay lib-relative; KiCad transform rotates them

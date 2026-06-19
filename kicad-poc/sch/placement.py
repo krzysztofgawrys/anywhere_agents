@@ -460,11 +460,11 @@ def _hits_foreign_pin(segs, own, pinpts, tol=0.4):
                 return True
     return False
 
-def _route_stub(a, u, existing, boxes, owner, half, pinpts=None, src=None, length=STUB):
+def _route_stub(a, u, existing, boxes, owner, half, forbidden_pts=(), length=STUB):
     """Route a stub from pin `a` outward (dir u) to an endpoint (for a flag or
     label) on a free track: not colinear with any existing wire, not crossing a
-    foreign box, endpoint box clear. Jogs laterally to find a free track.
-    Returns (segs, endpoint)."""
+    foreign box, not touching a forbidden point (a different-net pin OR label,
+    which would short), endpoint box clear. Jogs laterally. Returns (segs, end)."""
     perp = (-u[1], u[0])
     for k in range(0, 16):                                 # lateral track search
         for s in ((0,) if k == 0 else (k, -k)):
@@ -477,14 +477,15 @@ def _route_stub(a, u, existing, boxes, owner, half, pinpts=None, src=None, lengt
                 if any(_seg_hits_box(p, q, boxes[r]) for (p, q) in segs
                        for r in boxes if r != owner):
                     continue
-                if pinpts and _hits_foreign_pin(segs, {src}, pinpts):   # no foreign pin touch
+                if any(_pt_on_seg(pt, p, q, 0.4) for (p, q) in segs for pt in forbidden_pts):
                     continue
                 ib = (end[0]-half[0], end[0]+half[0], end[1]-half[1], end[1]+half[1])
                 if any(_overlap(ib, boxes[r]) for r in boxes if r != owner):
                     continue
                 return segs, end
-    end = (a[0] + u[0]*length, a[1] + u[1]*length)
-    return [(a, end)], end
+    # no clear track: a straight stub could touch a foreign pin (= short). Safer to
+    # sit the label/flag right on the pin with NO wire - it connects only this pin.
+    return [], a
 
 def plan_geometry(spec, pos, syms):
     """Compute wire segments, power-flag specs, junctions and net LABELS WITHOUT
@@ -495,12 +496,21 @@ def plan_geometry(spec, pos, syms):
     nets = spec.get("nets", [])
     eboxes = {r: _body_rect(r, pos, syms) for r in pos}    # element box = body+pins
     allboxes = dict(eboxes)                                # + placed flags/labels
-    pinpts = {}                                            # (ref, num) -> abs pin point
+    pin2net = {pp: n["name"] for n in nets for pp in n.get("pins", [])}   # "ref.num" -> net
+    pinpts = {}                                            # "ref.num" -> abs pin point
     for ref in pos:
         for pn in syms[ref]["pins"]:
-            ab, _ = _pin_abs(f"{ref}.{pn['number']}", pos, syms)
+            pk = f"{ref}.{pn['number']}"
+            ab, _ = _pin_abs(pk, pos, syms)
             if ab is not None:
-                pinpts[(ref, str(pn["number"]))] = ab
+                pinpts[pk] = ab
+    label_pts = []                                         # [(netname, point)] placed so far
+    def forbidden_for(netname):
+        # points a wire/stub of `netname` must NOT touch: any DIFFERENT-net pin or
+        # label (KiCad would merge them = a short / multiple_net_names). Same-net is fine.
+        f = [pt for pk, pt in pinpts.items() if pin2net.get(pk) != netname]
+        f += [pt for nn, pt in label_pts if nn != netname]
+        return f
     def crosses_any_box(segs):
         # RULE B: a wire must not pass through ANY element body - not even its own
         # net's part (a wire reaching a pin on the far side of a box goes through
@@ -512,31 +522,45 @@ def plan_geometry(spec, pos, syms):
                     return True
         return False
     # 1) power flags first - never overlap a body or each other
+    flg_idx = [0]
     for net in nets:
         pw = net.get("power")
         if not pw:
             continue
         nm = pw.split(":")[-1].upper()
         negative = nm.startswith("-") or nm in ("VEE", "VSS", "V-")
+        first_pin = None
         for pp in net.get("pins", []):
             a, _ = _pin_abs(pp, pos, syms)
             if a is None:
                 continue
+            if first_pin is None:
+                first_pin = (a, pp)
             pwr_idx[0] += 1
             if negative:
                 ocy = pos.get(pp.split(".")[0], (a[0], a[1]))[1]
                 fo = 0 if a[1] < ocy else 180
             else:
                 fo = 0
-            owner, pnum = pp.split(".", 1); u = _outdir(a, pp, pos)
+            owner = pp.split(".", 1)[0]; u = _outdir(a, pp, pos)
             ref = f"#PWR{pwr_idx[0]:02d}"
             segs, end = _route_stub(a, u, wire_segs, allboxes, owner, _FLAG_HALF,
-                                    pinpts=pinpts, src=(owner, pnum))
+                                    forbidden_pts=forbidden_for(net["name"]))
             wire_segs.extend(segs)
             flags.append({"libid": pw, "ref": ref, "value": net["name"],
                           "x": end[0], "y": end[1], "orient": fo})
             allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
                                      end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
+        if first_pin:                                  # ONE PWR_FLAG per rail -> ERC "driven"
+            a, pp = first_pin; owner = pp.split(".", 1)[0]
+            ud = _outdir(a, pp, pos); perp = (-ud[1], ud[0])   # perpendicular to the rail flag
+            flg_idx[0] += 1; fref = f"#FLG{flg_idx[0]:02d}"
+            segs, end = _route_stub(a, perp, wire_segs, allboxes, owner, (1.6, 1.6),
+                                    forbidden_pts=forbidden_for(net["name"]))
+            wire_segs.extend(segs)
+            flags.append({"libid": "power:PWR_FLAG", "ref": fref, "value": "",
+                          "x": end[0], "y": end[1], "orient": 0})
+            allboxes["#F:" + fref] = (end[0]-1.6, end[0]+1.6, end[1]-1.6, end[1]+1.6)
     # 2) signal nets: labels for wide/long nets, wires for small local ones
     for net in nets:
         if net.get("power"):
@@ -565,19 +589,21 @@ def plan_geometry(spec, pos, syms):
                     c = (se[0], s0[1]); net_segs += [(s0, c), (c, se)]
             if len(stubs) > 2:
                 net_junc = s0
-            own = {(pp.split(".", 1)[0], pp.split(".", 1)[1]) for a, o, pp in pins}
             colinear = any(_colinear(sg, e) for sg in net_segs for e in wire_segs)
-            # RULE B: don't cross any box; RULE A: don't touch a foreign pin
-            if crosses_any_box(net_segs) or colinear or _hits_foreign_pin(net_segs, own, pinpts):
+            forb = forbidden_for(net["name"])         # foreign pins + labels (avoid shorts)
+            touches = any(_pt_on_seg(pt, p, q, 0.4) for (p, q) in net_segs for pt in forb)
+            # RULE B: don't cross any box; RULE A: don't touch a foreign pin/label
+            if crosses_any_box(net_segs) or colinear or touches:
                 use_labels = True
         if use_labels:                                # connect-by-name label per pin
             for a, o, pp in pins:
-                owner, pnum = pp.split(".", 1); u = _outdir(a, pp, pos)
+                owner = pp.split(".", 1)[0]; u = _outdir(a, pp, pos)
                 hw = max(len(net["name"]), 1) * 1.27 * 0.85 / 2 + 0.4
                 segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
-                                        pinpts=pinpts, src=(owner, pnum))
+                                        forbidden_pts=forbidden_for(net["name"]))
                 wire_segs.extend(segs)
                 labels.append({"text": net["name"], "x": end[0], "y": end[1]})
+                label_pts.append((net["name"], end))   # so later wires/labels avoid it
                 allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
         wire_segs.extend(net_segs)
