@@ -89,7 +89,7 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
     for s in sats:
         dx, dy = sdir(s)
         side[s] = ('R' if dx >= 0 else 'L') if abs(dx) >= abs(dy) else ('B' if dy >= 0 else 'T')
-    PITCH = 8.89; CROSS = 11.43                       # along-edge / column spacing (grid mult.)
+    PITCH = 11.43; CROSS = 13.97                      # along-edge / column spacing (grid mult.)
     for sd in ('L', 'R', 'T', 'B'):
         grp = sorted([s for s in sats if side[s] == sd])
         if not grp:
@@ -441,7 +441,26 @@ def _seg_hits_box(p, q, box, m=0.3):
         return x0 < ax < x1 and min(ay, by) < y1 and max(ay, by) > y0
     return False
 
-def _route_stub(a, u, existing, boxes, owner, half, length=STUB):
+def _pt_on_seg(pt, p, q, tol=0.4):
+    """True if point pt lies on (within tol of) orthogonal segment p-q."""
+    x, y = pt
+    if abs(p[1]-q[1]) < 1e-6:                               # horizontal
+        return abs(y-p[1]) < tol and min(p[0], q[0])-tol <= x <= max(p[0], q[0])+tol
+    if abs(p[0]-q[0]) < 1e-6:                               # vertical
+        return abs(x-p[0]) < tol and min(p[1], q[1])-tol <= y <= max(p[1], q[1])+tol
+    return False
+
+def _hits_foreign_pin(segs, own, pinpts, tol=0.4):
+    """IRON RULE A: a wire must not pass through/touch a pin that is not on its
+    own net (KiCad would read that pin-tip coincidence as an intended connection
+    = a short). `own` = set of (ref, num) pin keys legitimately on this net."""
+    for (p, q) in segs:
+        for k, pt in pinpts.items():
+            if k not in own and _pt_on_seg(pt, p, q, tol):
+                return True
+    return False
+
+def _route_stub(a, u, existing, boxes, owner, half, pinpts=None, src=None, length=STUB):
     """Route a stub from pin `a` outward (dir u) to an endpoint (for a flag or
     label) on a free track: not colinear with any existing wire, not crossing a
     foreign box, endpoint box clear. Jogs laterally to find a free track.
@@ -457,6 +476,8 @@ def _route_stub(a, u, existing, boxes, owner, half, length=STUB):
                     continue
                 if any(_seg_hits_box(p, q, boxes[r]) for (p, q) in segs
                        for r in boxes if r != owner):
+                    continue
+                if pinpts and _hits_foreign_pin(segs, {src}, pinpts):   # no foreign pin touch
                     continue
                 ib = (end[0]-half[0], end[0]+half[0], end[1]-half[1], end[1]+half[1])
                 if any(_overlap(ib, boxes[r]) for r in boxes if r != owner):
@@ -474,10 +495,20 @@ def plan_geometry(spec, pos, syms):
     nets = spec.get("nets", [])
     eboxes = {r: _body_rect(r, pos, syms) for r in pos}    # element box = body+pins
     allboxes = dict(eboxes)                                # + placed flags/labels
-    def crosses_foreign(segs, owners):
+    pinpts = {}                                            # (ref, num) -> abs pin point
+    for ref in pos:
+        for pn in syms[ref]["pins"]:
+            ab, _ = _pin_abs(f"{ref}.{pn['number']}", pos, syms)
+            if ab is not None:
+                pinpts[(ref, str(pn["number"]))] = ab
+    def crosses_any_box(segs):
+        # RULE B: a wire must not pass through ANY element body - not even its own
+        # net's part (a wire reaching a pin on the far side of a box goes through
+        # the body = use a label instead). Stubs leave pins outward so they don't
+        # trip this; only a connect spanning across a box does.
         for (p, q) in segs:
-            for r, bx in eboxes.items():
-                if r not in owners and _seg_hits_box(p, q, bx):
+            for bx in eboxes.values():
+                if _seg_hits_box(p, q, bx):
                     return True
         return False
     # 1) power flags first - never overlap a body or each other
@@ -497,9 +528,10 @@ def plan_geometry(spec, pos, syms):
                 fo = 0 if a[1] < ocy else 180
             else:
                 fo = 0
-            owner = pp.split(".")[0]; u = _outdir(a, pp, pos)
+            owner, pnum = pp.split(".", 1); u = _outdir(a, pp, pos)
             ref = f"#PWR{pwr_idx[0]:02d}"
-            segs, end = _route_stub(a, u, wire_segs, allboxes, owner, _FLAG_HALF)
+            segs, end = _route_stub(a, u, wire_segs, allboxes, owner, _FLAG_HALF,
+                                    pinpts=pinpts, src=(owner, pnum))
             wire_segs.extend(segs)
             flags.append({"libid": pw, "ref": ref, "value": net["name"],
                           "x": end[0], "y": end[1], "orient": fo})
@@ -533,14 +565,17 @@ def plan_geometry(spec, pos, syms):
                     c = (se[0], s0[1]); net_segs += [(s0, c), (c, se)]
             if len(stubs) > 2:
                 net_junc = s0
+            own = {(pp.split(".", 1)[0], pp.split(".", 1)[1]) for a, o, pp in pins}
             colinear = any(_colinear(sg, e) for sg in net_segs for e in wire_segs)
-            if crosses_foreign(net_segs, owners) or colinear:   # cannot wire clear -> labels
+            # RULE B: don't cross any box; RULE A: don't touch a foreign pin
+            if crosses_any_box(net_segs) or colinear or _hits_foreign_pin(net_segs, own, pinpts):
                 use_labels = True
         if use_labels:                                # connect-by-name label per pin
             for a, o, pp in pins:
-                owner = pp.split(".")[0]; u = _outdir(a, pp, pos)
+                owner, pnum = pp.split(".", 1); u = _outdir(a, pp, pos)
                 hw = max(len(net["name"]), 1) * 1.27 * 0.85 / 2 + 0.4
-                segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06))
+                segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
+                                        pinpts=pinpts, src=(owner, pnum))
                 wire_segs.extend(segs)
                 labels.append({"text": net["name"], "x": end[0], "y": end[1]})
                 allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
@@ -647,6 +682,18 @@ def violations(spec, pos, syms, wire_segs, flags, labels):
     for i, j in itertools.combinations(range(len(wire_segs)), 2):   # two wires share a path
         if _colinear(wire_segs[i], wire_segs[j]):
             v.append({"type": "WIRE_COLINEAR", "segs": [wire_segs[i], wire_segs[j]]})
+    # RULE A: a wire segment touching pins of MORE THAN ONE net = a false short
+    pin2net = {pp: n["name"] for n in spec.get("nets", []) for pp in n.get("pins", [])}
+    pinpts = {}
+    for ref in pos:
+        for pn in syms[ref]["pins"]:
+            ab, _ = _pin_abs(f"{ref}.{pn['number']}", pos, syms)
+            if ab is not None:
+                pinpts["%s.%s" % (ref, pn["number"])] = ab
+    for (p, q) in wire_segs:
+        on = [pk for pk, pt in pinpts.items() if _pt_on_seg(pt, p, q, 0.3)]
+        if len({pin2net.get(pk) for pk in on}) > 1:
+            v.append({"type": "WIRE_HITS_PIN", "pins": on})
     fb = [(f, (f["x"]-_FLAG_HALF[0]+0.1, f["x"]+_FLAG_HALF[0]-0.1, f["y"]-_FLAG_HALF[1]+0.1, f["y"]+_FLAG_HALF[1]-0.1)) for f in flags]
     for (f1, b1), (f2, b2) in itertools.combinations(fb, 2):
         if _overlap(b1, b2):
