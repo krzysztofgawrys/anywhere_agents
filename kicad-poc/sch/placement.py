@@ -211,7 +211,7 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     return pos, syms
 
 
-def place_all(spec, bridge_url):
+def place_all(spec, bridge_url, pos_override=None):
     libdirs = spec["libdirs"]
     bridge = KL.Bridge(bridge_url)
     h = bridge.health(); print("sheet:", h.get("project"), h.get("symbols"), "symbols")
@@ -225,6 +225,8 @@ def place_all(spec, bridge_url):
     except Exception as e:
         print("  page: unavailable, using default budget (", e, ")")
     pos, syms = layout(spec["parts"], libdirs, local_libs=_local_libs[0], page=page)
+    if pos_override:                                   # refined positions from the loop
+        pos = {r: tuple(v) for r, v in pos_override.items() if r in pos}
     _orients[0] = compute_orients(spec["parts"], syms, spec.get("nets", []))
     scaffold = open(KL.SCAFFOLD, "rb").read()
     # plan all geometry BEFORE placing, so fields can dodge wires/flags/bodies/labels
@@ -364,10 +366,10 @@ def _route_stub(a, u, existing, boxes, owner, half, length=STUB):
     foreign box, endpoint box clear. Jogs laterally to find a free track.
     Returns (segs, endpoint)."""
     perp = (-u[1], u[0])
-    for k in range(0, 9):                                  # lateral track search
+    for k in range(0, 16):                                 # lateral track search
         for s in ((0,) if k == 0 else (k, -k)):
             jog = (a[0] + perp[0]*s*1.27, a[1] + perp[1]*s*1.27)
-            for L in (length, length + 1.27, length + 2.54):
+            for L in (length, length+1.27, length+2.54, length+3.81, length+5.08):
                 end = (jog[0] + u[0]*L, jog[1] + u[1]*L)
                 segs = ([(a, jog)] if s else []) + [(jog, end)]
                 if any(_colinear(sg, e) for sg in segs for e in existing):
@@ -450,7 +452,8 @@ def plan_geometry(spec, pos, syms):
                     c = (se[0], s0[1]); net_segs += [(s0, c), (c, se)]
             if len(stubs) > 2:
                 net_junc = s0
-            if crosses_foreign(net_segs, owners):     # cannot wire clear -> labels
+            colinear = any(_colinear(sg, e) for sg in net_segs for e in wire_segs)
+            if crosses_foreign(net_segs, owners) or colinear:   # cannot wire clear -> labels
                 use_labels = True
         if use_labels:                                # connect-by-name label per pin
             for a, o, pp in pins:
