@@ -324,6 +324,46 @@ def run_erc():
                    violations=viols, stderr=(r.stderr or "")[-2000:])
 
 
+# top-level schematic object types to wipe on /clear (children like pins/fields
+# go with their parent symbol; sheets/sheet-pins are left to preserve hierarchy)
+_CLEAR_TYPES = [35, 23, 19, 30, 31, 32, 33, 27, 26, 24, 20, 25, 21, 22, 28]
+#  35 SYMBOL  23 LINE(wire)  19 JUNCTION  30/31/32/33 LABEL/GLOBAL/HIER/DIRECTIVE
+#  27 TEXT  26 TEXTBOX  24 SHAPE  20 NO_CONNECT  25 BITMAP  21/22 BUS_ENTRY  28 TABLE
+
+
+def _remove(sch, items, msg):
+    if not items:
+        return 0
+    c = sch.begin_commit()
+    try:
+        sch.remove_items(items)
+        sch.push_commit(c, msg)
+        return len(items)
+    except Exception:
+        sch.drop_commit(c)
+        raise
+
+
+@app.post("/clear")
+def clear_sheet():
+    """Delete every top-level item on the open sheet (one undoable commit)."""
+    _, sch = schematic()
+    items = list(sch.get_items(_CLEAR_TYPES))
+    return jsonify(ok=True, removed=_remove(sch, items, "bridge: clear sheet"))
+
+
+@app.post("/delete")
+def delete_refs():
+    """Delete symbols by reference: {"ref": "U1"} or {"refs": ["U1","C2"]}."""
+    d = request.get_json(force=True) or {}
+    refs = set(d.get("refs") or ([d["ref"]] if d.get("ref") else []))
+    _, sch = schematic()
+    syms = [s for s in sch.get_symbols() if _field_text(s.reference_field) in refs]
+    removed = [_field_text(s.reference_field) for s in syms]
+    _remove(sch, syms, "bridge: delete " + ",".join(removed))
+    return jsonify(ok=True, removed=removed, not_found=sorted(refs - set(removed)))
+
+
 def main():
     probe = socket.socket()
     try:

@@ -232,6 +232,10 @@ class Bridge:
                                           "reference": ref, "value": value})
     def label(self, text, x_mm, y_mm, global_=True):
         return self._post("/label", {"text": text, "x_mm": x_mm, "y_mm": y_mm, "global": global_})
+    def clear(self):
+        return self._post("/clear", {})
+    def delete(self, refs):
+        return self._post("/delete", {"refs": refs if isinstance(refs, list) else [refs]})
     def save(self):
         return self._post("/save", {})
     def erc(self):
