@@ -352,6 +352,30 @@ def clear_sheet():
     return jsonify(ok=True, removed=_remove(sch, items, "bridge: clear sheet"))
 
 
+# standard page sizes in mm, landscape (w, h); PS_USER reads user_page_size
+_PAGE_MM = {1: (210, 148), 2: (297, 210), 3: (420, 297), 4: (594, 420),
+            5: (841, 594), 6: (1189, 841), 7: (279.4, 215.9), 8: (431.8, 279.4),
+            9: (558.8, 431.8), 10: (863.6, 558.8), 11: (1117.6, 863.6),
+            13: (279.4, 215.9), 14: (355.6, 215.9), 15: (431.8, 279.4)}
+
+
+@app.get("/page")
+def page():
+    """Return the open sheet's drawing-area size in mm (paper size + orientation)."""
+    _, sch = schematic()
+    p = sch.get_page_settings().proto
+    if p.page_size == 16 and p.user_page_size.x_nm:        # PS_USER
+        w, h = p.user_page_size.x_nm / 1e6, p.user_page_size.y_nm / 1e6
+    else:
+        w, h = _PAGE_MM.get(p.page_size, (297, 210))
+    if p.orientation == 2:                                 # PO_PORTRAIT
+        w, h = min(w, h), max(w, h)
+    else:
+        w, h = max(w, h), min(w, h)
+    return jsonify(ok=True, width_mm=round(w, 1), height_mm=round(h, 1),
+                   page_size=p.page_size, orientation=p.orientation)
+
+
 @app.post("/delete")
 def delete_refs():
     """Delete symbols by reference: {"ref": "U1"} or {"refs": ["U1","C2"]}."""
