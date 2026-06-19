@@ -55,3 +55,6 @@ docker/worker-claude-elec.Dockerfile
 
 # TS build info
 frontend/tsconfig.tsbuildinfo
+
+# bridge plugin package (binary, rebuilt on demand)
+kicad-worker-bridge.zip
