@@ -200,9 +200,13 @@ def health():
 
 @app.get("/symbols")
 def symbols():
+    """Read back the placed symbols of the active (or ?sheet=) sheet, INCLUDING the
+    footprint - so a manual footprint/value edit in eeschema can be synced back into
+    the source netlist (round-trip) and survive the next /clear + re-place."""
     _, sch = schematic()
     return jsonify(symbols=[
         dict(ref=_field_text(s.reference_field), value=_field_text(s.value_field),
+             footprint=_field_text(s.footprint_field),
              lib_id=f"{s.definition.id.library}:{s.definition.id.name}",
              def_items=len(s.definition.items),
              x_mm=s.position.x / 1e6, y_mm=s.position.y / 1e6)

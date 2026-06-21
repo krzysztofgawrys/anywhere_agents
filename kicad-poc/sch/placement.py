@@ -379,6 +379,67 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     return pos, syms
 
 
+def sync_footprints(spec, bridge_url, sheet=None, store=None, only_nonempty=True):
+    """ROUND-TRIP: read footprints the user set by hand in eeschema and fold them
+    into the netlist `spec` IN PLACE (so a /clear + re-place keeps them). Reads the
+    live sheet via GET /symbols. If `store` (a path) is given, ALSO persist them to a
+    durable footprint store keyed by ref AND lib_id|value - that store survives even
+    a from-scratch netlist regeneration (apply it with apply_footprints). Returns
+    {ref: footprint} of what changed in `spec`."""
+    bridge = KL.Bridge(bridge_url, sheet=sheet or spec.get("sheet"))
+    live = {s["ref"]: s for s in bridge.symbols().get("symbols", [])}
+    by = {p["ref"]: p for p in spec.get("parts", [])}
+    changed = {}; recs = []
+    for ref, s in live.items():
+        fp = (s.get("footprint") or "").strip()
+        p = by.get(ref)
+        if p and (fp or not only_nonempty) and p.get("footprint", "") != fp:
+            p["footprint"] = fp; changed[ref] = fp
+        if fp:
+            recs.append({"ref": ref, "lib_id": (p or s).get("lib_id", ""),
+                         "value": (p or {}).get("value", s.get("value", "")), "footprint": fp})
+    if store and recs:
+        _save_footprint_store(store, recs)
+    return changed
+
+
+def _save_footprint_store(path, recs):
+    """Merge footprint records into the JSON store at `path` (created if absent).
+    Keyed by ref; newest wins."""
+    try:
+        data = json.load(open(path)) if os.path.exists(path) else {"overrides": []}
+    except Exception:
+        data = {"overrides": []}
+    idx = {r["ref"]: r for r in data.get("overrides", [])}
+    for r in recs:
+        idx[r["ref"]] = r
+    json.dump({"overrides": list(idx.values())}, open(path, "w"), indent=1)
+
+
+def apply_footprints(spec, store):
+    """Stamp saved footprints onto `spec` IN PLACE - the durable layer that survives
+    netlist REGENERATION. `store` = a path to the JSON store or its dict/list. Match
+    by ref first (stable for the same design), then by lib_id+value (so a regenerated
+    netlist with the same part still gets it). Only fills parts without an explicit
+    footprint already. Returns {ref: footprint} applied."""
+    if isinstance(store, str):
+        store = json.load(open(store)) if os.path.exists(store) else {}
+    recs = store.get("overrides", store) if isinstance(store, dict) else store
+    by_ref = {r["ref"]: r["footprint"] for r in recs if r.get("footprint")}
+    by_lv = {}
+    for r in recs:
+        if r.get("footprint"):
+            by_lv.setdefault((r.get("lib_id", ""), r.get("value", "")), r["footprint"])
+    applied = {}
+    for p in spec.get("parts", []):
+        if p.get("footprint"):
+            continue
+        fp = by_ref.get(p["ref"]) or by_lv.get((p.get("lib_id", ""), p.get("value", "")))
+        if fp:
+            p["footprint"] = fp; applied[p["ref"]] = fp
+    return applied
+
+
 def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
     libdirs = spec["libdirs"]
     # `sheet` (name/filename of a hierarchical sub-sheet) routes ALL bridge ops to

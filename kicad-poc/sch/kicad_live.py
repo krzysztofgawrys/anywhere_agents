@@ -12,7 +12,7 @@ netlist.json: {"parts":[{"ref","lib_id","value","x_mm","y_mm"}],
 Requires: kiutils, kicad-python (kipy protos). Needs the bridge running on the
 machine where KiCad is open, and scaffold.bin next to this file.
 """
-import base64, copy, json, os, sys, urllib.request, urllib.error
+import base64, copy, json, os, sys, urllib.request, urllib.error, urllib.parse
 from kiutils.symbol import SymbolLib
 from kipy.proto.schematic import schematic_types_pb2 as S
 from kipy.proto.common.types import base_types_pb2 as B
@@ -261,6 +261,9 @@ class Bridge:
             return {"ok": False, "error": e.read().decode()[:300], "http": e.code}
     def health(self):
         return json.load(urllib.request.urlopen(self.url + "/health", timeout=10))
+    def symbols(self):
+        q = ("?sheet=" + urllib.parse.quote(self.sheet)) if self.sheet else ""
+        return json.load(urllib.request.urlopen(self.url + "/symbols" + q, timeout=15))
     def place_raw(self, b64, x_mm, y_mm, ref, value):
         return self._post("/place_raw", {"proto_b64": b64, "x_mm": x_mm, "y_mm": y_mm,
                                           "reference": ref, "value": value})
