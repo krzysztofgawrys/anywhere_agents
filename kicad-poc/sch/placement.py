@@ -500,9 +500,12 @@ def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
     for j in juncs:
         bridge._post("/junction", {"x": j[0], "y": j[1]})
     nlab = 0
+    nglob = 0
     for lb in labels:
-        if bridge.label(lb["text"], lb["x"], lb["y"], global_=False).get("ok"): nlab += 1
-    print(f"  routed: {nw} wire segs, {nflag} power flags, {nlab} net labels")
+        gl = bool(lb.get("global"))
+        if bridge.label(lb["text"], lb["x"], lb["y"], global_=gl).get("ok"):
+            nlab += 1; nglob += gl
+    print(f"  routed: {nw} wire segs, {nflag} power flags, {nlab} net labels ({nglob} global)")
     from collections import Counter
     V = violations(spec, pos, syms, wire_segs, flags, labels)
     print("  VIOLATIONS:", dict(Counter(x["type"] for x in V)), "total", len(V))
@@ -850,15 +853,21 @@ def plan_geometry(spec, pos, syms):
             flags.append({"libid": pw, "ref": ref, "value": net["name"],
                           "x": end[0], "y": end[1], "orient": fo})
             # IPC can't emit (power), so the power SYMBOL isn't recognised as power
-            # and won't connect by name. A coincident local LABEL names the node, so
-            # all same-rail pins unify (and a PWR_FLAG below drives the net).
-            labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True})
+            # and won't connect by name. A coincident GLOBAL label names the node so
+            # all same-rail pins unify ACROSS SHEETS (local labels are sheet-scoped,
+            # so power would not cross the hierarchy). A driver (PWR_FLAG / a real
+            # supply pin) lives on ONE sheet.
+            labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True, "global": True})
             label_pts.append((net["name"], end))
             allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
                                      end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
             if first_end is None:
                 first_end = end                        # rail node of the first power symbol
-        if first_pin and first_end:                    # ONE PWR_FLAG per rail -> ERC "driven"
+        # ONE PWR_FLAG per rail drives ERC. In a MULTI-SHEET design the rail is a
+        # GLOBAL net, so only the sheet that owns the supply may flag it - else N
+        # sheets put N power-outputs on one rail (ERC pin_to_pin). Consumer sheets
+        # set spec "power_driver": false to suppress all flags here.
+        if first_pin and first_end and spec.get("power_driver", True):
             a, pp = first_pin; owner = pp.split(".", 1)[0]
             ud = _outdir(a, pp, pos); perp = (-ud[1], ud[0])   # perpendicular to the rail flag
             flg_idx[0] += 1; fref = f"#FLG{flg_idx[0]:02d}"
@@ -880,6 +889,10 @@ def plan_geometry(spec, pos, syms):
     for net in nets:
         if net.get("power"):
             continue
+        # a net that LEAVES this sheet must be a GLOBAL label (local labels are
+        # sheet-scoped and won't merge across the hierarchy). Agent marks it with
+        # "global": true; intra-sheet nets stay local (clean namespace).
+        g = bool(net.get("global"))
         pins = [(_pin_abs(pp, pos, syms), pp) for pp in net.get("pins", [])]
         pins = [(a, o, pp) for (a, o), pp in pins if a is not None]
         if len(pins) < 2:
@@ -894,7 +907,7 @@ def plan_geometry(spec, pos, syms):
                 segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
                                         forbidden_pts=forbidden_for(nm))
                 wire_segs.extend(segs)
-                labels.append({"text": nm, "x": end[0], "y": end[1]})
+                labels.append({"text": nm, "x": end[0], "y": end[1], "global": g})
                 label_pts.append((nm, end))
                 allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
@@ -903,7 +916,7 @@ def plan_geometry(spec, pos, syms):
             wire_segs.extend(cp["segs"])               # one straight trunk through the row/col
             juncs.extend(cp["juncs"])                  # junction dots at interior T-taps
             lp = cp["label"]
-            labels.append({"text": net["name"], "x": lp[0], "y": lp[1]})
+            labels.append({"text": net["name"], "x": lp[0], "y": lp[1], "global": g})
             label_pts.append((net["name"], lp))
             for a, o, pp in pins:                      # every NON-cluster pin keeps its label
                 if pp in cp["pins"]:
@@ -913,7 +926,7 @@ def plan_geometry(spec, pos, syms):
                 segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
                                         forbidden_pts=forbidden_for(net["name"]))
                 wire_segs.extend(segs)
-                labels.append({"text": net["name"], "x": end[0], "y": end[1]})
+                labels.append({"text": net["name"], "x": end[0], "y": end[1], "global": g})
                 label_pts.append((net["name"], end))
                 allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
@@ -950,7 +963,7 @@ def plan_geometry(spec, pos, syms):
                 segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
                                         forbidden_pts=forbidden_for(net["name"]))
                 wire_segs.extend(segs)
-                labels.append({"text": net["name"], "x": end[0], "y": end[1]})
+                labels.append({"text": net["name"], "x": end[0], "y": end[1], "global": g})
                 label_pts.append((net["name"], end))   # so later wires/labels avoid it
                 allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
