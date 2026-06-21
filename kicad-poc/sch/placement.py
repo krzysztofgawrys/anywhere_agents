@@ -505,6 +505,16 @@ def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
         gl = bool(lb.get("global"))
         if bridge.label(lb["text"], lb["x"], lb["y"], global_=gl).get("ok"):
             nlab += 1; nglob += gl
+    # no-connect (X) markers on intentionally-unconnected pins (spec "no_connect":
+    # ["U1.1","K1.12",...]) so ERC stops flagging pin_not_connected for them.
+    ncpts = []
+    for pk in spec.get("no_connect", []):
+        a, _ = _pin_abs(pk, pos, syms)
+        if a is not None:
+            ncpts.append((a[0], a[1]))
+    if ncpts:
+        nnc = bridge.no_connect(ncpts).get("created", 0)
+        print(f"  no-connect markers: {nnc}/{len(ncpts)}")
     print(f"  routed: {nw} wire segs, {nflag} power flags, {nlab} net labels ({nglob} global)")
     from collections import Counter
     V = violations(spec, pos, syms, wire_segs, flags, labels)

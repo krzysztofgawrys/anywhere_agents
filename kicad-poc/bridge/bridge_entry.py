@@ -393,6 +393,22 @@ def add_junction():
     return jsonify(ok=True, created=len(_commit(sch, j, d.get("commit", "bridge: junction"))))
 
 
+@app.post("/no_connect")
+def add_no_connect():
+    """Place no-connect (X) marker(s) on intentionally-unconnected pins, so ERC
+    stops flagging pin_not_connected. Body: {"x_mm","y_mm"} for one, or
+    {"points":[[x,y],...]} for many. Coords are the PIN tip (mm), sheet-aware."""
+    d = request.get_json(force=True)
+    _, sch = schematic()
+    pts = d.get("points") or [[d["x_mm"], d["y_mm"]]]
+    items = []
+    for x, y in pts:
+        nc = st.NoConnectMarker()
+        nc.proto.position.x_nm = from_mm(x); nc.proto.position.y_nm = from_mm(y)
+        items.append(nc)
+    return jsonify(ok=True, created=len(_commit(sch, items, d.get("commit", "bridge: no_connect"))))
+
+
 def _sch_file(sch):
     """Absolute path of the open root schematic on disk."""
     proj = sch._doc.project

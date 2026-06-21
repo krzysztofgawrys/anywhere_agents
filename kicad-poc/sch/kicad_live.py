@@ -306,6 +306,9 @@ class Bridge:
                                           "reference": ref, "value": value})
     def label(self, text, x_mm, y_mm, global_=True):
         return self._post("/label", {"text": text, "x_mm": x_mm, "y_mm": y_mm, "global": global_})
+    def no_connect(self, points):
+        """points: [(x_mm,y_mm), ...] pin tips to mark no-connect (X)."""
+        return self._post("/no_connect", {"points": [[p[0], p[1]] for p in points]})
     def page(self):
         return json.load(urllib.request.urlopen(self.url + "/page", timeout=10))
     def clear(self):
