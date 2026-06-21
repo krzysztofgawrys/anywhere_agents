@@ -85,17 +85,32 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
         else:
             cx, cy = (ahw + 5.0, 0.0)
         return (cx, -cy)                              # lib Y-up -> schematic Y-down
+    # along-edge / column spacing. For a HIGH-FANOUT IC (20+ passives) widen both:
+    # a packed cell leaves no room for each part's ref+value text, so the cell reads
+    # as label soup even when there is empty sheet around it. Spreading lets the
+    # density relaxation push the (now larger) cell into that whitespace.
+    f = 1.0 + min(0.6, max(0.0, (len(sats) - 8) / 30.0))
+    PITCH = 11.43 * f; CROSS = 13.97 * f
+    # A satellite is BANKED beside the anchor only if it actually connects to the
+    # anchor. One that connects to ANOTHER satellite (a gate pulldown next to its
+    # transistor, an RC pair) has no anchor pin - defer it and stick it next to that
+    # partner, so it lands by its target instead of piling into a generic bank.
+    banked = [s for s in sats if _anchor_pin_pts(s, anchor, syms, nets)]
+    deferred = [s for s in sats if s not in banked]
     side = {}
-    for s in sats:
+    for s in banked:
         dx, dy = sdir(s)
         side[s] = ('R' if dx >= 0 else 'L') if abs(dx) >= abs(dy) else ('B' if dy >= 0 else 'T')
-    PITCH = 11.43; CROSS = 13.97                      # along-edge / column spacing (grid mult.)
     for sd in ('L', 'R', 'T', 'B'):
-        grp = sorted([s for s in sats if side[s] == sd])
+        grp = sorted([s for s in banked if side[s] == sd])
         if not grp:
             continue
         if sd in ('L', 'R'):                          # vertical column(s) beside the IC
-            per = max(1, int((2*ahh + 6) // PITCH))
+            # column height tracks the IC edge, but CAP it so a high-fanout IC
+            # (20+ passives) wraps into several short columns -> a near-square cell
+            # instead of one 120mm strip. Target ~ sqrt(n) tall for a balanced block.
+            base = max(1, int((2*ahh + 6) // PITCH))
+            per = max(1, min(base, max(4, int(math.ceil(len(grp) ** 0.5)))))
             sign = -1.0 if sd == 'L' else 1.0
             for i, s in enumerate(grp):
                 c, r = divmod(i, per); cnt = min(per, len(grp) - c*per)
@@ -103,23 +118,77 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
                 y = (r - (cnt-1)/2) * PITCH
                 local[s] = (snap(x), snap(y))
         else:                                         # horizontal row(s) above/below
-            per = max(1, int((2*ahw + 6) // PITCH))
+            # row width tracks the IC edge, but for a NARROW IC with many
+            # bottom/top passives (AD8330: 14 on one side) that forces deep stacks
+            # of 7+ rows -> a 100mm column. Widen the row to >= sqrt(n) so the bank
+            # is a near-square block, not a tall strip.
+            base = max(1, int((2*ahw + 6) // PITCH))
+            per = max(base, int(math.ceil(len(grp) ** 0.5)))
             sign = -1.0 if sd == 'T' else 1.0
             for i, s in enumerate(grp):
                 r, c = divmod(i, per); cnt = min(per, len(grp) - r*per)
                 y = sign * (ahh + gap + 4.0 + r*CROSS)
                 x = (c - (cnt-1)/2) * PITCH
                 local[s] = (snap(x), snap(y))
+    # deferred: place each next to a cell-mate it shares a net with (BFS from placed)
+    cellset = set(sats) | {anchor}
+    cadj = defaultdict(set)
+    for net in nets:
+        if net.get("power") or _is_gnd_net(net):
+            continue
+        nm = [pp.split(".")[0] for pp in net.get("pins", [])]
+        inside = [x for x in nm if x in cellset]
+        for a in inside:
+            for b in inside:
+                if a != b:
+                    cadj[a].add(b)
+    def free(cand, s):
+        w, h = _wh(syms[s]); r = (cand[0]-w/2, cand[0]+w/2, cand[1]-h/2, cand[1]+h/2)
+        a0, a1, b0, b1 = _abs_rect(anchor, 0.0, 0.0, syms)
+        if _overlap(r, (a0, a1, b0, b1), 1.0):
+            return False
+        for o in local:
+            if o == s:
+                continue
+            ox0, ox1, oy0, oy1 = _abs_rect(o, local[o][0], local[o][1], syms)
+            if _overlap(r, (ox0, ox1, oy0, oy1), 1.0):
+                return False
+        return True
+    pending = list(deferred)
+    for _ in range(len(pending) + 1):
+        progress = False
+        for s in list(pending):
+            partners = [q for q in cadj[s] if q in local]
+            if not partners:
+                continue
+            qx, qy = local[partners[0]]
+            # grow a chain HORIZONTALLY first (signal-flow left->right) so a long
+            # filter ladder reads as a row, not a tall column; chains off different
+            # partners then stack into a compact block instead of one 200mm strip.
+            # Bias the horizontal direction AWAY from the anchor (sign of qx).
+            hx = 1 if qx >= 0 else -1
+            for dx, dy in [(hx, 0), (-hx, 0), (0, 1), (0, -1), (hx, 1), (hx, -1)]:
+                cand = (snap(qx + dx*CROSS), snap(qy + dy*PITCH))
+                if free(cand, s):
+                    local[s] = cand; break
+            else:
+                local[s] = (snap(qx + hx*CROSS), snap(qy))
+            pending.remove(s); progress = True
+        if not progress:
+            break
+    for s in pending:                                 # truly isolated -> a generic slot
+        local[s] = (snap(ahw + gap + 4.0), snap(0.0))
     xs = [ax0, ax1]; ys = [ay0, ay1]
     for s in sats:
         lx, ly = local[s]; w, h = _wh(syms[s])
         xs += [lx-w/2, lx+w/2]; ys += [ly-h/2, ly+h/2]
     return local, (min(xs), max(xs), min(ys), max(ys))
 
-def _spread_cells(anchor, lb, page, margin, n=10, iters=140):
-    """Move whole cells (intact) to flatten the ink-density grid (analytical-
-    placement style), then push apart any that overlap. anchor:{a:(x,y)},
-    lb:{a:(x0,x1,y0,y1) cell-local bbox with the anchor at local (0,0)}."""
+def _spread_cells(anchor, lb, page, margin, n=10, iters=140, relax=True):
+    """Push apart any overlapping cells (intact). With relax=True also first flattens
+    the ink-density grid (analytical-placement style) - but that re-centres cells and
+    UNDOES the area-balanced column packing, so the packer passes relax=False to keep
+    its columns and only de-overlap. anchor:{a:(x,y)}, lb:{a:cell-local bbox}."""
     W, H = page
     lo_x, hi_x = margin, W - margin; lo_y, hi_y = margin, H - margin
     gw = (hi_x - lo_x) / n; gh = (hi_y - lo_y) / n
@@ -127,7 +196,7 @@ def _spread_cells(anchor, lb, page, margin, n=10, iters=140):
     area = {a: max(1.0, (lb[a][1]-lb[a][0]) * (lb[a][3]-lb[a][2])) for a in keys}
     def gidx(x, y):
         return (max(0, min(n-1, int((x-lo_x)/gw))), max(0, min(n-1, int((y-lo_y)/gh))))
-    for it in range(iters):
+    for it in range(iters if relax else 0):
         t = 1.0 - it/iters
         grid = [[0.0]*n for _ in range(n)]
         for a in keys:
@@ -225,11 +294,29 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
             if x not in seen:
                 seen.add(x); q.extend(adj[x])
         return None
+    def signal_partner(r):
+        # A 2-pin passive tied to GND/a rail (pulldown, pullup, termination, HPF cap)
+        # has exactly ONE signal net; its "target" is the part on the other end of
+        # that net. Return it so the passive cells WITH its target (placed on the
+        # connecting pin by _place_cell). Only when unambiguous: a lone partner, or a
+        # single role-bearing partner on a multi-drop net. Pure topology - no value
+        # heuristic, so a 50ohm termination groups by its target just like a pulldown.
+        rnets = [n for n in nets if r in {x.split(".")[0] for x in n.get("pins", [])}]
+        sig = [n for n in rnets if not n.get("power") and not _is_gnd_net(n)]
+        if len(sig) != 1:
+            return None
+        partners = {x.split(".")[0] for x in sig[0].get("pins", [])} - {r}
+        if len(partners) == 1:
+            q = next(iter(partners)); return q if q in by else None
+        role_p = [q for q in partners if q in roleset]
+        return role_p[0] if len(role_p) == 1 else None
     members = defaultdict(list)
     for r, p in by.items():
         if p.get("role") in COL or r in deco:         # decoupling -> bottom bank, not a satellite
             continue
-        g = p.get("group") or p.get("near")           # agent's grouping is BINDING - respect it
+        # agent's grouping is BINDING; else anchor a to-GND/rail passive to its target;
+        # else fall back to nearest role by signal-net BFS.
+        g = p.get("group") or p.get("near") or signal_partner(r)
         members[(root(g) if g in by else (nearest_role(r) or r))].append(r)
     cell_roots = list(anchors) + [r for r in members if r not in anchors]
     cells = {a: _place_cell(a, members.get(a, []), syms, nets) for a in cell_roots}
@@ -292,10 +379,16 @@ def layout(parts, libdirs, origin=(20.0, 20.0), local_libs=None, page=None, marg
     return pos, syms
 
 
-def place_all(spec, bridge_url, pos_override=None):
+def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
     libdirs = spec["libdirs"]
-    bridge = KL.Bridge(bridge_url)
+    # `sheet` (name/filename of a hierarchical sub-sheet) routes ALL bridge ops to
+    # that sheet via its sheet_path - so a big design splits cleanly across sheets.
+    sheet = sheet or spec.get("sheet")
+    bridge = KL.Bridge(bridge_url, sheet=sheet)
     h = bridge.health(); print("sheet:", h.get("project"), h.get("symbols"), "symbols")
+    if clear and h.get("symbols"):                      # wipe the sheet first or a re-run
+        r = bridge.clear()                              # stacks a 2nd copy of every symbol
+        print(f"  cleared {r.get('removed', '?')} existing items")
     parts_spec_nets[0] = spec.get("nets", [])
     _local_libs[0] = spec.get("local_libs") or {}
     page = None
@@ -322,7 +415,8 @@ def place_all(spec, bridge_url, pos_override=None):
         fa = 0 if o % 180 == 0 else -o                # keep field text upright
         fp = fpos[p["ref"]]
         b64 = KL.build_symbol_proto(sym, p["ref"], p.get("value", ""), x, y, scaffold,
-                                    orient=o, field_angle=fa, field_pos=fp)
+                                    orient=o, field_angle=fa, field_pos=fp,
+                                    footprint=p.get("footprint"))
         r = bridge.place_raw(b64, x, y, p["ref"], p.get("value", ""))
         print(f"  {'OK ' if r.get('ok') else 'ERR'} {p['ref']:>4} {p.get('role',''):<12} @({x:.1f},{y:.1f}) {r.get('created', r)}")
 
@@ -332,7 +426,8 @@ def place_all(spec, bridge_url, pos_override=None):
         psym = KL.load_symbol(f["libid"], libdirs, _local_libs[0])
         fp = autoplace_fields(psym, f["x"], f["y"], f["ref"], f["value"], obs, orient=f["orient"])
         b64 = KL.build_symbol_proto(psym, f["ref"], f["value"], f["x"], f["y"], scaffold,
-                                    orient=f["orient"], field_angle=0, field_pos=fp)
+                                    orient=f["orient"], field_angle=0, field_pos=fp,
+                                    footprint="")   # power flags/symbols carry no footprint
         if bridge.place_raw(b64, f["x"], f["y"], f["ref"], f["value"]).get("ok"): nflag += 1
 
     # wires + junctions + net labels last
@@ -487,6 +582,138 @@ def _route_stub(a, u, existing, boxes, owner, half, forbidden_pts=(), length=STU
     # sit the label/flag right on the pin with NO wire - it connects only this pin.
     return [], a
 
+def _orient_to_side(sym, npn, opn, side):
+    """deg in {0,180} placing pin `npn` on `side` ('T' top / 'B' bottom for a row
+    trunk, 'L'/'R' for a column trunk). None if the passive can't align that way."""
+    pins = {str(p["number"]): p for p in sym["pins"]}
+    np_, op = pins.get(npn), pins.get(opn)
+    if not np_ or not op:
+        return None
+    vertical = abs(np_["y"] - op["y"]) > abs(np_["x"] - op["x"])
+    if side in ("T", "B") and not vertical:
+        return None                                   # horizontal passive: flip won't stack it
+    if side in ("L", "R") and vertical:
+        return None
+    for deg in (0, 180):
+        rx, ry = KL._rot(np_["x"], np_["y"], deg)      # schematic offset = (rx, -ry)
+        sy, sx = -ry, rx
+        if (side == "T" and sy < 0) or (side == "B" and sy > 0) \
+           or (side == "L" and sx < 0) or (side == "R" and sx > 0):
+            return deg
+    return None
+
+def _consolidate(nets, pos, syms):
+    """Local wire-consolidation (rotate-to-align) rule. For a signal net that would
+    otherwise be LABEL-routed, find a compact cluster (>=2) of 2-pin passives in a
+    row/column, FLIP the ones free of an orientation lock so their net-pins meet on
+    one trunk axis, and plan a single straight trunk wire through them. Net members
+    outside the cluster keep their labels (the trunk gets one label too, so the net
+    still merges by name). Mutates _orients[0]; returns {netname:{pins,segs,label}}."""
+    plan = {}
+    locked = set(_orients[0])                          # GND-at-bottom etc. - never flip these
+    ebox = {r: _body_rect(r, pos, syms) for r in pos}
+    allpins = {}                                       # pk -> abs, for foreign-short checks
+    for r in pos:
+        for pn in syms[r]["pins"]:
+            a, _ = _pin_abs(f"{r}.{pn['number']}", pos, syms)
+            if a: allpins[f"{r}.{pn['number']}"] = a
+    for net in nets:
+        if net.get("power") or _is_gnd_net(net):
+            continue
+        name = net.get("name", ""); pks = net.get("pins", [])
+        ap = [(pk, _pin_abs(pk, pos, syms)[0]) for pk in pks]
+        ap = [(pk, a) for pk, a in ap if a]
+        if len(ap) < 2:
+            continue
+        xs = [a[0] for _, a in ap]; ys = [a[1] for _, a in ap]
+        span = max(max(xs) - min(xs), max(ys) - min(ys))
+        if not (len(ap) >= LABEL_FANOUT or span > LONG_NET_MM):
+            continue                                   # small/local: normal wiring already fine
+        cand = []                                      # 2-pin passive owners on this net
+        seen = set()
+        for pk in pks:
+            ref, num = pk.split(".", 1); sym = syms.get(ref)
+            if sym and len(sym["pins"]) == 2 and ref in pos and ref not in seen:
+                seen.add(ref); cand.append((ref, num, pk))
+        if len(cand) < 2:
+            continue
+        for axis in ("row", "col"):
+            i0 = 0 if axis == "row" else 1                 # along-axis index (row=x, col=y)
+            ci = 1 if axis == "row" else 0                 # cross-axis (constant) index
+            grp = sorted(cand, key=lambda c: pos[c[0]][i0])
+            line = [grp[0]]
+            for c in grp[1:]:                              # same cross coord + adjacent along axis
+                if abs(pos[c[0]][ci] - pos[line[-1][0]][ci]) <= 6.0 \
+                   and abs(pos[c[0]][i0] - pos[line[-1][0]][i0]) <= 18.0:
+                    line.append(c)
+            if len(line) < 2:
+                continue
+            side = ("T" if axis == "row" else "L")         # trunk above a row / left of a column
+            for ref, num, pk in line:                      # honour a locked member's side
+                if ref in locked:
+                    a = _pin_abs(pk, pos, syms)[0]
+                    if axis == "row":
+                        side = "T" if a[1] < pos[ref][1] else "B"
+                    else:
+                        side = "L" if a[0] < pos[ref][0] else "R"
+                    break
+            degs = {}; ok = True; members = []
+            for ref, num, pk in line:
+                opn = next(str(p["number"]) for p in syms[ref]["pins"] if str(p["number"]) != num)
+                if ref in locked:                          # keep orient; include only if it matches
+                    a = _pin_abs(pk, pos, syms)[0]
+                    on = (a[1] < pos[ref][1]) if axis == "row" and side == "T" else \
+                         (a[1] > pos[ref][1]) if axis == "row" else \
+                         (a[0] < pos[ref][0]) if side == "L" else (a[0] > pos[ref][0])
+                    if on:
+                        degs[ref] = _orients[0][ref]; members.append((ref, num, pk))
+                    continue
+                d = _orient_to_side(syms[ref], num, opn, side)
+                if d is None:
+                    continue
+                degs[ref] = d; members.append((ref, num, pk))
+            if len(members) < 2:
+                continue
+            sv = dict(_orients[0])                          # tentatively apply to read pin coords
+            _orients[0].update(degs)
+            npos = {pk: _pin_abs(pk, pos, syms)[0] for _, _, pk in members}
+            if axis == "row":
+                yk = (min(p[1] for p in npos.values()) - STUB) if side == "T" \
+                     else (max(p[1] for p in npos.values()) + STUB)
+                xs2 = [p[0] for p in npos.values()]
+                trunk = ((min(xs2), yk), (max(xs2), yk))
+                stubs = [((p[0], p[1]), (p[0], yk)) for p in npos.values()]
+                jpts = [(p[0], yk) for p in npos.values()]    # T-tap needs a junction dot
+                lbl = (min(xs2), yk)
+            else:
+                xk = (min(p[0] for p in npos.values()) - STUB) if side == "L" \
+                     else (max(p[0] for p in npos.values()) + STUB)
+                ys2 = [p[1] for p in npos.values()]
+                trunk = ((xk, min(ys2)), (xk, max(ys2)))
+                stubs = [((p[0], p[1]), (xk, p[1])) for p in npos.values()]
+                jpts = [(xk, p[1]) for p in npos.values()]    # T-tap needs a junction dot
+                lbl = (xk, min(ys2))
+            segs = [trunk] + stubs
+            mrefs = {r for r, _, _ in members}
+            mpins = {pk for _, _, pk in members}
+            bad = any(_seg_hits_box(p, q, ebox[r]) for (p, q) in segs
+                      for r in ebox if r not in mrefs)
+            foreign = [a for pk, a in allpins.items() if pk.split(".")[0] not in mrefs
+                       and pin2net_name(nets, pk) != name]   # a member's own other pin isn't foreign
+            bad = bad or any(_pt_on_seg(pt, p, q, 0.4) for (p, q) in segs for pt in foreign)
+            if bad:
+                _orients[0].clear(); _orients[0].update(sv)   # revert, keep labels
+                continue
+            plan[name] = {"pins": mpins, "segs": segs, "label": lbl, "juncs": jpts}
+            break
+    return plan
+
+def pin2net_name(nets, pk):
+    for n in nets:
+        if pk in n.get("pins", []):
+            return n.get("name")
+    return None
+
 def plan_geometry(spec, pos, syms):
     """Compute wire segments, power-flag specs, junctions and net LABELS WITHOUT
     posting. IRON RULES: no power node overlaps another; no label lands on a part
@@ -494,6 +721,7 @@ def plan_geometry(spec, pos, syms):
     path (each stub gets a free track). Uncrossable local nets fall back to labels."""
     wire_segs = []; flags = []; juncs = []; labels = []; pwr_idx = [0]
     nets = spec.get("nets", [])
+    consol = _consolidate(nets, pos, syms)                 # rotate-to-align: flips orients NOW
     eboxes = {r: _body_rect(r, pos, syms) for r in pos}    # element box = body+pins
     allboxes = dict(eboxes)                                # + placed flags/labels
     pin2net = {pp: n["name"] for n in nets for pp in n.get("pins", [])}   # "ref.num" -> net
@@ -504,11 +732,16 @@ def plan_geometry(spec, pos, syms):
             ab, _ = _pin_abs(pk, pos, syms)
             if ab is not None:
                 pinpts[pk] = ab
+    # every pin will sprout an outward stub/label lane; reserve that endpoint too so a
+    # FOREIGN net's wire trunk can't be routed through the spot where this pin's stub
+    # will land (the classic cross-column short: an IC pin's stub vs a neighbour's trunk).
+    pinstub = {pk: _radial_stub(ab, pk, pos) for pk, ab in pinpts.items()}
     label_pts = []                                         # [(netname, point)] placed so far
     def forbidden_for(netname):
         # points a wire/stub of `netname` must NOT touch: any DIFFERENT-net pin or
         # label (KiCad would merge them = a short / multiple_net_names). Same-net is fine.
         f = [pt for pk, pt in pinpts.items() if pin2net.get(pk) != netname]
+        f += [pt for pk, pt in pinstub.items() if pin2net.get(pk) != netname]
         f += [pt for nn, pt in label_pts if nn != netname]
         return f
     def crosses_any_box(segs):
@@ -549,6 +782,11 @@ def plan_geometry(spec, pos, syms):
             wire_segs.extend(segs)
             flags.append({"libid": pw, "ref": ref, "value": net["name"],
                           "x": end[0], "y": end[1], "orient": fo})
+            # IPC can't emit (power), so the power SYMBOL isn't recognised as power
+            # and won't connect by name. A coincident local LABEL names the node, so
+            # all same-rail pins unify (and a PWR_FLAG below drives the net).
+            labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True})
+            label_pts.append((net["name"], end))
             allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
                                      end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
         if first_pin:                                  # ONE PWR_FLAG per rail -> ERC "driven"
@@ -568,6 +806,39 @@ def plan_geometry(spec, pos, syms):
         pins = [(_pin_abs(pp, pos, syms), pp) for pp in net.get("pins", [])]
         pins = [(a, o, pp) for (a, o), pp in pins if a is not None]
         if len(pins) < 2:
+            # single-pin named net = an off-sheet signal (goes to a connector/MCU not
+            # on this sheet). Drop a local label so the pin reads as connected to a
+            # named net instead of ERC pin_not_connected. Skip auto-generated names.
+            nm = net.get("name", "")
+            if len(pins) == 1 and nm and not nm.startswith("Net-") and not nm.startswith("unconnected"):
+                a, o, pp = pins[0]
+                owner = pp.split(".", 1)[0]; u = _outdir(a, pp, pos)
+                hw = max(len(nm), 1) * 1.27 * 0.85 / 2 + 0.4
+                segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
+                                        forbidden_pts=forbidden_for(nm))
+                wire_segs.extend(segs)
+                labels.append({"text": nm, "x": end[0], "y": end[1]})
+                label_pts.append((nm, end))
+                allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
+            continue
+        cp = consol.get(net["name"])
+        if cp:                                         # rotate-to-align: cluster is WIRED
+            wire_segs.extend(cp["segs"])               # one straight trunk through the row/col
+            juncs.extend(cp["juncs"])                  # junction dots at interior T-taps
+            lp = cp["label"]
+            labels.append({"text": net["name"], "x": lp[0], "y": lp[1]})
+            label_pts.append((net["name"], lp))
+            for a, o, pp in pins:                      # every NON-cluster pin keeps its label
+                if pp in cp["pins"]:
+                    continue
+                owner = pp.split(".", 1)[0]; u = _outdir(a, pp, pos)
+                hw = max(len(net["name"]), 1) * 1.27 * 0.85 / 2 + 0.4
+                segs, end = _route_stub(a, u, wire_segs, allboxes, owner, (hw, 1.06),
+                                        forbidden_pts=forbidden_for(net["name"]))
+                wire_segs.extend(segs)
+                labels.append({"text": net["name"], "x": end[0], "y": end[1]})
+                label_pts.append((net["name"], end))
+                allboxes["#L:%d" % len(labels)] = (end[0]-hw, end[0]+hw, end[1]-1.06, end[1]+1.06)
             continue
         xs = [a[0] for a, o, pp in pins]; ys = [a[1] for a, o, pp in pins]
         span = max(max(xs) - min(xs), max(ys) - min(ys))

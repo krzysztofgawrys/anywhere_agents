@@ -109,10 +109,12 @@ def load_symbol(lib_id, libdirs, local_libs=None):
         pins, gfx = collect(parent)
         walk = parent
         guard += 1
-    props = {}
+    props = {}; fp = ""
     for pr in sym.properties:          # fields from the resolved (derived) symbol
         props[pr.key] = (pr.position.X, pr.position.Y)
-    return dict(nick=nick, name=name, pins=pins, graphics=gfx, props=props)
+        if pr.key == "Footprint":      # the symbol's OWN default footprint (often empty)
+            fp = pr.value or ""
+    return dict(nick=nick, name=name, pins=pins, graphics=gfx, props=props, footprint=fp)
 
 
 # ---------- proto building ----------
@@ -166,7 +168,21 @@ def _graphic_child(scaffold_gfx_child, g):
     return c
 
 
-def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None, power=None):
+def _default_footprint(nick, name):
+    """House default footprint by part TYPE when neither the netlist nor the lib
+    symbol gives one. R/C -> 0402 (always buyable in that size); L -> 0805 (smaller
+    sizes are often unavailable for some values). Returns '' for anything else."""
+    n = name or ""
+    if n == "R" or n.startswith("R_"):
+        return "Resistor_SMD:R_0402_1005Metric"
+    if n == "C" or n.startswith("C_"):                # excludes CP/CP_* (polarized)
+        return "Capacitor_SMD:C_0402_1005Metric"
+    if n == "L" or n.startswith("L_"):
+        return "Inductor_SMD:L_0805_2012Metric"
+    return ""
+
+
+def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None, power=None, footprint=None):
     """Return base64 of a SchematicSymbolInstance for sym placed at (x_mm,y_mm)."""
     tx, ty = int(round(x_mm * MM)), int(round(y_mm * MM))
     tpl = S.SchematicSymbolInstance(); tpl.ParseFromString(scaffold_bytes)
@@ -182,6 +198,9 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, fi
     # isolated undriven net). Auto-detect from the "power" library nickname.
     is_power = power if power is not None else (sym.get("nick") == "power")
     d.type = 2 if is_power else 1
+    if is_power:                                   # EXPERIMENT: mark the cached lib_symbol
+        d.reference_field.text.text = "#PWR"
+        d.reference_field.visible = False
     del d.items[:]
     # graphics (relative, Y-flip)
     _ORIENT[0] = 0   # graphics stay lib-relative; KiCad transform rotates them
@@ -215,15 +234,25 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, fi
         fld.text.attributes.angle.value_degrees = float(fa)   # keep field text horizontal/upright
     setf(inst.reference_field, ref, "Reference")
     setf(inst.value_field, value, "Value")
+    # CRITICAL: the scaffold is a captured R5 resistor, so its footprint_field carries
+    # "Resistor_SMD:R_0603_1608Metric" - that leaks onto EVERY placed part unless we
+    # overwrite it. Resolution: netlist footprint -> symbol's own lib footprint ->
+    # type default (R/C 0402, L 0805) -> empty. (Hidden field; position irrelevant.)
+    fp = footprint if footprint is not None else (
+        sym.get("footprint") or _default_footprint(sym.get("nick"), sym.get("name")))
+    inst.footprint_field.text.text = fp or ""
     inst.transform.orientation = _SSO.get(orient % 360, 1)
     return base64.b64encode(inst.SerializeToString()).decode()
 
 
 # ---------- bridge client ----------
 class Bridge:
-    def __init__(self, url):
+    def __init__(self, url, sheet=None):
         self.url = url.rstrip("/")
+        self.sheet = sheet          # target hierarchical sub-sheet (by name/filename)
     def _post(self, ep, payload):
+        if self.sheet and "sheet" not in payload:   # route every op to the sub-sheet
+            payload = dict(payload, sheet=self.sheet)
         req = urllib.request.Request(self.url + ep, json.dumps(payload).encode(),
                                      {"Content-Type": "application/json"})
         try:

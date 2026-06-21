@@ -39,6 +39,8 @@ _ensure_kipy()
 
 from flask import Flask, request, jsonify
 from kipy import KiCad
+from kipy.schematic import Schematic
+from kipy.proto.common.types import DocumentType, DocumentSpecifier
 import kipy.schematic_types as st
 from kipy.proto.schematic import schematic_types_pb2 as _schpb
 from kipy.geometry import Vector2
@@ -52,9 +54,119 @@ def _on_error(e):
     return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 500
 
 
-def schematic():
+def _sheet_path_str(d):
+    try:
+        return d.sheet_path.path_human_readable or "/".join(d.sheet_path.path)
+    except Exception:
+        return ""
+
+
+def _doc_label(d):
+    return d.board_filename or _sheet_path_str(d) or ""
+
+
+def _req_sheet():
+    """Pull an optional `sheet` selector from the current request (?sheet= or JSON
+    body). Lets EVERY endpoint target a specific hierarchical sheet with no per-
+    endpoint change - schematic() reads it here."""
+    try:
+        if request.method == "POST":
+            return (request.get_json(force=True, silent=True) or {}).get("sheet")
+        return request.args.get("sheet")
+    except Exception:
+        return None
+
+
+def _find_sheet_instance(top_sheets, sheet):
+    """Recursively find the SheetInstance whose name OR filename matches `sheet`
+    (case-insensitive substring). Returns the wrapper or None."""
+    s = str(sheet).lower()
+    for si in top_sheets:
+        if s in (si.name or "").lower() or s in (si.filename or "").lower():
+            return si
+        hit = _find_sheet_instance(si.children, sheet)
+        if hit is not None:
+            return hit
+    return None
+
+
+def schematic(sheet=None):
+    """k, Schematic for the selected sheet. Default = the ACTIVE document (docs[0]).
+    With `sheet` (explicit arg or request ?sheet=/JSON "sheet"), we target a specific
+    HIERARCHICAL sub-sheet by copying the active DocumentSpecifier and stamping its
+    sheet_path with the sub-sheet's KIID path (from get_hierarchy). create_items /
+    get_items then act on THAT sheet's screen - no open_document, no GUI navigation.
+    (KiCad gates open_document to headless, but honours header.document.sheet_path
+    for create/get even in GUI - api_handler_sch.cpp targetPath logic.)"""
     k = KiCad()                # picks up KICAD_API_SOCKET/TOKEN from env
-    return k, k.get_schematic()
+    if sheet is None:
+        sheet = _req_sheet()
+    docs = k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)
+    if not docs:
+        raise RuntimeError("no open schematic document")
+    base = docs[0]
+    if not sheet:
+        return k, Schematic(k._client, base)
+    si = _find_sheet_instance(Schematic(k._client, base).get_hierarchy(), sheet)
+    if si is None:
+        raise RuntimeError(f"sheet '{sheet}' not found in hierarchy")
+    doc = DocumentSpecifier(); doc.CopyFrom(base)
+    doc.sheet_path.CopyFrom(si._proto.path)          # route ops to this sub-sheet
+    return k, Schematic(k._client, doc)
+
+
+@app.get("/sheets")
+def sheets():
+    """Two views of the hierarchy. `open_documents` = what get_open_documents returns
+    (in GUI mode that is ONLY the ACTIVE sheet). `hierarchy` = get_hierarchy()'s full
+    tree (read-only: name/filename/page per sheet). In GUI mode the bridge can only
+    EDIT the active sheet; open_document (sheet switching) is headless-only."""
+    k = KiCad()
+    docs = k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)
+    opened = [{"index": i, "board_filename": d.board_filename,
+               "sheet_path": _sheet_path_str(d)} for i, d in enumerate(docs)]
+    sch = Schematic(k._client, docs[0])
+    active = sch.name
+    try:
+        active = sch._doc.project.name
+    except Exception:
+        pass
+
+    def walk(si, depth=0):
+        try:
+            phr = si.path.path_human_readable
+        except Exception:
+            phr = ""
+        node = [{"depth": depth, "name": si.name, "filename": si.filename,
+                 "page": si.page_number, "path": phr}]
+        for c in si.children:
+            node += walk(c, depth + 1)
+        return node
+
+    tree = []
+    err = None
+    try:
+        for top in sch.get_hierarchy():
+            tree += walk(top)
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
+
+    # ?open=<path-or-filename> -> actually TEST open_document on THIS nightly (the
+    # kipy docstring says GUI-mode unsupported, but verify rather than trust it).
+    probe = None
+    op = request.args.get("open")
+    if op:
+        probe = {}
+        for cand in [op, os.path.join(os.path.dirname(_sch_file(sch)), op)]:
+            try:
+                d = k.open_document(cand, DocumentType.DOCTYPE_SCHEMATIC)
+                s2 = Schematic(k._client, d)
+                probe[cand] = {"ok": True, "name": s2.name, "symbols": len(s2.get_symbols())}
+            except Exception as e:
+                probe[cand] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return jsonify(ok=True, active_symbols=len(sch.get_symbols()),
+                   open_documents=opened, hierarchy=tree, hierarchy_error=err,
+                   open_probe=probe)
 
 
 def _field_text(field):
@@ -322,6 +434,46 @@ def run_erc():
     return jsonify(ok=True, exit_code=r.returncode, schfile=schfile,
                    errors=errors, warnings=warnings, violation_count=len(viols),
                    violations=viols, stderr=(r.stderr or "")[-2000:])
+
+
+@app.post("/plot")
+def plot_doc():
+    """Save the open schematic, then render it with `kicad-cli sch export <fmt>`
+    (same KiCad install, headless) and return the bytes base64-encoded. This is
+    the LIVE counterpart to /erc: a worker gets a PDF/SVG of the EXACT open layout
+    over HTTP, without reaching the Windows filesystem. Exporting the ROOT sheet
+    pulls every hierarchical page into one multi-page PDF. fmt: pdf (default)|svg.
+    Client: POST {"fmt":"pdf"} -> {ok, files:[{name, b64}]}; decode b64 to a file."""
+    d = request.get_json(force=True, silent=True) or {}
+    fmt = (d.get("fmt") or "pdf").lower()
+    if fmt not in ("pdf", "svg"):
+        return jsonify(ok=False, error="fmt must be pdf or svg"), 400
+    k, sch = schematic()
+    sch.save()
+    schfile = _sch_file(sch)
+    cli = k.get_kicad_binary_path("kicad-cli")
+    outdir = tempfile.mkdtemp(prefix="bridge_plot_")
+    if fmt == "pdf":
+        out = os.path.join(outdir, "out.pdf")
+        cmd = [cli, "sch", "export", "pdf", "-o", out, schfile]
+    else:
+        out = outdir
+        cmd = [cli, "sch", "export", "svg", "--no-background-color", "-o", outdir, schfile]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if fmt == "pdf":
+        files = [os.path.join(outdir, "out.pdf")] if os.path.exists(out) else []
+    else:
+        files = [os.path.join(outdir, f) for f in sorted(os.listdir(outdir)) if f.endswith(".svg")]
+    if not files:
+        return jsonify(ok=False, exit_code=r.returncode, schfile=schfile,
+                       stderr=(r.stderr or "")[-2000:]), 500
+    blobs = []
+    for fp in files:
+        with open(fp, "rb") as f:
+            blobs.append({"name": os.path.basename(fp),
+                          "b64": base64.b64encode(f.read()).decode("ascii")})
+    return jsonify(ok=True, fmt=fmt, schfile=schfile, files=blobs,
+                   stderr=(r.stderr or "")[-1000:])
 
 
 # top-level schematic object types to wipe on /clear (children like pins/fields
