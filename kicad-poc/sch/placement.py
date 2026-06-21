@@ -112,9 +112,10 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
             base = max(1, int((2*ahh + 6) // PITCH))
             per = max(1, min(base, max(4, int(math.ceil(len(grp) ** 0.5)))))
             sign = -1.0 if sd == 'L' else 1.0
+            ext = (-ax0) if sd == 'L' else ax1   # ACTUAL body reach this side (origin may be off-centre)
             for i, s in enumerate(grp):
                 c, r = divmod(i, per); cnt = min(per, len(grp) - c*per)
-                x = sign * (ahw + gap + 4.0 + c*CROSS)
+                x = sign * (ext + gap + 4.0 + c*CROSS)
                 y = (r - (cnt-1)/2) * PITCH
                 local[s] = (snap(x), snap(y))
         else:                                         # horizontal row(s) above/below
@@ -125,9 +126,10 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
             base = max(1, int((2*ahw + 6) // PITCH))
             per = max(base, int(math.ceil(len(grp) ** 0.5)))
             sign = -1.0 if sd == 'T' else 1.0
+            ext = (-ay0) if sd == 'T' else ay1   # ACTUAL body reach this side (origin may be off-centre)
             for i, s in enumerate(grp):
                 r, c = divmod(i, per); cnt = min(per, len(grp) - r*per)
-                y = sign * (ahh + gap + 4.0 + r*CROSS)
+                y = sign * (ext + gap + 4.0 + r*CROSS)
                 x = (c - (cnt-1)/2) * PITCH
                 local[s] = (snap(x), snap(y))
     # deferred: place each next to a cell-mate it shares a net with (BFS from placed)
@@ -177,7 +179,7 @@ def _place_cell(anchor, sats, syms, nets, gap=2.54):
         if not progress:
             break
     for s in pending:                                 # truly isolated -> a generic slot
-        local[s] = (snap(ahw + gap + 4.0), snap(0.0))
+        local[s] = (snap(ax1 + gap + 4.0), snap(0.0))
     xs = [ax0, ax1]; ys = [ay0, ay1]
     for s in sats:
         lx, ly = local[s]; w, h = _wh(syms[s])
@@ -477,7 +479,7 @@ def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
         fp = fpos[p["ref"]]
         b64 = KL.build_symbol_proto(sym, p["ref"], p.get("value", ""), x, y, scaffold,
                                     orient=o, field_angle=fa, field_pos=fp,
-                                    footprint=p.get("footprint"))
+                                    footprint=p.get("footprint"), mpn=p.get("mpn"))
         r = bridge.place_raw(b64, x, y, p["ref"], p.get("value", ""))
         print(f"  {'OK ' if r.get('ok') else 'ERR'} {p['ref']:>4} {p.get('role',''):<12} @({x:.1f},{y:.1f}) {r.get('created', r)}")
 
@@ -823,13 +825,17 @@ def plan_geometry(spec, pos, syms):
             continue
         nm = pw.split(":")[-1].upper()
         negative = nm.startswith("-") or nm in ("VEE", "VSS", "V-")
-        first_pin = None
-        for pp in net.get("pins", []):
-            a, _ = _pin_abs(pp, pos, syms)
+        first_pin = None; first_end = None
+        placed_pos = []                                # KiCad stacks redundant power
+        for pp in net.get("pins", []):                 # pins (4x +VS) at ONE coord -
+            a, _ = _pin_abs(pp, pos, syms)             # one flag per distinct node, not per pin
             if a is None:
                 continue
             if first_pin is None:
                 first_pin = (a, pp)
+            if any(abs(a[0]-px) < 0.6 and abs(a[1]-py) < 0.6 for px, py in placed_pos):
+                continue                               # coincident with an already-flagged pin
+            placed_pos.append(a)
             pwr_idx[0] += 1
             if negative:
                 ocy = pos.get(pp.split(".")[0], (a[0], a[1]))[1]
@@ -850,16 +856,26 @@ def plan_geometry(spec, pos, syms):
             label_pts.append((net["name"], end))
             allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
                                      end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
-        if first_pin:                                  # ONE PWR_FLAG per rail -> ERC "driven"
+            if first_end is None:
+                first_end = end                        # rail node of the first power symbol
+        if first_pin and first_end:                    # ONE PWR_FLAG per rail -> ERC "driven"
             a, pp = first_pin; owner = pp.split(".", 1)[0]
             ud = _outdir(a, pp, pos); perp = (-ud[1], ud[0])   # perpendicular to the rail flag
             flg_idx[0] += 1; fref = f"#FLG{flg_idx[0]:02d}"
-            segs, end = _route_stub(a, perp, wire_segs, allboxes, owner, (1.6, 1.6),
-                                    forbidden_pts=forbidden_for(net["name"]))
+            # route from the first power-symbol end (a clear rail node), perpendicular,
+            # so the ERC flag never lands on the power symbol/pin it shares the node with
+            segs, end = _route_stub(first_end, perp, wire_segs, allboxes, owner, (1.8, 3.2),
+                                    forbidden_pts=forbidden_for(net["name"]), length=5.08)
+            if end == first_end:                       # congested -> force a clear perp offset
+                for sgn in (1.0, -1.0):
+                    cand = (first_end[0]+perp[0]*sgn*6.35, first_end[1]+perp[1]*sgn*6.35)
+                    ib = (cand[0]-1.8, cand[0]+1.8, cand[1]-3.2, cand[1]+3.2)
+                    if not any(_overlap(ib, allboxes[r]) for r in allboxes if r != owner):
+                        end = cand; segs = [(first_end, cand)]; break
             wire_segs.extend(segs)
             flags.append({"libid": "power:PWR_FLAG", "ref": fref, "value": "",
                           "x": end[0], "y": end[1], "orient": 0})
-            allboxes["#F:" + fref] = (end[0]-1.6, end[0]+1.6, end[1]-1.6, end[1]+1.6)
+            allboxes["#F:" + fref] = (end[0]-1.8, end[0]+1.8, end[1]-3.2, end[1]+3.2)
     # 2) signal nets: labels for wide/long nets, wires for small local ones
     for net in nets:
         if net.get("power"):
@@ -957,6 +973,10 @@ def build_obstacles(spec, pos, syms, wire_segs, flags, labels=()):
     obs = []
     for ref in pos:
         obs.append(_body_rect(ref, pos, syms))
+        for pn in syms[ref]["pins"]:                   # pins too: a field must not land on a pin
+            ab, _ = _pin_abs("%s.%s" % (ref, pn["number"]), pos, syms)
+            if ab is not None:
+                obs.append((ab[0]-0.6, ab[0]+0.6, ab[1]-0.6, ab[1]+0.6))
     for (p, q) in wire_segs:
         obs.append(_seg_rect(p, q))
     for f in flags:                                   # flag graphic ~3.8mm tall + stem
@@ -975,9 +995,10 @@ def _hit(b, o):
 _G = 0.635
 def _snap(c): return (round(c[0]/_G)*_G, round(c[1]/_G)*_G)
 
-def _slide(c, text, obs, d, step=_G, maxd=20):
+def _slide(c, text, obs, d, step=_G, maxd=28):
     """Slide the field center in direction d until its bbox clears all obstacles."""
-    dx, dy = {"R": (1, 0), "L": (-1, 0), "U": (0, -1), "D": (0, 1)}[d]
+    dx, dy = {"R": (1, 0), "L": (-1, 0), "U": (0, -1), "D": (0, 1),
+              "RU": (1, -1), "RD": (1, 1), "LU": (-1, -1), "LD": (-1, 1)}[d]
     cx, cy = c; n = 0
     while n * step <= maxd:
         if not any(_hit(_fbox((cx, cy), text), o) for o in obs):
@@ -991,7 +1012,7 @@ def _place_field(c, text, obs):
     if not any(_hit(_fbox(c, text), o) for o in obs):
         return _snap(c)
     best = None; bd = 1e9
-    for d in ("R", "L", "U", "D"):
+    for d in ("R", "L", "U", "D", "RU", "RD", "LU", "LD"):
         p = _slide(c, text, obs, d)
         if p is not None:
             dist = abs(p[0]-c[0]) + abs(p[1]-c[1])

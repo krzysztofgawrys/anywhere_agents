@@ -182,7 +182,7 @@ def _default_footprint(nick, name):
     return ""
 
 
-def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None, power=None, footprint=None):
+def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, field_angle=None, field_pos=None, power=None, footprint=None, mpn=None, fields=None):
     """Return base64 of a SchematicSymbolInstance for sym placed at (x_mm,y_mm)."""
     tx, ty = int(round(x_mm * MM)), int(round(y_mm * MM))
     tpl = S.SchematicSymbolInstance(); tpl.ParseFromString(scaffold_bytes)
@@ -242,7 +242,44 @@ def build_symbol_proto(sym, ref, value, x_mm, y_mm, scaffold_bytes, orient=0, fi
         sym.get("footprint") or _default_footprint(sym.get("nick"), sym.get("name")))
     inst.footprint_field.text.text = fp or ""
     inst.transform.orientation = _SSO.get(orient % 360, 1)
-    return base64.b64encode(inst.SerializeToString()).decode()
+    blob = inst.SerializeToString()
+    # CUSTOM FIELDS (e.g. MPN): KiCad master reads them from instance.user_fields
+    # (SchematicSymbolInstance field #19, `repeated SchematicField`). The BUNDLED
+    # kipy wheel predates that field, so the wrapper can't set it - but protobuf is
+    # forward-compatible: we serialize a SchematicField (kipy HAS that type, wire-
+    # compatible) and APPEND it under tag #19 ourselves. KiCad then materialises a
+    # real `(property "MPN" ...)`. (The earlier "live can't do custom fields" was a
+    # stale-proto artifact, not a KiCad limit.)
+    fields = dict(fields or {})
+    if mpn:
+        fields.setdefault("MPN", mpn)
+    for name, val in fields.items():
+        if not val:
+            continue
+        blob += _pack_user_field(name, str(val), tx, ty)
+    return base64.b64encode(blob).decode()
+
+
+def _varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F; n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+_USER_FIELDS_TAG = _varint((19 << 3) | 2)        # SchematicSymbolInstance.user_fields, LEN
+
+def _pack_user_field(name, value, x_nm, y_nm):
+    """Wire-encode one custom instance field as user_fields[#19] = SchematicField."""
+    f = S.SchematicField()
+    f.name = name
+    f.text.text = value
+    f.text.position.x_nm = x_nm; f.text.position.y_nm = y_nm
+    f.text.attributes.size.x_nm = int(1.27 * MM); f.text.attributes.size.y_nm = int(1.27 * MM)
+    f.visible = False; f.show_name = True
+    fb = f.SerializeToString()
+    return _USER_FIELDS_TAG + _varint(len(fb)) + fb
 
 
 # ---------- bridge client ----------
@@ -313,7 +350,8 @@ def push_netlist_live(spec, bridge, libdirs, origin=(60.0, 60.0), dx=30.0, dy=30
         y = part.get("y_mm", oy + (i // cols) * dy)
         try:
             sym = load_symbol(part["lib_id"], libdirs, local_libs)
-            b64 = build_symbol_proto(sym, part["ref"], part.get("value", ""), x, y, scaffold)
+            b64 = build_symbol_proto(sym, part["ref"], part.get("value", ""), x, y, scaffold,
+                                     footprint=part.get("footprint"), mpn=part.get("mpn"))
             r = bridge.place_raw(b64, x, y, part["ref"], part.get("value", ""))
             if r.get("ok"):
                 placed[part["ref"]] = (x, y, sym)
