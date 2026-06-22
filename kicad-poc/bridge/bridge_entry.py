@@ -480,12 +480,14 @@ def pcb_move():
 
 @app.post("/pcb/import")
 def pcb_import():
-    """Update PCB from Schematic - INCREMENTAL: save the schematic, export its
-    netlist, then board.import_netlist matching by REFERENCE (R1<->R1) by default
-    so a re-import UPDATES existing footprints in place instead of adding duplicates
-    (our live-regenerated schematics get fresh UUIDs, so UUID matching would dupe).
-    Body opts: match ("reference" default | "uuid"), dry_run, delete_extra (remove
-    board footprints whose ref is no longer in the netlist), update (default true)."""
+    """Update PCB from Schematic - INCREMENTAL full sync: save the schematic, export
+    its netlist, then board.import_netlist matching by REFERENCE (R1<->R1) so a
+    re-import UPDATES existing footprints in place (our live-regenerated schematics
+    get fresh UUIDs, so UUID matching would dupe). delete_extra defaults TRUE so the
+    board always equals the schematic - stale footprints from earlier schematic
+    versions are removed (else the board accumulates cruft). Body opts: match
+    ("reference" default | "uuid"), delete_extra (default true), update (default
+    true), dry_run."""
     from kipy.proto.board.board_commands_pb2 import NetlistMatchMode
     d = request.get_json(force=True, silent=True) or {}
     mm = NetlistMatchMode.NMM_UUID if str(d.get("match", "reference")).lower() == "uuid" \
@@ -501,7 +503,7 @@ def pcb_import():
                        stderr=(r.stderr or "")[-1500:]), 500
     _, b = board()
     res = b.import_netlist(net, dry_run=bool(d.get("dry_run")), match_mode=mm,
-                           delete_extra_footprints=bool(d.get("delete_extra", False)),
+                           delete_extra_footprints=bool(d.get("delete_extra", True)),
                            update_footprints=bool(d.get("update", True)))
     return jsonify(ok=True, netlist=net, match="uuid" if mm == NetlistMatchMode.NMM_UUID else "reference",
                    footprints_after=len(b.get_footprints()), result=str(res)[:600])
