@@ -501,6 +501,34 @@ def pcb_import():
                    result=str(res)[:600])
 
 
+@app.post("/pcb/clear")
+def pcb_clear():
+    """Remove board items in ONE undoable commit. Default: all FOOTPRINTS (reset
+    placement before a fresh re-import). Opts: tracks (also tracks+vias), zones,
+    all (footprints+tracks+vias+zones+shapes+text). dry_run -> just count, no change."""
+    d = request.get_json(force=True, silent=True) or {}
+    _, b = board()
+    items = list(b.get_footprints())
+    if d.get("tracks") or d.get("all"):
+        items += list(b.get_tracks()) + list(b.get_vias())
+    if d.get("zones") or d.get("all"):
+        items += list(b.get_zones())
+    if d.get("all"):
+        items += list(b.get_shapes()) + list(b.get_text())
+    if d.get("dry_run"):
+        return jsonify(ok=True, would_remove=len(items), dry_run=True)
+    n = 0
+    if items:
+        c = b.begin_commit()
+        try:
+            b.remove_items(items)
+            b.push_commit(c, d.get("commit", "bridge: pcb clear"))
+            n = len(items)
+        except Exception:
+            b.drop_commit(c); raise
+    return jsonify(ok=True, removed=n)
+
+
 @app.post("/pcb/save")
 def pcb_save():
     _, b = board()
