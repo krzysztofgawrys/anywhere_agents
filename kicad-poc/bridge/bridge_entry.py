@@ -509,6 +509,32 @@ def pcb_import():
                    footprints_after=len(b.get_footprints()), result=str(res)[:600])
 
 
+@app.post("/pcb/check_footprints")
+def pcb_check_footprints():
+    """List schematic refs whose assigned footprint does NOT resolve in the board's
+    footprint library table (these would be skipped on import). Runs a dry-run
+    import and parses KiCad's own resolver. Returns bad:[{ref,footprint}]."""
+    from kipy.proto.board.board_commands_pb2 import NetlistMatchMode
+    k, sch = schematic()
+    sch.save()
+    cli = k.get_kicad_binary_path("kicad-cli")
+    net = os.path.join(tempfile.gettempdir(), "bridge_pcb.net")
+    cmd = [cli, "sch", "export", "netlist", "--format", "kicadsexpr", "-o", net, _sch_file(sch)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if not os.path.exists(net):
+        return jsonify(ok=False, error="netlist export failed",
+                       stderr=(r.stderr or "")[-1500:]), 500
+    _, b = board()
+    res = b.import_netlist(net, dry_run=True, match_mode=NetlistMatchMode.NMM_REFERENCE,
+                           delete_extra_footprints=True)
+    import re as _re
+    bad = {}
+    for m in _re.finditer(r"Cannot add (\S+) \(footprint '([^']+)' not found\)", res.report or ""):
+        bad[m.group(1)] = m.group(2)
+    return jsonify(ok=True, count=len(bad),
+                   bad=[{"ref": r2, "footprint": f} for r2, f in sorted(bad.items())])
+
+
 @app.post("/pcb/clear")
 def pcb_clear():
     """Remove board items in ONE undoable commit. Default: all FOOTPRINTS (reset
