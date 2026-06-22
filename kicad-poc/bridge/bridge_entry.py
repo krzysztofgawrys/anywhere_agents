@@ -504,6 +504,46 @@ def pcb_footprints():
     return jsonify(ok=True, count=len(out), footprints=out)
 
 
+@app.get("/pcb/pads")
+def pcb_pads():
+    """Per-footprint pad geometry + net, for true pin-level placement. Each pad's
+    (x_mm,y_mm) is FOOTPRINT-LOCAL in the orient-0 frame (like .kicad_mod / GetPos0):
+    local0 = R(-orient) . (pad_abs - fp_pos). So the caller reconstructs the absolute
+    pad position for ANY placement it assigns via /pcb/move as:
+        pad_abs = fp_pos + R(orient) . (x_mm, y_mm)
+    with R(t) = [[cos t, -sin t],[sin t, cos t]] in KiCad's Y-DOWN mm frame (verified
+    round-trip against /pcb/move's Angle.from_degrees). `net` is the flat board net
+    name on the pad (e.g. "GND", "/CH1/IF_HP"); `num` matches the symbol pin number.
+    Footprint-level x_mm/y_mm/orient is the pad frame's current origin on the board."""
+    import math
+    _, b = board()
+    out = []
+    for f in b.get_footprints():
+        try:
+            fx, fy = f.position.x, f.position.y
+            ang = f.orientation.degrees
+            rad = math.radians(-ang); ca, sa = math.cos(rad), math.sin(rad)
+            pads = []
+            for p in f.definition.pads:
+                try:
+                    dx = p.position.x - fx; dy = p.position.y - fy
+                    lx = dx * ca - dy * sa; ly = dx * sa + dy * ca
+                    try:
+                        net = p.net.name or ""
+                    except Exception:
+                        net = ""
+                    pads.append({"num": p.number, "x_mm": round(lx / 1e6, 4),
+                                 "y_mm": round(ly / 1e6, 4), "net": net})
+                except Exception:
+                    pass
+            out.append({"ref": f.reference_field.text.value,
+                        "x_mm": fx / 1e6, "y_mm": fy / 1e6, "orient": ang,
+                        "pads": pads})
+        except Exception:
+            pass
+    return jsonify(ok=True, count=len(out), footprints=out)
+
+
 @app.post("/pcb/move")
 def pcb_move():
     """Move/rotate footprints. Body: {"moves":[{"ref","x_mm","y_mm","orient"?}]}

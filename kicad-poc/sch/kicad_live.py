@@ -330,6 +330,14 @@ class Bridge:
         (source schematic sheet name), w_mm/h_mm (current-orientation extent)."""
         return json.load(urllib.request.urlopen(self.url + "/pcb/footprints", timeout=30))
 
+    def pcb_pads(self):
+        """Per-footprint pad geometry + net for pin-level placement. Each pad
+        (x_mm,y_mm) is FOOTPRINT-LOCAL at orient 0 (like .kicad_mod); reconstruct
+        absolute for a chosen (X,Y,orient) via pad_abs = (X,Y) + R(orient).(x,y),
+        R(t)=[[cos,-sin],[sin,cos]] in KiCad's Y-down frame. pad.net = flat board
+        net name; pad.num matches the symbol pin."""
+        return json.load(urllib.request.urlopen(self.url + "/pcb/pads", timeout=30))
+
     def pcb_move(self, moves):
         """moves: [{ref, x_mm, y_mm, orient?}]. One undoable commit."""
         return self._post("/pcb/move", {"moves": moves})
