@@ -480,10 +480,16 @@ def pcb_move():
 
 @app.post("/pcb/import")
 def pcb_import():
-    """Update PCB from Schematic: save the schematic, export its netlist via
-    kicad-cli, then board.import_netlist (adds/updates footprints). Body opts:
-    dry_run (default false), delete_extra (default false)."""
+    """Update PCB from Schematic - INCREMENTAL: save the schematic, export its
+    netlist, then board.import_netlist matching by REFERENCE (R1<->R1) by default
+    so a re-import UPDATES existing footprints in place instead of adding duplicates
+    (our live-regenerated schematics get fresh UUIDs, so UUID matching would dupe).
+    Body opts: match ("reference" default | "uuid"), dry_run, delete_extra (remove
+    board footprints whose ref is no longer in the netlist), update (default true)."""
+    from kipy.proto.board.board_commands_pb2 import NetlistMatchMode
     d = request.get_json(force=True, silent=True) or {}
+    mm = NetlistMatchMode.NMM_UUID if str(d.get("match", "reference")).lower() == "uuid" \
+        else NetlistMatchMode.NMM_REFERENCE
     k, sch = schematic()
     sch.save()
     cli = k.get_kicad_binary_path("kicad-cli")
@@ -494,11 +500,11 @@ def pcb_import():
         return jsonify(ok=False, error="netlist export failed",
                        stderr=(r.stderr or "")[-1500:]), 500
     _, b = board()
-    res = b.import_netlist(net, dry_run=bool(d.get("dry_run")),
+    res = b.import_netlist(net, dry_run=bool(d.get("dry_run")), match_mode=mm,
                            delete_extra_footprints=bool(d.get("delete_extra", False)),
-                           update_footprints=True)
-    return jsonify(ok=True, netlist=net, footprints_after=len(b.get_footprints()),
-                   result=str(res)[:600])
+                           update_footprints=bool(d.get("update", True)))
+    return jsonify(ok=True, netlist=net, match="uuid" if mm == NetlistMatchMode.NMM_UUID else "reference",
+                   footprints_after=len(b.get_footprints()), result=str(res)[:600])
 
 
 @app.post("/pcb/clear")
