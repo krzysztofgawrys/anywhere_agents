@@ -40,10 +40,11 @@ _ensure_kipy()
 from flask import Flask, request, jsonify
 from kipy import KiCad
 from kipy.schematic import Schematic
+from kipy.board import Board
 from kipy.proto.common.types import DocumentType, DocumentSpecifier
 import kipy.schematic_types as st
 from kipy.proto.schematic import schematic_types_pb2 as _schpb
-from kipy.geometry import Vector2
+from kipy.geometry import Vector2, Angle
 from kipy.util import from_mm
 
 app = Flask(__name__)
@@ -407,6 +408,104 @@ def add_no_connect():
         nc.proto.position.x_nm = from_mm(x); nc.proto.position.y_nm = from_mm(y)
         items.append(nc)
     return jsonify(ok=True, created=len(_commit(sch, items, d.get("commit", "bridge: no_connect"))))
+
+
+# ===================== PCB (pcbnew) =====================
+def board():
+    """k, Board for the OPEN PCB. Same idea as schematic() but DOCTYPE_PCB."""
+    k = KiCad()
+    docs = k.get_open_documents(DocumentType.DOCTYPE_PCB)
+    if not docs:
+        raise RuntimeError("no open PCB document (open the .kicad_pcb in pcbnew)")
+    return k, Board(k._client, docs[0])
+
+
+@app.get("/pcb/health")
+def pcb_health():
+    try:
+        k, b = board()
+        return jsonify(ok=True, kicad=str(k.get_version()),
+                       project=b.get_project().name, footprints=len(b.get_footprints()))
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 503
+
+
+@app.get("/pcb/footprints")
+def pcb_footprints():
+    """Read every footprint: ref, value, position (mm), orientation (deg), layer.
+    This is the placer's input - the live board state to optimise."""
+    _, b = board()
+    out = []
+    for f in b.get_footprints():
+        try:
+            out.append({"ref": f.reference_field.text.value,
+                        "value": f.value_field.text.value,
+                        "x_mm": f.position.x / 1e6, "y_mm": f.position.y / 1e6,
+                        "orient": f.orientation.degrees, "layer": int(f.layer)})
+        except Exception:
+            pass
+    return jsonify(ok=True, count=len(out), footprints=out)
+
+
+@app.post("/pcb/move")
+def pcb_move():
+    """Move/rotate footprints. Body: {"moves":[{"ref","x_mm","y_mm","orient"?}]}
+    (or a single {ref,x_mm,y_mm,orient?}). One undoable commit."""
+    d = request.get_json(force=True)
+    moves = d.get("moves") or [d]
+    by_ref = {m["ref"]: m for m in moves if m.get("ref")}
+    k, b = board()
+    upd, changed = [], []
+    for f in b.get_footprints():
+        try:
+            ref = f.reference_field.text.value
+        except Exception:
+            continue
+        m = by_ref.get(ref)
+        if not m:
+            continue
+        f.position = Vector2.from_xy_mm(m["x_mm"], m["y_mm"])
+        if m.get("orient") is not None:
+            f.orientation = Angle.from_degrees(float(m["orient"]))
+        upd.append(f); changed.append(ref)
+    c = b.begin_commit()
+    try:
+        if upd:
+            b.update_items(upd)
+        b.push_commit(c, d.get("commit", "bridge: pcb move"))
+    except Exception:
+        b.drop_commit(c); raise
+    return jsonify(ok=True, moved=changed, not_found=sorted(set(by_ref) - set(changed)))
+
+
+@app.post("/pcb/import")
+def pcb_import():
+    """Update PCB from Schematic: save the schematic, export its netlist via
+    kicad-cli, then board.import_netlist (adds/updates footprints). Body opts:
+    dry_run (default false), delete_extra (default false)."""
+    d = request.get_json(force=True, silent=True) or {}
+    k, sch = schematic()
+    sch.save()
+    cli = k.get_kicad_binary_path("kicad-cli")
+    net = os.path.join(tempfile.gettempdir(), "bridge_pcb.net")
+    cmd = [cli, "sch", "export", "netlist", "--format", "kicadsexpr", "-o", net, _sch_file(sch)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if not os.path.exists(net):
+        return jsonify(ok=False, error="netlist export failed",
+                       stderr=(r.stderr or "")[-1500:]), 500
+    _, b = board()
+    res = b.import_netlist(net, dry_run=bool(d.get("dry_run")),
+                           delete_extra_footprints=bool(d.get("delete_extra", False)),
+                           update_footprints=True)
+    return jsonify(ok=True, netlist=net, footprints_after=len(b.get_footprints()),
+                   result=str(res)[:600])
+
+
+@app.post("/pcb/save")
+def pcb_save():
+    _, b = board()
+    b.save()
+    return jsonify(ok=True)
 
 
 def _sch_file(sch):
