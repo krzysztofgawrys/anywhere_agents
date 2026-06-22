@@ -563,6 +563,54 @@ def pcb_clear():
     return jsonify(ok=True, removed=n)
 
 
+@app.post("/pcb/edge")
+def pcb_edge():
+    """Draw the board OUTLINE on Edge.Cuts (closed loop of line segments). Body:
+    {"rect":[x,y,w,h]} | {"poly":[[x,y],...]} | {"segments":[[x1,y1,x2,y2],...]};
+    width_mm (default 0.1); clear (wipe existing Edge.Cuts first). All mm."""
+    from kipy.proto.board.board_types_pb2 import BoardLayer
+    import kipy.board_types as bt
+    d = request.get_json(force=True)
+    _, b = board()
+    EDGE = BoardLayer.BL_Edge_Cuts
+    w_nm = from_mm(d.get("width_mm", 0.1))
+
+    def seg(x1, y1, x2, y2):
+        s = bt.BoardSegment(); s.layer = EDGE
+        s.start = Vector2.from_xy_mm(x1, y1); s.end = Vector2.from_xy_mm(x2, y2)
+        try:
+            s.proto.shape.attributes.stroke.width.value_nm = w_nm
+        except Exception:
+            pass
+        return s
+
+    pts = None
+    if d.get("rect"):
+        x, y, w, h = d["rect"]; pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)]
+    elif d.get("poly"):
+        pts = [tuple(p) for p in d["poly"]]
+    items = []
+    if pts:
+        for i in range(len(pts)):
+            a = pts[i]; c2 = pts[(i + 1) % len(pts)]
+            items.append(seg(a[0], a[1], c2[0], c2[1]))
+    for s4 in d.get("segments", []):
+        items.append(seg(*s4))
+    if not items:
+        return jsonify(ok=False, error="give rect / poly / segments"), 400
+    commit = b.begin_commit()
+    try:
+        if d.get("clear"):
+            old = [sh for sh in b.get_shapes() if sh.layer == EDGE]
+            if old:
+                b.remove_items(old)
+        created = b.create_items(items)
+        b.push_commit(commit, d.get("commit", "bridge: edge"))
+    except Exception:
+        b.drop_commit(commit); raise
+    return jsonify(ok=True, created=len(created))
+
+
 @app.post("/pcb/save")
 def pcb_save():
     _, b = board()
