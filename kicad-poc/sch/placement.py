@@ -832,6 +832,7 @@ def plan_geometry(spec, pos, syms):
         return False
     # 1) power flags first - never overlap a body or each other
     flg_idx = [0]
+    _rail_did_global = set()        # rails that already got their ONE global label
     for net in nets:
         pw = net.get("power")
         if not pw:
@@ -863,11 +864,16 @@ def plan_geometry(spec, pos, syms):
             flags.append({"libid": pw, "ref": ref, "value": net["name"],
                           "x": end[0], "y": end[1], "orient": fo})
             # IPC can't emit (power), so the power SYMBOL isn't recognised as power
-            # and won't connect by name. A coincident GLOBAL label names the node so
-            # all same-rail pins unify ACROSS SHEETS (local labels are sheet-scoped,
-            # so power would not cross the hierarchy). A driver (PWR_FLAG / a real
-            # supply pin) lives on ONE sheet.
-            labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True, "global": True})
+            # and won't connect by name (proven: setting type=GLOBAL_POWER reads back
+            # as 0 - the API strips it). So a coincident LABEL names the node. Within a
+            # sheet, LOCAL labels of the same rail already unify (local labels ARE
+            # sheet-scoped - that's fine, all these nodes are on ONE sheet). Only ONE
+            # GLOBAL label per rail per sheet is needed to bridge the hierarchy; the
+            # rest stay LOCAL (lighter, and no global-label flag on every power pin).
+            # A driver (PWR_FLAG / a real supply pin) lives on ONE sheet.
+            is_global = net["name"] not in _rail_did_global
+            _rail_did_global.add(net["name"])
+            labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True, "global": is_global})
             label_pts.append((net["name"], end))
             allboxes["#F:" + ref] = (end[0]-_FLAG_HALF[0], end[0]+_FLAG_HALF[0],
                                      end[1]-_FLAG_HALF[1], end[1]+_FLAG_HALF[1])
@@ -980,6 +986,12 @@ def plan_geometry(spec, pos, syms):
         wire_segs.extend(net_segs)
         if net_junc is not None:
             juncs.append(net_junc)
+        if g:                                          # a GLOBAL net wired LOCALLY still
+            # needs ONE global label on its trunk, else this sheet's pins never merge
+            # with the same-named net on other sheets (the wire only joins LOCAL pins).
+            lp = net_junc if net_junc is not None else net_segs[0][1]
+            labels.append({"text": net["name"], "x": lp[0], "y": lp[1], "global": True})
+            label_pts.append((net["name"], lp))
     return wire_segs, flags, juncs, labels
 
 
