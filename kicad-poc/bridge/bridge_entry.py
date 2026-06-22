@@ -536,6 +536,57 @@ def pcb_save():
     return jsonify(ok=True)
 
 
+def _board_file(b):
+    bf = b.name                                  # board_filename (may be relative)
+    if not os.path.isabs(bf):
+        bf = os.path.join(b.get_project().path, bf)
+    return bf
+
+
+@app.post("/pcb/plot")
+def pcb_plot():
+    """Render the PCB to PDF via kicad-cli (live counterpart to schematic /plot),
+    base64 in files:[{name,b64}]. Defaults to a top-side placement view (F.Cu +
+    silkscreen + edge, single page, with border). Opts: layers (CSV untranslated
+    names e.g. F.Cu,B.Cu,Edge.Cuts), mode (single|multipage|separate), mirror,
+    black_and_white."""
+    d = request.get_json(force=True, silent=True) or {}
+    k, b = board()
+    # board.save() is broken in this nightly's API ("document not open"), so we
+    # SERIALIZE the live in-memory board (get_as_string) to a temp .kicad_pcb and
+    # plot that - reflects uncommitted live moves without needing a disk save.
+    cli = k.get_kicad_binary_path("kicad-cli")
+    pcbdir = tempfile.mkdtemp(prefix="bridge_pcbsrc_")
+    boardfile = os.path.join(pcbdir, "live.kicad_pcb")
+    with open(boardfile, "w", encoding="utf-8") as f:
+        f.write(b.get_as_string())
+    layers = d.get("layers", "F.Cu,F.Silkscreen,Edge.Cuts")
+    mode = d.get("mode", "single")
+    outdir = tempfile.mkdtemp(prefix="bridge_pcbplot_")
+    out = os.path.join(outdir, "board.pdf")
+    cmd = [cli, "pcb", "export", "pdf", "--" + ("mode-" + mode), "-l", layers,
+           "--include-border-title", "-o", out, boardfile]
+    if d.get("mirror"):
+        cmd.append("--mirror")
+    if d.get("black_and_white"):
+        cmd.append("--black-and-white")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    files = []
+    if os.path.isfile(out):
+        files = [out]
+    elif os.path.isdir(outdir):
+        files = [os.path.join(outdir, f) for f in sorted(os.listdir(outdir)) if f.endswith(".pdf")]
+    if not files:
+        return jsonify(ok=False, exit_code=r.returncode, stderr=(r.stderr or "")[-2000:]), 500
+    blobs = []
+    for fp in files:
+        with open(fp, "rb") as f:
+            blobs.append({"name": os.path.basename(fp),
+                          "b64": base64.b64encode(f.read()).decode("ascii")})
+    return jsonify(ok=True, layers=layers, mode=mode, files=blobs,
+                   stderr=(r.stderr or "")[-800:])
+
+
 def _sch_file(sch):
     """Absolute path of the open root schematic on disk."""
     proj = sch._doc.project
