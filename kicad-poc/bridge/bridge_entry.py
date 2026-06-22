@@ -430,18 +430,75 @@ def pcb_health():
         return jsonify(ok=False, error=f"{type(e).__name__}: {e}"), 503
 
 
+def _sheet_map(k):
+    """Map sheet-KIID -> human sheet name from the open schematic hierarchy, so the
+    placer can group footprints by their source schematic sheet. A footprint's
+    sheet_path.path[0] is the KIID of the sheet it lives on (== that sheet's own
+    path[-1] in get_hierarchy)."""
+    smap = {}
+    try:
+        docs = k.get_open_documents(DocumentType.DOCTYPE_SCHEMATIC)
+        if not docs:
+            return smap
+        sch = Schematic(k._client, docs[0])
+
+        def walk(si):
+            try:
+                p = si.path.path
+                if p:
+                    smap[p[-1].value] = si.name
+            except Exception:
+                pass
+            for c in si.children:
+                walk(c)
+        for t in sch.get_hierarchy():
+            walk(t)
+    except Exception:
+        pass
+    return smap
+
+
+def _fp_extent(f):
+    """Footprint width/height (mm) at its CURRENT orientation, from the union of its
+    graphic shapes (courtyard/fab/silk enclose the pads). Used to size placement
+    cells so parts don't overlap. Falls back to pad spread, then 1x1mm."""
+    xs, ys = [], []
+    for sh in f.definition.shapes:
+        try:
+            bb = sh.bounding_box()
+            xs += [bb.pos.x, bb.pos.x + bb.size.x]
+            ys += [bb.pos.y, bb.pos.y + bb.size.y]
+        except Exception:
+            pass
+    if not xs:
+        for p in f.definition.pads:
+            try:
+                xs.append(p.position.x); ys.append(p.position.y)
+            except Exception:
+                pass
+    if not xs:
+        return 1.0, 1.0
+    return (max(xs) - min(xs)) / 1e6, (max(ys) - min(ys)) / 1e6
+
+
 @app.get("/pcb/footprints")
 def pcb_footprints():
-    """Read every footprint: ref, value, position (mm), orientation (deg), layer.
-    This is the placer's input - the live board state to optimise."""
-    _, b = board()
+    """Read every footprint: ref, value, position (mm), orientation (deg), layer,
+    SHEET (source schematic sheet name), and w_mm/h_mm (current-orientation extent).
+    This is the placer's input - the live board state plus grouping + sizing."""
+    k, b = board()
+    smap = _sheet_map(k)
     out = []
     for f in b.get_footprints():
         try:
+            p = f.sheet_path.path
+            sheet = smap.get(p[0].value, "") if p else ""
+            w, h = _fp_extent(f)
             out.append({"ref": f.reference_field.text.value,
                         "value": f.value_field.text.value,
                         "x_mm": f.position.x / 1e6, "y_mm": f.position.y / 1e6,
-                        "orient": f.orientation.degrees, "layer": int(f.layer)})
+                        "orient": f.orientation.degrees, "layer": int(f.layer),
+                        "sheet": sheet, "w_mm": round(w, 3), "h_mm": round(h, 3)})
         except Exception:
             pass
     return jsonify(ok=True, count=len(out), footprints=out)
@@ -606,6 +663,49 @@ def pcb_edge():
                 b.remove_items(old)
         created = b.create_items(items)
         b.push_commit(commit, d.get("commit", "bridge: edge"))
+    except Exception:
+        b.drop_commit(commit); raise
+    return jsonify(ok=True, created=len(created))
+
+
+@app.post("/pcb/text")
+def pcb_text():
+    """Add text label(s) to the board (e.g. group/sheet names on a silk/comment
+    layer). Body: {"texts":[{"text","x_mm","y_mm","size_mm"?,"layer"?}]} or a single
+    {text,x_mm,y_mm,...}. layer: untranslated name (default "F.Silkscreen"); also
+    accepts "Cmts.User"/"User.Comments". clear -> wipe board text on that layer first."""
+    from kipy.proto.board.board_types_pb2 import BoardLayer
+    import kipy.board_types as bt
+    d = request.get_json(force=True)
+    _, b = board()
+    lname = d.get("layer", "F.Silkscreen")
+    layer = {"F.Silkscreen": BoardLayer.BL_F_SilkS,
+             "B.Silkscreen": BoardLayer.BL_B_SilkS,
+             "Cmts.User": BoardLayer.BL_Cmts_User,
+             "User.Comments": BoardLayer.BL_Cmts_User,
+             "F.Fab": BoardLayer.BL_F_Fab}.get(lname, BoardLayer.BL_F_SilkS)
+    texts = d.get("texts") or [d]
+    items = []
+    for t in texts:
+        bx = bt.BoardText()
+        bx.layer = layer
+        bx.value = t["text"]
+        bx.position = Vector2.from_xy_mm(t["x_mm"], t["y_mm"])
+        s = t.get("size_mm", 2.0)
+        try:
+            bx.attributes.size = Vector2.from_xy_mm(s, s)
+            bx.attributes.stroke_width.value_nm = from_mm(t.get("thick_mm", s * 0.15))
+        except Exception:
+            pass
+        items.append(bx)
+    commit = b.begin_commit()
+    try:
+        if d.get("clear"):
+            old = [x for x in b.get_text() if int(x.layer) == int(layer)]
+            if old:
+                b.remove_items(old)
+        created = b.create_items(items)
+        b.push_commit(commit, d.get("commit", "bridge: pcb text"))
     except Exception:
         b.drop_commit(commit); raise
     return jsonify(ok=True, created=len(created))

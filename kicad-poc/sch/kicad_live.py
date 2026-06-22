@@ -324,6 +324,50 @@ class Bridge:
                                      {"Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=200))   # ERC can be slow
 
+    # ---- PCB (pcbnew) ----
+    def pcb_footprints(self):
+        """Live board footprints: ref, value, x_mm/y_mm, orient, layer, sheet
+        (source schematic sheet name), w_mm/h_mm (current-orientation extent)."""
+        return json.load(urllib.request.urlopen(self.url + "/pcb/footprints", timeout=30))
+
+    def pcb_move(self, moves):
+        """moves: [{ref, x_mm, y_mm, orient?}]. One undoable commit."""
+        return self._post("/pcb/move", {"moves": moves})
+
+    def pcb_import(self, **opts):
+        """Sync PCB from schematic (match by reference, delete_extra default true)."""
+        return self._post("/pcb/import", opts)
+
+    def pcb_clear(self, **opts):
+        return self._post("/pcb/clear", opts)
+
+    def pcb_edge(self, rect=None, poly=None, segments=None, width_mm=0.1, clear=True):
+        """Draw the board outline on Edge.Cuts. rect=[x,y,w,h] | poly=[[x,y]..]."""
+        body = {"width_mm": width_mm, "clear": clear}
+        if rect is not None:
+            body["rect"] = rect
+        if poly is not None:
+            body["poly"] = poly
+        if segments is not None:
+            body["segments"] = segments
+        return self._post("/pcb/edge", body)
+
+    def pcb_text(self, texts, layer="F.Silkscreen", clear=False):
+        """texts: [{text, x_mm, y_mm, size_mm?}]. Group/sheet labels on silk."""
+        return self._post("/pcb/text", {"texts": texts, "layer": layer, "clear": clear})
+
+    def pcb_check_footprints(self):
+        return self._post("/pcb/check_footprints", {})
+
+    def pcb_plot(self, **opts):
+        req = urllib.request.Request(self.url + "/pcb/plot",
+                                     json.dumps(opts).encode(),
+                                     {"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req, timeout=200))
+
+    def pcb_save(self):
+        return self._post("/pcb/save", {})
+
 
 # ---------- netlist push ----------
 def _pin_abs(placed, ref_pin):
