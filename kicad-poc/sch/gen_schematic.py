@@ -446,6 +446,9 @@ def emit(spec, base_dir):
         if part.get("footprint"):
             lines.append(f'\t\t(property "Footprint" "{part["footprint"]}" (at {px:g} {py:g} 0)'
                          f' (effects (font (size 1.27 1.27)) hide))')
+        if part.get("mpn"):                              # real custom field, hidden
+            lines.append(f'\t\t(property "MPN" "{part["mpn"]}" (at {px:g} {py:g} 0)'
+                         f' (effects (font (size 1.27 1.27)) hide))')
         for pnum in pins:
             lines.append(f'\t\t(pin "{pnum}" (uuid {uid()}))')
         lines.append('\t\t(instances')

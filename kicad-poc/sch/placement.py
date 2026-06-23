@@ -1028,41 +1028,20 @@ def _resolve_flag_overlaps(flags, labels, wire_segs, step=2.54, tries=8):
 
 
 def _dedup_wires(segs, eps=0.05):
-    """Remove redundant wire segments that draw as a layout short:
-    exact / reversed duplicates, and collinear-overlapping axis-aligned spans
-    (merged into one maximal segment). The union is geometrically and
-    electrically identical, so this only removes the WIRE_COLINEAR self-overlaps
-    the router emits when two stubs land on the same line."""
-    out = []
-    # bucket axis-aligned segments by (axis, fixed-coord); keep diagonals verbatim
-    hbuck, vbuck = {}, {}
+    """Drop EXACT / reversed-duplicate wire segments only - the same wire emitted
+    twice (e.g. two stubs that land on the identical span), which the validator
+    reports as WIRE_COLINEAR. We must NOT merge merely-overlapping collinear
+    segments: distinct nets can be collinear, and merging them would short them
+    together or strand a net label off its wire (a real connectivity break)."""
+    out, seen = [], set()
     for (p, q) in segs:
-        if abs(p[1] - q[1]) <= eps:                    # horizontal: same y
-            k = round(p[1] / eps) * eps
-            hbuck.setdefault(k, []).append((min(p[0], q[0]), max(p[0], q[0])))
-        elif abs(p[0] - q[0]) <= eps:                  # vertical: same x
-            k = round(p[0] / eps) * eps
-            vbuck.setdefault(k, []).append((min(p[1], q[1]), max(p[1], q[1])))
-        else:
-            if (p, q) not in out and (q, p) not in out:
-                out.append((p, q))
-
-    def merge(intervals):
-        intervals.sort()
-        merged = [list(intervals[0])]
-        for lo, hi in intervals[1:]:
-            if lo <= merged[-1][1] + eps:              # overlap or touch -> extend
-                merged[-1][1] = max(merged[-1][1], hi)
-            else:
-                merged.append([lo, hi])
-        return [(lo, hi) for lo, hi in merged if hi - lo > eps]
-
-    for y, iv in hbuck.items():
-        for lo, hi in merge(iv):
-            out.append(((lo, y), (hi, y)))
-    for x, iv in vbuck.items():
-        for lo, hi in merge(iv):
-            out.append(((x, lo), (x, hi)))
+        a = (round(p[0] / eps) * eps, round(p[1] / eps) * eps)
+        b = (round(q[0] / eps) * eps, round(q[1] / eps) * eps)
+        key = (a, b) if a <= b else (b, a)             # canonical, direction-agnostic
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((p, q))
     return out
 
 
