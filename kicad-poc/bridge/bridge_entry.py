@@ -823,6 +823,95 @@ def save_doc():
     return jsonify(ok=True, path=_sch_file(sch))
 
 
+def _is_power_net(name):
+    """Classify a net name as a power/supply rail (conservative: +/- prefix or a
+    known ground/supply token, to avoid flagging signal nets)."""
+    import re as _re
+    n = (name or "").strip()
+    if _re.match(r'^[+-][0-9A-Za-z]', n):
+        return True
+    return n.upper() in {"GND", "GNDA", "AGND", "DGND", "PGND",
+                         "VCC", "VDD", "VEE", "VSS", "VBAT"}
+
+
+def _parse_netlist(text):
+    """Parse a kicadsexpr netlist -> (ref->sheet, [nets]). Each net:
+    {name, pins, sheets:[sheetpath names]}. Tolerant of tab/newline layout
+    (comp/net entries have a newline after the tag)."""
+    import re as _re
+    ci = text.find("(components"); li = text.find("(libparts"); ni = text.find("(nets")
+    comps_txt = text[ci:(li if li > 0 else ni)] if ci >= 0 else ""
+    nets_txt = text[ni:] if ni >= 0 else ""
+    ref_sheet = {}
+    for blk in comps_txt.split("(comp")[1:]:
+        mref = _re.search(r'\(ref\s+"([^"]+)"', blk)
+        msh = _re.search(r'\(sheetpath\s*\(names\s+"([^"]*)"', blk)
+        if mref:
+            ref_sheet[mref.group(1)] = msh.group(1) if msh else "/"
+    nets = []
+    for blk in _re.split(r'\(net\b', nets_txt)[1:]:
+        mname = _re.search(r'\(name\s+"([^"]*)"', blk)
+        if not mname:
+            continue
+        refs = _re.findall(r'\(node\s*\(ref\s+"([^"]+)"', blk)
+        nets.append({"name": mname.group(1), "pins": len(refs),
+                     "sheets": sorted({ref_sheet.get(r, "?") for r in refs})})
+    return ref_sheet, nets
+
+
+@app.post("/audit_nets")
+def audit_nets():
+    """HIERARCHY-LEVEL net audit (catches what the per-sheet validator can't):
+    export the full netlist and flag POWER rails that are produced on ONE sheet but
+    not consumed elsewhere. Classic failure: the POWER sheet builds per-domain rails
+    (+5V_CH1, -5V_CH2, ...) but the channel sheets pull the GENERIC rail (+5V), so
+    the domained rails dangle and the channels share one supply despite a separate-
+    supply design. A power rail on a single sheet whose generic base rail is consumed
+    on OTHER sheets is an ERROR (the consumers likely belong on the domained name);
+    a single-sheet power net with no generic base is a WARN (verify it is an
+    intentionally-local supply). Also flags any net with < 2 pins (dangling)."""
+    k, sch = schematic()
+    sch.save()
+    cli = k.get_kicad_binary_path("kicad-cli")
+    net = os.path.join(tempfile.gettempdir(), "bridge_audit.net")
+    cmd = [cli, "sch", "export", "netlist", "--format", "kicadsexpr", "-o", net, _sch_file(sch)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if not os.path.exists(net):
+        return jsonify(ok=False, error="netlist export failed",
+                       stderr=(r.stderr or "")[-1500:]), 500
+    with open(net, encoding="utf-8") as f:
+        text = f.read()
+    ref_sheet, nets = _parse_netlist(text)
+    pnames = {n["name"] for n in nets if _is_power_net(n["name"])}
+    power_findings, dangling = [], []
+    for n in nets:
+        if n["pins"] < 2:
+            dangling.append({"net": n["name"], "pins": n["pins"], "sheets": n["sheets"]})
+        if not _is_power_net(n["name"]) or len(n["sheets"]) >= 2:
+            continue
+        cands = [g for g in pnames if g != n["name"]
+                 and n["name"].startswith(g) and len(n["name"]) > len(g)]
+        base = min(cands, key=len) if cands else None
+        gsheets = next((m["sheets"] for m in nets if m["name"] == base), []) if base else []
+        power_findings.append({
+            "net": n["name"], "sheets": n["sheets"], "pins": n["pins"],
+            "base_rail": base, "base_on_sheets": gsheets,
+            "severity": "ERROR" if base else "WARN",
+            "why": (f"domained rail produced on {n['sheets']} but consumed nowhere; "
+                    f"generic base '{base}' is used on {gsheets} - those consumers "
+                    f"likely belong on '{n['name']}'") if base else
+                   "power net confined to one sheet (verify it is an intentionally-"
+                   "local supply, else it should be distributed)"})
+    errors = sum(1 for f in power_findings if f["severity"] == "ERROR")
+    warns = sum(1 for f in power_findings if f["severity"] == "WARN")
+    sheets = sorted(set(ref_sheet.values()))
+    return jsonify(ok=True, sheets=sheets, net_count=len(nets), comp_count=len(ref_sheet),
+                   errors=errors, warnings=warns,
+                   power_distribution=sorted(power_findings,
+                                             key=lambda z: (z["severity"] != "ERROR", z["net"])),
+                   dangling=dangling)
+
+
 @app.post("/erc")
 def run_erc():
     """Save the open schematic, then run `kicad-cli sch erc` on it (headless,

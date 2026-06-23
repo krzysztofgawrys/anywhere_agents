@@ -324,6 +324,15 @@ class Bridge:
                                      {"Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=200))   # ERC can be slow
 
+    def audit_nets(self):
+        """Hierarchy-level net audit: export the full netlist and flag POWER rails
+        produced on one sheet but consumed nowhere (per-domain rail vs generic-rail
+        mismatch). Returns {errors, warnings, power_distribution:[...], dangling:[...]}.
+        Catches what the per-sheet validate_schematic.py cannot."""
+        req = urllib.request.Request(self.url + "/audit_nets", b"{}",
+                                     {"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req, timeout=200))
+
     # ---- PCB (pcbnew) ----
     def pcb_footprints(self):
         """Live board footprints: ref, value, x_mm/y_mm, orient, layer, sheet
