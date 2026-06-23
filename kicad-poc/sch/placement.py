@@ -871,7 +871,11 @@ def plan_geometry(spec, pos, syms):
             # GLOBAL label per rail per sheet is needed to bridge the hierarchy; the
             # rest stay LOCAL (lighter, and no global-label flag on every power pin).
             # A driver (PWR_FLAG / a real supply pin) lives on ONE sheet.
-            is_global = net["name"] not in _rail_did_global
+            # A rail KNOWN to stay on one sheet (e.g. a ferrite-split AVDD/DVDD
+            # local rail) opts out of even that one global label with
+            # "global": false in the netlist -> stays purely local (audit-clean,
+            # local labels still unify it within the sheet).
+            is_global = net.get("global", True) and net["name"] not in _rail_did_global
             _rail_did_global.add(net["name"])
             labels.append({"text": net["name"], "x": end[0], "y": end[1], "hide": True, "global": is_global})
             label_pts.append((net["name"], end))
@@ -992,7 +996,74 @@ def plan_geometry(spec, pos, syms):
             lp = net_junc if net_junc is not None else net_segs[0][1]
             labels.append({"text": net["name"], "x": lp[0], "y": lp[1], "global": True})
             label_pts.append((net["name"], lp))
-    return wire_segs, flags, juncs, labels
+    _resolve_flag_overlaps(flags, labels, wire_segs)
+    return _dedup_wires(wire_segs), flags, juncs, labels
+
+
+def _resolve_flag_overlaps(flags, labels, wire_segs, step=2.54, tries=8):
+    """Nudge power flags that landed on top of each other apart along the axis
+    away from the clash, carrying each flag's coincident (hidden) net label and
+    adding a short jog wire old->new so the pin stays connected. Purely cosmetic:
+    the rail still unifies by the label name; this only un-stacks the symbols."""
+    hx, hy = _FLAG_HALF
+    def box(f): return (f["x"]-hx, f["x"]+hx, f["y"]-hy, f["y"]+hy)
+    def ov(a, b): return not (a[1] <= b[0] or b[1] <= a[0] or a[3] <= b[2] or b[3] <= a[2])
+    for i, f in enumerate(flags):
+        for _ in range(tries):
+            clash = [g for j, g in enumerate(flags) if j != i and ov(box(f), box(g))]
+            if not clash:
+                break
+            cx = sum(g["x"] for g in clash) / len(clash)
+            cy = sum(g["y"] for g in clash) / len(clash)
+            dx, dy = f["x"] - cx, f["y"] - cy
+            ox, oy = f["x"], f["y"]
+            if abs(dx) >= abs(dy):
+                f["x"] += step if dx >= 0 else -step
+            else:
+                f["y"] += step if dy >= 0 else -step
+            for lb in labels:                              # carry the coincident label
+                if abs(lb["x"] - ox) < 0.3 and abs(lb["y"] - oy) < 0.3:
+                    lb["x"], lb["y"] = f["x"], f["y"]
+            wire_segs.append(((ox, oy), (f["x"], f["y"])))  # jog keeps the pin tied in
+
+
+def _dedup_wires(segs, eps=0.05):
+    """Remove redundant wire segments that draw as a layout short:
+    exact / reversed duplicates, and collinear-overlapping axis-aligned spans
+    (merged into one maximal segment). The union is geometrically and
+    electrically identical, so this only removes the WIRE_COLINEAR self-overlaps
+    the router emits when two stubs land on the same line."""
+    out = []
+    # bucket axis-aligned segments by (axis, fixed-coord); keep diagonals verbatim
+    hbuck, vbuck = {}, {}
+    for (p, q) in segs:
+        if abs(p[1] - q[1]) <= eps:                    # horizontal: same y
+            k = round(p[1] / eps) * eps
+            hbuck.setdefault(k, []).append((min(p[0], q[0]), max(p[0], q[0])))
+        elif abs(p[0] - q[0]) <= eps:                  # vertical: same x
+            k = round(p[0] / eps) * eps
+            vbuck.setdefault(k, []).append((min(p[1], q[1]), max(p[1], q[1])))
+        else:
+            if (p, q) not in out and (q, p) not in out:
+                out.append((p, q))
+
+    def merge(intervals):
+        intervals.sort()
+        merged = [list(intervals[0])]
+        for lo, hi in intervals[1:]:
+            if lo <= merged[-1][1] + eps:              # overlap or touch -> extend
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        return [(lo, hi) for lo, hi in merged if hi - lo > eps]
+
+    for y, iv in hbuck.items():
+        for lo, hi in merge(iv):
+            out.append(((lo, y), (hi, y)))
+    for x, iv in vbuck.items():
+        for lo, hi in merge(iv):
+            out.append(((x, lo), (x, hi)))
+    return out
 
 
 # ---------------- field auto-placement (collision avoidance) ----------------
