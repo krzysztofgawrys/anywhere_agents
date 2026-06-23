@@ -902,13 +902,44 @@ def audit_nets():
                     f"likely belong on '{n['name']}'") if base else
                    "power net confined to one sheet (verify it is an intentionally-"
                    "local supply, else it should be distributed)"})
+    # SIGNAL label-scope audit: a GLOBAL label whose net is confined to one sheet is
+    # a spurious global (should be LOCAL) - clutter + flat-namespace collision risk.
+    # The netlist doesn't record global-vs-local, so read the .kicad_sch files for
+    # (global_label "X") and cross-check each against the net's true sheet span.
+    # Power rails are covered by power_distribution above, so exclude them here.
+    import glob as _glob, re as _re2
+    net_sheets = {n["name"]: n["sheets"] for n in nets}
+    spurious_globals = []
+    try:
+        schdir = os.path.dirname(_sch_file(sch))
+        for fp in _glob.glob(os.path.join(schdir, "*.kicad_sch")):
+            try:
+                with open(fp, encoding="utf-8") as fh:
+                    txt = fh.read()
+            except Exception:
+                continue
+            sheet = os.path.basename(fp)[:-len(".kicad_sch")]
+            for name in sorted(set(_re2.findall(r'\(global_label\s+"([^"]+)"', txt))):
+                if _is_power_net(name):
+                    continue
+                spans = net_sheets.get(name)
+                if spans is not None and len(spans) <= 1:
+                    spurious_globals.append({
+                        "net": name, "sheet": sheet, "net_sheets": spans,
+                        "severity": "WARN",
+                        "why": "global label but the net stays on one sheet -> should "
+                               "be LOCAL (global iff pins span >= 2 sheets)"})
+    except Exception:
+        pass
+
     errors = sum(1 for f in power_findings if f["severity"] == "ERROR")
-    warns = sum(1 for f in power_findings if f["severity"] == "WARN")
+    warns = sum(1 for f in power_findings if f["severity"] == "WARN") + len(spurious_globals)
     sheets = sorted(set(ref_sheet.values()))
     return jsonify(ok=True, sheets=sheets, net_count=len(nets), comp_count=len(ref_sheet),
                    errors=errors, warnings=warns,
                    power_distribution=sorted(power_findings,
                                              key=lambda z: (z["severity"] != "ERROR", z["net"])),
+                   global_label_scope=sorted(spurious_globals, key=lambda z: (z["sheet"], z["net"])),
                    dangling=dangling)
 
 
