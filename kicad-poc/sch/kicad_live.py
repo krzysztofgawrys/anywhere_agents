@@ -179,6 +179,8 @@ def _default_footprint(nick, name):
         return "Capacitor_SMD:C_0402_1005Metric"
     if n == "L" or n.startswith("L_"):
         return "Inductor_SMD:L_0805_2012Metric"
+    if n == "FerriteBead" or n.startswith("FerriteBead"):  # beads use chip-L land patterns
+        return "Inductor_SMD:L_0805_2012Metric"
     return ""
 
 
