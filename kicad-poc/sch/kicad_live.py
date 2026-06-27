@@ -313,6 +313,15 @@ class Bridge:
         return self._post("/no_connect", {"points": [[p[0], p[1]] for p in points]})
     def page(self):
         return json.load(urllib.request.urlopen(self.url + "/page", timeout=10))
+    def set_page(self, size=None, w_mm=None, h_mm=None, orientation=None):
+        """Resize the open sheet. size: 'A4'..'A0'/US/ANSI; or w_mm+h_mm for a User
+        custom page; orientation: 'landscape'|'portrait'. Returns {ok,size,width_mm,
+        height_mm}. Used by the placer to grow the sheet when content overflows."""
+        body = {}
+        if size: body["size"] = size
+        if w_mm and h_mm: body["w_mm"] = w_mm; body["h_mm"] = h_mm
+        if orientation: body["orientation"] = orientation
+        return self._post("/set_page", body)
     def clear(self):
         return self._post("/clear", {})
     def delete(self, refs):

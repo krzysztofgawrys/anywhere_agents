@@ -1068,6 +1068,48 @@ def page():
                    page_size=p.page_size, orientation=p.orientation)
 
 
+@app.post("/set_page")
+def set_page():
+    """Resize the open sheet's page. Body: {"size":"A2"} (standard A5..A0 / US /
+    ANSI) OR {"w_mm":..,"h_mm":..} (User custom), optional
+    "orientation":"landscape"|"portrait". Drives sch.set_page_settings (live). The
+    placer calls this to grow the sheet when the content doesn't fit."""
+    d = request.get_json(force=True)
+    _, sch = schematic()
+    ps = sch.get_page_settings()
+    pdesc = ps.proto.DESCRIPTOR
+    pe = pdesc.fields_by_name["page_size"].enum_type
+    oe = pdesc.fields_by_name["orientation"].enum_type
+    if d.get("w_mm") and d.get("h_mm"):
+        ps.proto.page_size = pe.values_by_name["PS_USER"].number
+        ps.proto.user_page_size.x_nm = from_mm(float(d["w_mm"]))
+        ps.proto.user_page_size.y_nm = from_mm(float(d["h_mm"]))
+    elif d.get("size"):
+        key = "PS_" + str(d["size"]).upper().replace("PS_", "")
+        if key not in pe.values_by_name:
+            return jsonify(ok=False, error=f"unknown size {d['size']!r}",
+                           known=[v.name[3:] for v in pe.values]), 400
+        ps.proto.page_size = pe.values_by_name[key].number
+        ps.proto.ClearField("user_page_size")
+    if d.get("orientation"):
+        ok = "PO_" + str(d["orientation"]).upper().replace("PO_", "")
+        if ok in oe.values_by_name:
+            ps.proto.orientation = oe.values_by_name[ok].number
+    sch.set_page_settings(ps)
+    np = sch.get_page_settings().proto
+    if np.page_size == pe.values_by_name["PS_USER"].number and np.user_page_size.x_nm:
+        w, h = np.user_page_size.x_nm / 1e6, np.user_page_size.y_nm / 1e6
+    else:
+        w, h = _PAGE_MM.get(np.page_size, (297, 210))
+    if np.orientation == 2:                      # PO_PORTRAIT
+        w, h = min(w, h), max(w, h)
+    else:
+        w, h = max(w, h), min(w, h)
+    sz = pe.values_by_number.get(np.page_size)
+    return jsonify(ok=True, size=sz.name[3:] if sz else str(np.page_size),
+                   width_mm=round(w, 1), height_mm=round(h, 1))
+
+
 @app.post("/delete")
 def delete_refs():
     """Delete symbols by reference: {"ref": "U1"} or {"refs": ["U1","C2"]}."""

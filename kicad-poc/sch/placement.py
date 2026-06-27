@@ -442,6 +442,99 @@ def apply_footprints(spec, store):
     return applied
 
 
+# standard page sizes (landscape w,h mm), ascending - the placer grows the sheet
+# to the smallest one that holds the content, else a User size sized to the content.
+_STD_PAGES = [("A4", 297, 210), ("A3", 420, 297), ("A2", 594, 420),
+              ("A1", 841, 594), ("A0", 1189, 841)]
+_FIT_MARGIN = 14.0          # clear border kept around ALL content
+# The title block sits in the bottom-RIGHT CORNER only (not a full-width band), and
+# the decoupling bank legitimately rides the bottom margin, so reserving a bottom
+# strip would force a needless resize on every banked sheet. Keep it 0 and rely on
+# the border margin; a centred bottom bank clears the corner title block on A3+.
+_TITLE_CLEAR = 0.0
+
+
+def _content_bbox(pos, syms, flags, labels, wire_segs, juncs):
+    """True extent (mm) of everything that gets drawn: symbol pins/bodies, power
+    flags, net labels (TEXT REACH), wires, junctions. Label width is the dominant
+    edge-overflow source (a long global label like +5V_CH1 on a part near the
+    border), so it is measured len*char_w - that is what gets clipped out of the PDF."""
+    xs, ys = [], []
+    def add(x, y): xs.append(x); ys.append(y)
+    for ref, (px, py) in pos.items():
+        sym = syms.get(ref)
+        if sym:
+            for p in sym["pins"]:
+                rx, ry = KL._rot(p["x"], p["y"], _orients[0].get(ref, 0))
+                add(px + rx, py - ry)
+        add(px, py)
+    hx, hy = _FLAG_HALF
+    for f in flags:
+        add(f["x"] - hx, f["y"] - hy); add(f["x"] + hx, f["y"] + hy)
+    for lb in labels:
+        hw = max(len(lb.get("text", "")), 1) * 1.27 * 0.85 / 2 + 1.6   # text + flag arrow
+        add(lb["x"] - hw, lb["y"] - 1.8); add(lb["x"] + hw, lb["y"] + 1.8)
+    for (a, b) in wire_segs:
+        add(a[0], a[1]); add(b[0], b[1])
+    for j in juncs:
+        add(j[0], j[1])
+    if not xs:
+        return (0.0, 0.0, 0.0, 0.0)
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _pick_page(need_w, need_h, cur):
+    """Smallest page that holds (need_w, need_h). Keep cur if it already fits, else
+    the smallest standard landscape size, else a User size sized to the content."""
+    if cur and need_w <= cur[0] and need_h <= cur[1]:
+        return cur, None
+    for nm, w, h in _STD_PAGES:
+        if need_w <= w and need_h <= h:
+            return (w, h), nm
+    return (round(max(need_w, cur[0] if cur else 0), 1),
+            round(max(need_h, cur[1] if cur else 0), 1)), None
+
+
+def _fit_to_sheet(bridge, page, pos, syms, flags, labels, wire_segs, juncs,
+                  margin=_FIT_MARGIN):
+    """Make sure the whole layout sits INSIDE the sheet. Measure the true content
+    box (incl. label text reach); if it overflows the current page, grow the sheet
+    (POST /set_page) to the smallest size that holds it; then CLAMP-shift the content
+    so no edge crosses the border (only moves when something is actually out of
+    bounds, so well-placed sheets are untouched). Returns the shifted geometry +
+    the (possibly new) page size."""
+    bx0, by0, bx1, by1 = _content_bbox(pos, syms, flags, labels, wire_segs, juncs)
+    bw, bh = bx1 - bx0, by1 - by0
+    need_w, need_h = bw + 2 * margin, bh + 2 * margin + _TITLE_CLEAR
+    target, tname = _pick_page(need_w, need_h, page)
+    if page is None or abs(target[0] - page[0]) > 1 or abs(target[1] - page[1]) > 1:
+        try:
+            r = bridge.set_page(size=tname) if tname else \
+                bridge.set_page(w_mm=target[0], h_mm=target[1])
+            if r.get("ok"):
+                target = (r["width_mm"], r["height_mm"]); page = target
+                print(f"  sheet resized -> {r.get('size', tname)} "
+                      f"{target[0]:.0f}x{target[1]:.0f}mm (content {bw:.0f}x{bh:.0f})")
+            else:
+                print("  set_page rejected:", r); page = page or target
+        except Exception as e:
+            print("  set_page failed:", e); page = page or target
+    W, H = page
+    dx = (margin - bx0) if bx0 < margin else \
+         ((W - margin) - bx1 if bx1 > W - margin else 0.0)
+    lo_y, hi_y = margin, H - margin - _TITLE_CLEAR
+    dy = (lo_y - by0) if by0 < lo_y else ((hi_y - by1) if by1 > hi_y else 0.0)
+    if dx or dy:
+        s = lambda p: (snap(p[0] + dx), snap(p[1] + dy))
+        pos = {r: s(v) for r, v in pos.items()}
+        flags = [dict(f, x=snap(f["x"] + dx), y=snap(f["y"] + dy)) for f in flags]
+        labels = [dict(l, x=snap(l["x"] + dx), y=snap(l["y"] + dy)) for l in labels]
+        wire_segs = [(s(a), s(b)) for (a, b) in wire_segs]
+        juncs = [s(j) for j in juncs]
+        print(f"  content shifted by ({dx:.1f},{dy:.1f})mm to stay on sheet")
+    return pos, flags, labels, wire_segs, juncs, page
+
+
 def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
     libdirs = spec["libdirs"]
     # `sheet` (name/filename of a hierarchical sub-sheet) routes ALL bridge ops to
@@ -468,6 +561,12 @@ def place_all(spec, bridge_url, pos_override=None, clear=True, sheet=None):
     scaffold = open(KL.SCAFFOLD, "rb").read()
     # plan all geometry BEFORE placing, so fields can dodge wires/flags/bodies/labels
     wire_segs, flags, juncs, labels = plan_geometry(spec, pos, syms)
+    # KEEP IT ON THE SHEET: measure the true content extent (bodies + label reach +
+    # wires); if it overflows, grow the page, then clamp-shift so nothing crosses the
+    # border and gets clipped out of the PDF. Done before field_layout so fields are
+    # auto-placed against the FINAL on-sheet positions.
+    pos, flags, labels, wire_segs, juncs, page = _fit_to_sheet(
+        bridge, page, pos, syms, flags, labels, wire_segs, juncs)
     fpos, _fbm, obs = field_layout(spec, pos, syms, wire_segs, flags, labels)
 
     # main symbols, with each Reference/Value auto-placed clear of obstacles
