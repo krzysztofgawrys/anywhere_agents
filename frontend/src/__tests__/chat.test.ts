@@ -246,7 +246,9 @@ describe("streaming events", () => {
   });
 
   it("tool_call sets streamingActivity with tool name", () => {
-    useChatStore.setState({ status: "streaming" });
+    // The event carries session_id "s1", so that session must be active:
+    // session-scoped events for any other session (or none) are dropped.
+    useChatStore.setState({ status: "streaming", activeSessionId: "s1" });
     dispatch({
       type: "tool_call",
       payload: { session_id: "s1", tool_use_id: "t1", name: "Read", input: { file_path: "/foo" } },
