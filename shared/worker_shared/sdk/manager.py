@@ -390,6 +390,34 @@ class SessionManager:
             self._current = None
         await self._locks.release_all_by_connection(self._connection_id)
 
+    # ── Deletion support ─────────────────────────────────────────────
+
+    def is_held_elsewhere(self, session_id: str) -> bool:
+        """True if another connection currently holds this session's lock."""
+        entry = self._locks.info(session_id)
+        return entry is not None and entry.connection_id != self._connection_id
+
+    async def discard_session(self, session_id: str) -> None:
+        """Stop a session for good (active or parked) ahead of deleting it.
+
+        Unlike parking, nothing is kept around: queued prompts are dropped
+        and the lock is released. Caller checks :meth:`is_held_elsewhere`
+        first - this never touches another connection's session.
+        """
+        if self._current is not None and self._current.session_id == session_id:
+            session: Any = self._current
+            self._current = None
+            self._current_project_id = None
+        else:
+            session = registry.take(session_id)
+        prompt_queue.discard(session_id)
+        if session is not None:
+            try:
+                await session.stop()
+            except Exception as e:
+                logger.warning("session_stop_error", session_id=session_id, error=str(e))
+        await self._locks.release(session_id, self._connection_id)
+
     # ── Internals ────────────────────────────────────────────────────
 
     async def _park_current(self) -> None:

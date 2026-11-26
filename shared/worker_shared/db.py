@@ -174,6 +174,12 @@ class Database:
                 return row[0][0], row[0][1]
             return None, None
 
+    async def delete_session(self, session_id: str) -> None:
+        """Drop the prefs row for *session_id* (no-op if absent)."""
+        async with self.connect() as conn:
+            await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            await conn.commit()
+
 
 # Module-level singleton; tests can override via dependency injection
 db = Database()

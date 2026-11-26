@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -168,6 +169,36 @@ def list_sessions(
         })
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
     return sessions
+
+
+def _session_dirs_for(cwd: str, session_state_root: Path) -> list[tuple[str, Path]]:
+    """(session id, dir) for every session-state entry whose cwd is `cwd`."""
+    if not session_state_root.is_dir():
+        return []
+    out: list[tuple[str, Path]] = []
+    for entry in session_state_root.iterdir():
+        ws = entry / "workspace.yaml"
+        if not entry.is_dir() or not ws.is_file():
+            continue
+        meta = _parse_workspace_yaml(ws)
+        if meta.get("cwd") == cwd:
+            out.append((meta.get("id") or entry.name, entry))
+    return out
+
+
+def delete_session_files(
+    cwd: str, session_id: str, session_state_root: Path = SESSION_STATE_ROOT
+) -> None:
+    """Delete one session's state dir, only if it belongs to `cwd`."""
+    for sid, entry in _session_dirs_for(cwd, session_state_root):
+        if sid == session_id:
+            shutil.rmtree(entry)
+
+
+def delete_project_files(cwd: str, session_state_root: Path = SESSION_STATE_ROOT) -> None:
+    """Delete every session state dir recorded for `cwd`."""
+    for _, entry in _session_dirs_for(cwd, session_state_root):
+        shutil.rmtree(entry)
 
 
 def _convert_user_message(entry: dict[str, Any]) -> list[dict[str, Any]] | None:

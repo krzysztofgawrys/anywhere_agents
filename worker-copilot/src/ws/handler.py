@@ -32,11 +32,17 @@ from worker_shared.projects.service import (
     list_projects,
     set_auto_approve,
 )
+from worker_shared.sdk.deletion import apply_delete_project, apply_delete_session
 from worker_shared.sdk.prefs import apply_set_effort, apply_set_model
 from worker_shared.terminal.session import TerminalSession
 
 from src.sdk.manager import SessionManager
-from src.sessions.reader import get_session_messages, list_sessions
+from src.sessions.reader import (
+    delete_project_files,
+    delete_session_files,
+    get_session_messages,
+    list_sessions,
+)
 
 logger = structlog.get_logger()
 
@@ -333,6 +339,23 @@ async def _route(
                 "before_uuid": before,
             },
         })
+        return terminal
+
+    if msg_type == "delete_session":
+        await apply_delete_session(
+            payload, sessions, send,
+            database=db,
+            delete_session_files=delete_session_files,
+        )
+        return terminal
+
+    if msg_type == "delete_project":
+        await apply_delete_project(
+            payload, sessions, send,
+            database=db,
+            list_sessions=list_sessions,
+            delete_project_files=delete_project_files,
+        )
         return terminal
 
     if msg_type == "set_auto_approve":

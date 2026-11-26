@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from src.projects.scanner import PROJECTS_ROOT, project_dir_for_cwd
+from src.projects.scanner import PROJECTS_ROOT, _read_cwd_from_jsonl, project_dir_for_cwd
 from src.sdk.session import parse_task_events, strip_task_events
 
 # CLI-internal marker tags that the CLI silently injects into user-message
@@ -139,6 +140,44 @@ def list_sessions(cwd: str, projects_root: Path = PROJECTS_ROOT) -> list[dict[st
 
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
     return sessions
+
+
+def _remove_session_artifacts(project_dir: Path, session_id: str) -> None:
+    """Unlink `<id>.jsonl` and the CLI's per-session `<id>/` dir (subagents,
+    tool results) if present."""
+    (project_dir / f"{session_id}.jsonl").unlink(missing_ok=True)
+    side_dir = project_dir / session_id
+    if side_dir.is_dir():
+        shutil.rmtree(side_dir)
+
+
+def delete_session_files(
+    cwd: str, session_id: str, projects_root: Path = PROJECTS_ROOT
+) -> None:
+    """Delete one session's transcript. Missing files are not an error."""
+    _remove_session_artifacts(project_dir_for_cwd(cwd, projects_root), session_id)
+
+
+def delete_project_files(cwd: str, projects_root: Path = PROJECTS_ROOT) -> None:
+    """Delete every session transcript recorded for `cwd`.
+
+    The encoded project dir is a lossy hash of the cwd (see
+    project_dir_for_cwd), so another project may share it - only
+    transcripts whose recorded cwd matches (or that have none) are removed.
+    The dir itself goes only if nothing else is left in it (e.g. the
+    per-project `memory/` dir is kept).
+    """
+    project_dir = project_dir_for_cwd(cwd, projects_root)
+    if not project_dir.is_dir():
+        return
+    for jsonl in project_dir.glob("*.jsonl"):
+        recorded = _read_cwd_from_jsonl(jsonl)
+        if recorded is None or recorded == cwd:
+            _remove_session_artifacts(project_dir, jsonl.stem)
+    try:
+        project_dir.rmdir()
+    except OSError:
+        pass  # not empty - other content stays
 
 
 # Cap tool results at 20 KB in session_history responses. Large outputs

@@ -49,7 +49,7 @@ _DEFAULT_MODELS_BY_TYPE: dict[str, list[dict[str, Any]]] = {
 _PROJECT_BOUND = frozenset({
     "list_sessions", "session_history", "new_session", "resume_session",
     "set_auto_approve", "list_directory", "read_file", "write_file",
-    "terminal_open",
+    "terminal_open", "delete_session", "delete_project",
 })
 
 # Message types that route to the active worker (session-bound, no project_id)
@@ -63,6 +63,7 @@ _SESSION_BOUND = frozenset({
 _RESPONSE_WITH_PROJECT_ID = frozenset({
     "sessions", "session_history", "directory", "file_content",
     "file_written", "project_updated", "project_created",
+    "session_deleted", "project_deleted",
 })
 
 

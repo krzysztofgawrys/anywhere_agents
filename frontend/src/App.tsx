@@ -413,6 +413,35 @@ function App() {
           pendingHistoryRefreshRef.current = false;
         }
       }
+      if (msg.type === "session_deleted" || msg.type === "project_deleted") {
+        // Checked before handleProjectsMsg, which clears activeProjectId for
+        // a deleted project. Drop the chat view and the auto-resume pointer
+        // if they refer to what was just deleted.
+        const gone =
+          msg.type === "session_deleted"
+            ? useChatStore.getState().activeSessionId === msg.payload.session_id
+            : activeProjectIdRef.current === msg.payload.project_id;
+        if (gone) {
+          if (msg.type === "project_deleted") killTerminal();
+          resetChat();
+        }
+        try {
+          const last = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+          if (
+            last &&
+            (msg.type === "session_deleted"
+              ? last.sessionId === msg.payload.session_id
+              : last.projectId === msg.payload.project_id)
+          ) {
+            localStorage.removeItem(LS_KEY);
+          }
+          if (msg.type === "session_deleted") {
+            localStorage.removeItem(LS_MODEL_PREFIX + msg.payload.session_id);
+          }
+        } catch {}
+        handleProjectsMsg(msg);
+        return;
+      }
       handleProjectsMsg(msg);
       handleFilesMsg(msg);
       handleAuthMsg(msg);
@@ -547,6 +576,7 @@ function App() {
       setNewProjectOpen,
       setActiveProject,
       killTerminal,
+      resetChat,
       sendPendingPrompt,
       outbox,
     ]

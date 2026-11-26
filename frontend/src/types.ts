@@ -137,6 +137,8 @@ export type ClientMessage =
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
+  | { type: "delete_session"; payload: { project_id: number; session_id: string } }
+  | { type: "delete_project"; payload: { project_id: number } }
   | { type: "set_model"; payload: { model: string | null } }
   | { type: "set_effort"; payload: { effort: string | null } }
   | {
@@ -262,6 +264,8 @@ export type ServerMessage =
       type: "project_updated";
       payload: { project_id: number; auto_approve: boolean };
     }
+  | { type: "session_deleted"; payload: { project_id: number; session_id: string } }
+  | { type: "project_deleted"; payload: { project_id: number } }
   | { type: "text_delta"; payload: { session_id: string; text: string } }
   | { type: "thinking"; payload: { session_id: string; text: string } }
   | {
