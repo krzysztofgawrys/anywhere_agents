@@ -143,7 +143,11 @@ describe("result", () => {
 // ── error (busy) ────────────────────────────────────────────────────
 
 describe("error busy", () => {
-  it("rolls back last user message and stays streaming", () => {
+  it("keeps the user message instead of destroying it", () => {
+    // Regression guard: this used to slice the user's bubble off the end of
+    // the list. The composer had already cleared its text, so that was the
+    // last copy of the message - typed, sent, gone. The outbox owns the text
+    // now, so the bubble must survive for it to retry or hand back.
     useChatStore.setState({
       status: "streaming",
       streamingActivity: { kind: "waiting" },
@@ -158,13 +162,13 @@ describe("error busy", () => {
     } as ServerMessage);
 
     const s = state();
-    expect(s.messages).toHaveLength(1);
-    expect(s.messages[0]!.id).toBe("a1"); // assistant kept
+    expect(s.messages).toHaveLength(2);
+    expect(s.messages[1]!.id).toBe("u1"); // user prompt kept
     expect(s.status).toBe("streaming");
     expect(s.streamingActivity).toBeNull(); // cleared
   });
 
-  it("does not roll back if last message is assistant", () => {
+  it("leaves an assistant-terminated list alone", () => {
     useChatStore.setState({
       status: "streaming",
       messages: [
@@ -242,7 +246,9 @@ describe("streaming events", () => {
   });
 
   it("tool_call sets streamingActivity with tool name", () => {
-    useChatStore.setState({ status: "streaming" });
+    // The event carries session_id "s1", so that session must be active:
+    // session-scoped events for any other session (or none) are dropped.
+    useChatStore.setState({ status: "streaming", activeSessionId: "s1" });
     dispatch({
       type: "tool_call",
       payload: { session_id: "s1", tool_use_id: "t1", name: "Read", input: { file_path: "/foo" } },
@@ -375,5 +381,79 @@ describe("permission_request", () => {
     } as ServerMessage);
     expect(state().pendingPermissions).toHaveLength(1);
     expect(state().pendingPermissions[0]!.toolUseId).toBe("t1");
+  });
+});
+
+// ── prompt delivery tracking ────────────────────────────────────────
+
+describe("prompt delivery", () => {
+  it("marks a prompt pending until the worker acks it", () => {
+    state().appendUserPrompt("hello", undefined, "m1");
+    expect(state().messages[0]!.delivery).toBe("pending");
+    expect(state().messages[0]!.clientMsgId).toBe("m1");
+
+    dispatch({
+      type: "prompt_ack",
+      payload: { client_msg_id: "m1", status: "accepted" },
+    } as ServerMessage);
+    expect(state().messages[0]!.delivery).toBeUndefined();
+  });
+
+  it("shows a queued prompt as queued, then clears it on result", () => {
+    state().appendUserPrompt("later", undefined, "m1");
+    dispatch({
+      type: "prompt_ack",
+      payload: { client_msg_id: "m1", status: "queued" },
+    } as ServerMessage);
+    expect(state().messages[0]!.delivery).toBe("queued");
+
+    // The blocking turn finished, so the queued prompt is now running.
+    dispatch({
+      type: "result",
+      payload: { subtype: "success", is_error: false },
+    } as ServerMessage);
+    expect(state().messages[0]!.delivery).toBeUndefined();
+  });
+
+  it("ignores an ack for an unknown id", () => {
+    state().appendUserPrompt("hello", undefined, "m1");
+    dispatch({
+      type: "prompt_ack",
+      payload: { client_msg_id: "other", status: "accepted" },
+    } as ServerMessage);
+    expect(state().messages[0]!.delivery).toBe("pending");
+  });
+
+  it("keeps unacked prompts when history replaces the message list", () => {
+    // A reconnect refetches history mid-flight. The unacked prompt is not on
+    // the worker yet, so it cannot be in that page - replacing the array
+    // wholesale used to erase it from the screen as well as from the wire.
+    state().appendUserPrompt("not delivered yet", undefined, "m1");
+    useChatStore.setState({ status: "idle" });
+    state().setHistory(
+      [{ id: "h1", role: "user", blocks: [{ kind: "text", text: "older" }], finished: true }],
+      false,
+      null
+    );
+
+    const msgs = state().messages;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0]!.id).toBe("h1");
+    expect(msgs[1]!.clientMsgId).toBe("m1");
+  });
+
+  it("does not duplicate acked prompts across a history refetch", () => {
+    state().appendUserPrompt("delivered", undefined, "m1");
+    dispatch({
+      type: "prompt_ack",
+      payload: { client_msg_id: "m1", status: "accepted" },
+    } as ServerMessage);
+    useChatStore.setState({ status: "idle" });
+    state().setHistory(
+      [{ id: "h1", role: "user", blocks: [{ kind: "text", text: "delivered" }], finished: true }],
+      false,
+      null
+    );
+    expect(state().messages).toHaveLength(1);
   });
 });

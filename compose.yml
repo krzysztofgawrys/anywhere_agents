@@ -24,6 +24,10 @@ services:
         required: false
     environment:
       - HOME=/home/app
+      # Local timezone. The hub stamps the time-context prefix it injects into
+      # prompts after a long idle gap; without this the container is UTC and
+      # the agent would be told a clock time 2h off the user's.
+      - TZ=${TZ:-Europe/Warsaw}
       # Shared secret - authenticates the worker's HTTP push callbacks.
       # Same value the worker uses for its inbound WS auth (hub→worker).
       - WORKER_SECRET=${WORKER_SECRET:-changeme}

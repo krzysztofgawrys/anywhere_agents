@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,16 @@ def _iso_to_epoch(iso: str) -> float | None:
         return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+def _entry_timestamp_ms(entry: dict[str, Any]) -> int | None:
+    """Epoch ms from an event's ISO8601 `timestamp` (e.g. "2026-06-19T09:49:15.271Z").
+
+    Copilot writes one per event in events.jsonl; the frontend reveals it on
+    bubble click. Returns None if absent or unparseable - the UI shows nothing.
+    """
+    epoch = _iso_to_epoch(entry.get("timestamp") or "")
+    return None if epoch is None else int(epoch * 1000)
 
 
 def _safe_read_lines(path: Path) -> list[dict[str, Any]]:
@@ -170,6 +181,36 @@ def list_sessions(
     return sessions
 
 
+def _session_dirs_for(cwd: str, session_state_root: Path) -> list[tuple[str, Path]]:
+    """(session id, dir) for every session-state entry whose cwd is `cwd`."""
+    if not session_state_root.is_dir():
+        return []
+    out: list[tuple[str, Path]] = []
+    for entry in session_state_root.iterdir():
+        ws = entry / "workspace.yaml"
+        if not entry.is_dir() or not ws.is_file():
+            continue
+        meta = _parse_workspace_yaml(ws)
+        if meta.get("cwd") == cwd:
+            out.append((meta.get("id") or entry.name, entry))
+    return out
+
+
+def delete_session_files(
+    cwd: str, session_id: str, session_state_root: Path = SESSION_STATE_ROOT
+) -> None:
+    """Delete one session's state dir, only if it belongs to `cwd`."""
+    for sid, entry in _session_dirs_for(cwd, session_state_root):
+        if sid == session_id:
+            shutil.rmtree(entry)
+
+
+def delete_project_files(cwd: str, session_state_root: Path = SESSION_STATE_ROOT) -> None:
+    """Delete every session state dir recorded for `cwd`."""
+    for _, entry in _session_dirs_for(cwd, session_state_root):
+        shutil.rmtree(entry)
+
+
 def _convert_user_message(entry: dict[str, Any]) -> list[dict[str, Any]] | None:
     """user.message event -> list of frontend ChatBlocks."""
     data = entry.get("data", {})
@@ -213,11 +254,21 @@ def get_session_messages(
     # onto the matching tool block in a prior assistant message.
     open_tools: dict[str, dict[str, Any]] = {}
 
-    def _ensure_assistant_carrier(event_id: str) -> dict[str, Any]:
-        """Get the trailing assistant message or create a fresh one."""
+    def _ensure_assistant_carrier(event_id: str, ts: int | None = None) -> dict[str, Any]:
+        """Get the trailing assistant message or create a fresh one.
+
+        `ts` stamps only a NEWLY created carrier, so a bubble keeps the time of
+        the event that started the turn rather than the last one appended to it.
+        """
         if messages and messages[-1]["role"] == "assistant":
             return messages[-1]
-        msg = {"id": event_id, "role": "assistant", "blocks": [], "finished": True}
+        msg = {
+            "id": event_id,
+            "role": "assistant",
+            "blocks": [],
+            "finished": True,
+            "timestamp": ts,
+        }
         messages.append(msg)
         return msg
 
@@ -225,6 +276,7 @@ def get_session_messages(
         etype = entry.get("type")
         eid = entry.get("id") or ""
         data = entry.get("data", {})
+        ets = _entry_timestamp_ms(entry)
 
         if etype == "user.message":
             blocks = _convert_user_message(entry)
@@ -235,20 +287,21 @@ def get_session_messages(
                 "role": "user",
                 "blocks": blocks,
                 "finished": True,
+                "timestamp": ets,
             })
             continue
 
         if etype == "assistant.message":
             content = data.get("content")
             if isinstance(content, str) and content.strip():
-                carrier = _ensure_assistant_carrier(eid)
+                carrier = _ensure_assistant_carrier(eid, ets)
                 carrier["blocks"].append({"kind": "text", "text": content.strip()})
             continue
 
         if etype == "assistant.reasoning":
             content = data.get("content")
             if isinstance(content, str) and content.strip():
-                carrier = _ensure_assistant_carrier(eid)
+                carrier = _ensure_assistant_carrier(eid, ets)
                 carrier["blocks"].append({"kind": "thinking", "text": content.strip()})
             continue
 
@@ -261,7 +314,7 @@ def get_session_messages(
                 "input": data.get("arguments") or {},
             }
             open_tools[tool_use_id] = block
-            carrier = _ensure_assistant_carrier(eid)
+            carrier = _ensure_assistant_carrier(eid, ets)
             carrier["blocks"].append(block)
             continue
 

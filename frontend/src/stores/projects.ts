@@ -99,6 +99,35 @@ export const useProjectsStore = create<ProjectsState>((set, get) => ({
           },
         }));
         return;
+      case "session_deleted": {
+        const { project_id, session_id } = msg.payload;
+        set((s) => {
+          const next = new Set(s.backgroundSessions);
+          next.delete(session_id);
+          const list = s.sessionsByProject[project_id];
+          return {
+            backgroundSessions: next,
+            sessionsByProject: list
+              ? { ...s.sessionsByProject, [project_id]: list.filter((x) => x.id !== session_id) }
+              : s.sessionsByProject,
+          };
+        });
+        return;
+      }
+      case "project_deleted": {
+        const { project_id } = msg.payload;
+        set((s) => {
+          const dropped = new Set((s.sessionsByProject[project_id] ?? []).map((x) => x.id));
+          const { [project_id]: _gone, ...rest } = s.sessionsByProject;
+          return {
+            projects: s.projects.filter((p) => p.id !== project_id),
+            sessionsByProject: rest,
+            backgroundSessions: new Set([...s.backgroundSessions].filter((id) => !dropped.has(id))),
+            activeProjectId: s.activeProjectId === project_id ? null : s.activeProjectId,
+          };
+        });
+        return;
+      }
       case "project_updated":
         set((s) => ({
           projects: s.projects.map((p) =>

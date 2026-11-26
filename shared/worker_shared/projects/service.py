@@ -116,6 +116,21 @@ async def create_project(database: Database, path: str) -> dict[str, Any]:
             }
 
 
+async def delete_project(database: Database, project_id: int) -> None:
+    """Remove a project and everything the app stores for it in SQLite.
+
+    Drops session prefs and the project's knowledge base too. Never touches
+    the project directory on disk; transcript cleanup is the worker's job.
+    """
+    await database.init()
+    async with database.connect() as conn:
+        await conn.execute("DELETE FROM knowledge_chunks WHERE project_id = ?", (project_id,))
+        await conn.execute("DELETE FROM knowledge_documents WHERE project_id = ?", (project_id,))
+        await conn.execute("DELETE FROM sessions WHERE project_id = ?", (project_id,))
+        await conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        await conn.commit()
+
+
 async def set_auto_approve(
     database: Database, project_id: int, auto_approve: bool
 ) -> None:

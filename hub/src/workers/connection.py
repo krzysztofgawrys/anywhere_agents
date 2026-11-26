@@ -84,13 +84,18 @@ class _InboundTransport:
         self._alive = True
 
     async def send_text(self, data: str) -> None:
+        # Raise (rather than return quietly) on a dead socket: WorkerConnection
+        # .send() turns that into a False result, which is what lets the hub
+        # tell the browser its prompt never reached the worker. Swallowing it
+        # here made every failed send look successful.
         if not self._alive:
-            return
+            raise websockets.exceptions.ConnectionClosed(None, None)
         try:
             await self._ws.send_text(data)
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError) as e:
             self._alive = False
             self._signal_done()
+            raise websockets.exceptions.ConnectionClosed(None, None) from e
 
     async def recv_text(self) -> str:
         try:
@@ -219,14 +224,27 @@ class WorkerConnection:
         self._reader_task = asyncio.create_task(self._read_loop())
         logger.info("worker_connected", url=self._url, mode="inbound")
 
-    async def send(self, message: dict[str, Any]) -> None:
-        """Send a message to the worker (fire-and-forget)."""
+    async def send(self, message: dict[str, Any]) -> bool:
+        """Send a message to the worker. Returns False if it didn't go out.
+
+        Callers routing a user prompt MUST check the result: a dropped prompt
+        that nobody reports back to the browser is a message the user watched
+        disappear (the browser has no other way to learn the hub ate it).
+        """
         if self._transport is None:
-            return
+            logger.warning("worker_send_failed_no_transport", type=message.get("type"))
+            return False
         try:
             await self._transport.send_text(json.dumps(message))
+            return True
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("worker_send_failed_closed")
+            logger.warning("worker_send_failed_closed", type=message.get("type"))
+            return False
+        except Exception as exc:
+            logger.warning(
+                "worker_send_failed", type=message.get("type"), error=str(exc)
+            )
+            return False
 
     async def request(
         self,

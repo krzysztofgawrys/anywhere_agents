@@ -27,6 +27,7 @@ import structlog
 
 from worker_shared.db import db
 from worker_shared.locks.manager import LockManager, locks
+from worker_shared.sdk import prompt_queue
 from worker_shared.sdk.base import SendFn, SessionFactory, SessionProtocol
 from worker_shared.sdk.registry import registry
 
@@ -250,23 +251,87 @@ class SessionManager:
         auto_approve_once: bool = False,
         images: list[dict[str, str]] | None = None,
         stream: bool = False,
+        client_msg_id: str | None = None,
     ) -> bool:
-        if self._current is None:
+        """Take responsibility for a user prompt, then confirm it.
+
+        Every outcome sends exactly one `prompt_ack` (or an `error` carrying
+        the same `client_msg_id`) so the browser can retire the message from
+        its outbox. Silence is what used to lose prompts: the browser had no
+        way to tell "delivered" from "died somewhere in the chain".
+
+        Prompts that arrive mid-turn are queued rather than rejected - see
+        :mod:`worker_shared.sdk.prompt_queue`.
+        """
+        session = self._current
+        if session is None:
+            if client_msg_id:
+                prompt_queue.forget(client_msg_id)
             await self._send({
                 "type": "error",
                 "payload": {
                     "code": "no_session",
                     "message": "Start or resume a session before sending prompts",
+                    **({"client_msg_id": client_msg_id} if client_msg_id else {}),
                 },
             })
             return False
-        await self._current.send_prompt(
-            text,
-            auto_approve_once=auto_approve_once,
-            images=images,
-            stream=stream,
+
+        # A retry of a prompt we already own: the ack died with the socket, not
+        # the prompt. Re-ack, never run it twice.
+        if client_msg_id and not prompt_queue.mark_seen(client_msg_id):
+            logger.info(
+                "prompt_duplicate_reacked",
+                session_id=session.session_id,
+                client_msg_id=client_msg_id,
+            )
+            await self._ack_prompt(client_msg_id, prompt_queue.DUPLICATE)
+            return True
+
+        status = await prompt_queue.submit(
+            session,
+            prompt_queue.QueuedPrompt(
+                client_msg_id=client_msg_id,
+                text=text,
+                auto_approve_once=auto_approve_once,
+                images=list(images or []),
+                stream=stream,
+            ),
         )
+
+        if status == prompt_queue.REJECTED:
+            # Backlog is full - do NOT pretend we took it. Release the dedup
+            # slot so the user's retry isn't swallowed as a duplicate.
+            if client_msg_id:
+                prompt_queue.forget(client_msg_id)
+            await self._send({
+                "type": "error",
+                "payload": {
+                    "code": "queue_full",
+                    "message": (
+                        "Too many prompts already queued for this session - "
+                        "wait for the agent to catch up"
+                    ),
+                    **({"client_msg_id": client_msg_id} if client_msg_id else {}),
+                },
+            })
+            return False
+
+        await self._ack_prompt(client_msg_id, status)
         return True
+
+    async def _ack_prompt(self, client_msg_id: str | None, status: str) -> None:
+        """Confirm delivery of a prompt to the browser.
+
+        Skipped for clients that don't send a `client_msg_id` (older frontend
+        builds) - they have no outbox to retire the entry from.
+        """
+        if not client_msg_id:
+            return
+        await self._send({
+            "type": "prompt_ack",
+            "payload": {"client_msg_id": client_msg_id, "status": status},
+        })
 
     def resolve_user_input(
         self, tool_use_id: str, answers: list[str]
@@ -325,6 +390,34 @@ class SessionManager:
             self._current = None
         await self._locks.release_all_by_connection(self._connection_id)
 
+    # ── Deletion support ─────────────────────────────────────────────
+
+    def is_held_elsewhere(self, session_id: str) -> bool:
+        """True if another connection currently holds this session's lock."""
+        entry = self._locks.info(session_id)
+        return entry is not None and entry.connection_id != self._connection_id
+
+    async def discard_session(self, session_id: str) -> None:
+        """Stop a session for good (active or parked) ahead of deleting it.
+
+        Unlike parking, nothing is kept around: queued prompts are dropped
+        and the lock is released. Caller checks :meth:`is_held_elsewhere`
+        first - this never touches another connection's session.
+        """
+        if self._current is not None and self._current.session_id == session_id:
+            session: Any = self._current
+            self._current = None
+            self._current_project_id = None
+        else:
+            session = registry.take(session_id)
+        prompt_queue.discard(session_id)
+        if session is not None:
+            try:
+                await session.stop()
+            except Exception as e:
+                logger.warning("session_stop_error", session_id=session_id, error=str(e))
+        await self._locks.release(session_id, self._connection_id)
+
     # ── Internals ────────────────────────────────────────────────────
 
     async def _park_current(self) -> None:
@@ -364,6 +457,7 @@ class SessionManager:
                     await self._current.stop()
                 except Exception as e:
                     logger.warning("session_stop_error", error=str(e))
+                prompt_queue.discard(session_id)
                 self._current = None
 
         return _on_revoked

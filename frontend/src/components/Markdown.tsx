@@ -6,6 +6,7 @@ import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { Mermaid } from "./Mermaid";
 import { Svg } from "./Svg";
+import { useWorkerFileCtx, workerFileDownloadUrl } from "./workerFileLink";
 
 // Recursively collect raw text from a hast node. rehype-highlight may have
 // wrapped the code in token <span>s; concatenating the text nodes recovers
@@ -90,6 +91,39 @@ const mdComponents: Components = {
   a: ({ node: _node, ...props }) => (
     <a {...props} target="_blank" rel="noopener noreferrer" />
   ),
+  code: ({ node, className, children, ...props }) => {
+    // Block code (fenced ```) carries a `language-*` class and/or newlines and
+    // is handled by the `pre` override above; only *inline* `code` spans are
+    // candidates for file-path linkification.
+    const text = nodeText(node);
+    const isInline = !className && !text.includes("\n");
+    const ctx = useWorkerFileCtx();
+    if (isInline) {
+      const url = workerFileDownloadUrl(ctx, text);
+      if (url) {
+        // A worker file path - render it as a download link while keeping the
+        // monospace `code` look so it still reads as a path inline.
+        return (
+          <a
+            href={url}
+            download
+            rel="noopener noreferrer"
+            title={`Download ${text}`}
+            className="text-blue-300 underline decoration-dotted underline-offset-2 hover:text-blue-200"
+          >
+            <code className={className} {...props}>
+              {children}
+            </code>
+          </a>
+        );
+      }
+    }
+    return (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    );
+  },
 };
 
 /** Shared markdown renderer (GFM + LaTeX math + syntax highlighting + mermaid

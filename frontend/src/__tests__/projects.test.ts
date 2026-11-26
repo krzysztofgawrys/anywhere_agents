@@ -86,3 +86,36 @@ describe("background session activity", () => {
     expect(bg()).not.toBe(before);
   });
 });
+
+describe("deletion", () => {
+  const session = (id: string) => ({ id, title: null, preview: null, message_count: 1, mtime: 0 });
+  const project = (id: number) =>
+    ({ id, name: `p${id}`, path: `/p${id}`, auto_approve: false, available: true }) as never;
+
+  beforeEach(() => {
+    useProjectsStore.setState({
+      projects: [project(1), project(2)],
+      sessionsByProject: { 1: [session("a"), session("b")], 2: [session("c")] },
+      backgroundSessions: new Set(["b", "c"]),
+      activeProjectId: 2,
+    });
+  });
+
+  it("session_deleted drops the session and its background flag", () => {
+    dispatch({ type: "session_deleted", payload: { project_id: 1, session_id: "b" } });
+    const s = useProjectsStore.getState();
+    expect(s.sessionsByProject[1]?.map((x) => x.id)).toEqual(["a"]);
+    expect(bg().has("b")).toBe(false);
+    expect(bg().has("c")).toBe(true);
+  });
+
+  it("project_deleted drops the project, its sessions and the active pointer", () => {
+    dispatch({ type: "project_deleted", payload: { project_id: 2 } });
+    const s = useProjectsStore.getState();
+    expect(s.projects.map((p) => p.id)).toEqual([1]);
+    expect(s.sessionsByProject[2]).toBeUndefined();
+    expect(bg().has("c")).toBe(false);
+    expect(bg().has("b")).toBe(true);
+    expect(s.activeProjectId).toBeNull();
+  });
+});

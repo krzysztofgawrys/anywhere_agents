@@ -120,6 +120,22 @@ export function Sidebar({
     }
   }, [connected, send, setLoading]);
 
+  const deleteSession = (project: Project, session: SessionSummary) => {
+    const label = session.title ?? session.preview ?? session.id.slice(0, 8);
+    if (!window.confirm(`Delete session "${label.slice(0, 80)}"?\n\nIts transcript is removed permanently.`)) return;
+    send({ type: "delete_session", payload: { project_id: project.id, session_id: session.id } });
+  };
+
+  const deleteProject = (project: Project) => {
+    if (
+      !window.confirm(
+        `Remove project "${project.name}" and permanently delete all its sessions?\n\n` +
+          `Files in ${project.path} are not touched.`
+      )
+    ) return;
+    send({ type: "delete_project", payload: { project_id: project.id } });
+  };
+
   const toggleProject = (id: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -348,6 +364,8 @@ export function Sidebar({
                 onBrowseFiles(p);
                 onClose();
               }}
+              onDeleteSession={(s) => deleteSession(p, s)}
+              onDeleteProject={() => deleteProject(p)}
             />
           ))}
         </div>
@@ -384,7 +402,25 @@ type ProjectItemProps = {
   onPickSession: (sessionId: string) => void;
   onNewSession: () => void;
   onBrowseFiles: () => void;
+  onDeleteSession: (session: SessionSummary) => void;
+  onDeleteProject: () => void;
 };
+
+// Visible on touch screens (no hover); revealed on row hover from md up.
+const DELETE_BTN_CLS =
+  "shrink-0 p-1.5 rounded text-gray-500 hover:text-red-400 hover:bg-gray-700 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100";
+
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+      <path
+        fillRule="evenodd"
+        d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z"
+        clipRule="evenodd"
+      />
+    </svg>
+  );
+}
 
 function ProjectItem({
   project,
@@ -398,6 +434,8 @@ function ProjectItem({
   onPickSession,
   onNewSession,
   onBrowseFiles,
+  onDeleteSession,
+  onDeleteProject,
 }: ProjectItemProps) {
   const unavailable = !project.available;
   // A project lights up blue when any of its (loaded) sessions has unseen
@@ -407,7 +445,7 @@ function ProjectItem({
   return (
     <div className={unavailable ? "opacity-40" : ""}>
       <div
-        className={`flex items-center gap-1 rounded ${
+        className={`group flex items-center gap-1 rounded ${
           unavailable
             ? "cursor-not-allowed"
             : isActive
@@ -476,6 +514,19 @@ function ProjectItem({
             </svg>
           </button>
         )}
+        {/* Allowed for unmounted projects too - removing stale ones is the main use. */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteProject();
+          }}
+          className={`${DELETE_BTN_CLS} mr-1`}
+          title="Delete project"
+          aria-label={`Delete project ${project.name}`}
+        >
+          <TrashIcon />
+        </button>
       </div>
       {isExpanded && (
         <div className="pl-6 pr-1 mt-1 space-y-0.5">
@@ -511,25 +562,35 @@ function ProjectItem({
                 ? "text-blue-300/60"
                 : "text-gray-600";
             return (
-              <button
-                type="button"
-                key={s.id}
-                onClick={() => onPickSession(s.id)}
-                className={`w-full text-left px-2 py-1.5 rounded text-xs group ${rowCls}`}
-                title={s.id}
-              >
-                <div className={`truncate flex items-center gap-1.5 ${titleCls}`}>
-                  {isBackground && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
-                  )}
-                  <span className="truncate">
-                    {s.title ?? s.preview ?? s.id.slice(0, 8)}
-                  </span>
-                </div>
-                <div className={`truncate text-[10px] ${metaCls}`}>
-                  {s.message_count} msg · {new Date(s.mtime * 1000).toLocaleString()}
-                </div>
-              </button>
+              <div key={s.id} className={`flex items-center rounded group ${rowCls}`}>
+                <button
+                  type="button"
+                  onClick={() => onPickSession(s.id)}
+                  className="flex-1 min-w-0 text-left px-2 py-1.5 text-xs"
+                  title={s.id}
+                >
+                  <div className={`truncate flex items-center gap-1.5 ${titleCls}`}>
+                    {isBackground && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0" />
+                    )}
+                    <span className="truncate">
+                      {s.title ?? s.preview ?? s.id.slice(0, 8)}
+                    </span>
+                  </div>
+                  <div className={`truncate text-[10px] ${metaCls}`}>
+                    {s.message_count} msg · {new Date(s.mtime * 1000).toLocaleString()}
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onDeleteSession(s)}
+                  className={DELETE_BTN_CLS}
+                  title="Delete session"
+                  aria-label="Delete session"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
             );
           })}
         </div>

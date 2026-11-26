@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from worker_shared.locks.manager import LockManager
+from worker_shared.sdk import prompt_queue
 from worker_shared.sdk.manager import SessionManager
 from worker_shared.sdk.registry import SessionRegistry
 
@@ -39,7 +40,21 @@ def _make_session(session_id: str = "s1", cwd: str = "/tmp/project") -> MagicMoc
     s.set_effort = AsyncMock()
     s.rebind = MagicMock()
     s.notify_reconnected = AsyncMock()
+    # Idle by default - the prompt queue reads these to decide between
+    # dispatching now and waiting for the current turn to finish.
+    s.is_busy = False
+    s.wait_idle = AsyncMock()
     return s
+
+
+@pytest.fixture(autouse=True)
+def _clean_prompt_queue() -> Any:
+    """Reset the module-level prompt queue/dedup state between tests."""
+    prompt_queue._queues.clear()
+    prompt_queue._seen.clear()
+    yield
+    prompt_queue._queues.clear()
+    prompt_queue._seen.clear()
 
 
 def _make_manager(
@@ -435,7 +450,7 @@ async def test_send_prompt_forwards(tmp_path: Any) -> None:
     result = await mgr.send_prompt("hello", auto_approve_once=True, stream=True)
     assert result is True
     s.send_prompt.assert_awaited_once_with(
-        "hello", auto_approve_once=True, images=None, stream=True,
+        "hello", auto_approve_once=True, images=[], stream=True,
     )
 
 

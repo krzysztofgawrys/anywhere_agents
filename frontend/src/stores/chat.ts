@@ -62,7 +62,9 @@ type ChatState = {
   /** AskUserQuestion requests waiting for the user to answer. */
   pendingUserInputs: PendingUserInput[];
 
-  appendUserPrompt: (text: string, images?: PromptImage[]) => void;
+  appendUserPrompt: (text: string, images?: PromptImage[], clientMsgId?: string) => void;
+  /** Clear a prompt's "sending" marker without a server ack (legacy worker). */
+  markDelivered: (clientMsgId: string) => void;
   handleServerMessage: (msg: ServerMessage) => void;
   reset: () => void;
   /** Replace history with a freshly loaded page (most recent N). */
@@ -169,7 +171,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
     set((s) => ({
-      messages,
+      // Carry over prompts the backend hasn't confirmed. They cannot be in
+      // the freshly-loaded page (nothing on the worker knows about them yet),
+      // so replacing the array wholesale would erase the user's message from
+      // the screen as well as from the wire - which is how a lost prompt
+      // ended up invisible in history too. Delivered prompts are not carried
+      // over: the loaded page is their authoritative copy.
+      messages: [
+        ...messages,
+        ...s.messages.filter((m) => m.role === "user" && m.delivery === "pending"),
+      ],
       // Don't downgrade from "streaming" - if session_started just told us the
       // backend is mid-turn, preserve that state. Otherwise clear to "idle".
       status: s.status === "streaming" ? ("streaming" as const) : ("idle" as const),
@@ -215,17 +226,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setModel: (value) => set({ model: value }),
   setEffort: (value) => set({ effort: value }),
 
-  appendUserPrompt: (text, images) => {
+  markDelivered: (clientMsgId) =>
+    set((s) => ({
+      messages: s.messages.map((m) =>
+        m.clientMsgId === clientMsgId ? { ...m, delivery: undefined } : m
+      ),
+    })),
+
+  appendUserPrompt: (text, images, clientMsgId) => {
     const blocks: ChatBlock[] = [];
     if (text) blocks.push({ kind: "text", text });
     for (const img of images ?? []) {
       blocks.push({ kind: "image", media_type: img.media_type, data_b64: img.data_b64 });
     }
     const msg: ChatMessage = {
-      id: newId(),
+      // Use the delivery id as the bubble id when we have one, so the bubble
+      // and its outbox entry are trivially linked.
+      id: clientMsgId ?? newId(),
       role: "user",
       blocks,
       finished: true,
+      timestamp: Date.now(),
+      ...(clientMsgId ? { clientMsgId, delivery: "pending" as const } : {}),
     };
     set((s) => ({
       messages: [...s.messages, msg],
@@ -398,10 +420,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return;
       }
 
+      case "prompt_ack": {
+        // The worker owns this prompt now, so the outbox can retire it.
+        // "queued" keeps a visible marker until the agent picks it up.
+        set((s) => ({
+          messages: s.messages.map((m) =>
+            m.clientMsgId === msg.payload.client_msg_id
+              ? {
+                  ...m,
+                  delivery:
+                    msg.payload.status === "queued" ? ("queued" as const) : undefined,
+                }
+              : m
+          ),
+        }));
+        return;
+      }
+
       case "result": {
         set((s) => {
           const messages = s.messages.map((m) =>
-            m.id === s.currentAssistantId ? { ...m, finished: true } : m
+            m.id === s.currentAssistantId
+              ? { ...m, finished: true }
+              // The turn that was blocking the queue just ended, so anything
+              // queued is now running - drop the "queued" marker.
+              : m.delivery === "queued"
+                ? { ...m, delivery: undefined }
+                : m
           );
           return {
             messages,
@@ -415,18 +460,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       case "error": {
         if (msg.payload.code === "busy") {
-          set({ streamingActivity: null });
-          // Backend is still processing the previous prompt. Roll back the
-          // optimistically-appended user message (if any) and stay in streaming
-          // state - the result will arrive shortly and re-enable the composer.
-          set((s) => ({
-            messages:
-              s.messages.length > 0 &&
-              s.messages[s.messages.length - 1]!.role === "user"
-                ? s.messages.slice(0, -1)
-                : s.messages,
-            status: "streaming" as const,
-          }));
+          // Legacy path: workers now queue mid-turn prompts instead of
+          // bouncing them. An un-upgraded worker can still send this.
+          //
+          // Do NOT delete the user's bubble here (this used to slice it off
+          // the end of the list). The composer had already cleared its text,
+          // so removing the bubble destroyed the only remaining copy of the
+          // message - the "typed it, hit send, it vanished" bug. The bubble
+          // stays; the outbox owns the text and either retries it or hands it
+          // back to the composer.
+          set({ streamingActivity: null, status: "streaming" as const });
         } else {
           set({ status: "error", lastError: `${msg.payload.code}: ${msg.payload.message}`, streamingActivity: null });
         }
@@ -508,7 +551,7 @@ function ensureAssistantMessage(
   const current = get().currentAssistantId;
   if (current) return current;
   const id = newId();
-  const msg: ChatMessage = { id, role: "assistant", blocks: [], finished: false };
+  const msg: ChatMessage = { id, role: "assistant", blocks: [], finished: false, timestamp: Date.now() };
   set((s) => ({ messages: [...s.messages, msg], currentAssistantId: id }));
   return id;
 }

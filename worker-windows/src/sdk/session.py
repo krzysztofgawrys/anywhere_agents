@@ -208,6 +208,15 @@ class Session:
     def permissions(self) -> PermissionBroker:
         return self._permissions
 
+    @property
+    def is_busy(self) -> bool:
+        """True while a turn is in flight."""
+        return self._busy
+
+    async def wait_idle(self) -> None:
+        """Block until the session is free to take a new prompt."""
+        await self._idle_event.wait()
+
     async def start(self) -> None:
         if self._client is not None:
             return

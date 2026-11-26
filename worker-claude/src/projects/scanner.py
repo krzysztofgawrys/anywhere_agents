@@ -91,6 +91,11 @@ async def scan_and_register(database: Database, projects_root: Path = PROJECTS_R
         for entry in sorted(projects_root.iterdir()):
             if not entry.is_dir():
                 continue
+            # No transcripts left (e.g. project deleted in the app, only
+            # memory/ remains) - nothing to show, and the dir-name fallback
+            # below would register a ghost project with a mangled path.
+            if not any(entry.glob("*.jsonl")):
+                continue
             cwd = _resolve_project_cwd(entry)
             if not cwd:
                 continue

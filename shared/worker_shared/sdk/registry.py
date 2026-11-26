@@ -15,6 +15,8 @@ from typing import Any, Protocol
 
 import structlog
 
+from worker_shared.sdk import prompt_queue
+
 logger = structlog.get_logger()
 
 
@@ -134,6 +136,10 @@ class SessionRegistry:
         self._expiry_tasks.pop(session_id, None)
         if session:
             logger.info("session_expired", session_id=session_id, reason="ttl")
+            # Nobody is coming back for this session, so any prompt still
+            # queued for it will never run. Drop the backlog (logged as a
+            # loss) instead of leaving a pump task waiting on a dead session.
+            prompt_queue.discard(session_id)
             try:
                 await session.stop()
             except Exception as exc:
@@ -147,6 +153,7 @@ class SessionRegistry:
         sessions = list(self._sessions.values())
         self._sessions.clear()
         for session in sessions:
+            prompt_queue.discard(session.session_id)
             try:
                 await session.stop()
             except Exception:

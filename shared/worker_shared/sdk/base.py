@@ -99,6 +99,19 @@ class SessionProtocol(Protocol):
     @property
     def permissions(self) -> PermissionsProtocol: ...
 
+    @property
+    def is_busy(self) -> bool:
+        """True while an agent turn (or consolidation) is in flight.
+
+        The shared prompt queue reads this to decide whether a new prompt can
+        go straight to the SDK or has to wait.
+        """
+        ...
+
+    async def wait_idle(self) -> None:
+        """Return once no turn is in flight. Returns immediately if idle."""
+        ...
+
     # ── Lifecycle ───────────────────────────────────────────────────
 
     async def start(self) -> None:

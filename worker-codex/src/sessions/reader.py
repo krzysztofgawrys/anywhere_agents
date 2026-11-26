@@ -15,6 +15,7 @@ worker-claude and worker-copilot so the WS handler can stay generic.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +76,35 @@ def list_sessions(project_path: str) -> list[dict[str, Any]]:
     # Newest first; missing timestamps sort to the back.
     out.sort(key=lambda s: (s.get("updated_at") or s.get("created_at") or ""), reverse=True)
     return out
+
+
+def _thread_dirs_for(project_path: str) -> list[Path]:
+    """Thread dirs under sessions/ whose metadata cwd is `project_path`."""
+    from src.projects.scanner import _extract_cwd, _read_metadata
+
+    if not SESSIONS_ROOT.is_dir():
+        return []
+    out: list[Path] = []
+    for entry in SESSIONS_ROOT.iterdir():
+        if not entry.is_dir():
+            continue
+        meta = _read_metadata(entry)
+        if meta is not None and _extract_cwd(meta) == project_path:
+            out.append(entry)
+    return out
+
+
+def delete_session_files(project_path: str, session_id: str) -> None:
+    """Delete one Codex thread dir, only if it belongs to `project_path`."""
+    for entry in _thread_dirs_for(project_path):
+        if entry.name == session_id:
+            shutil.rmtree(entry)
+
+
+def delete_project_files(project_path: str) -> None:
+    """Delete every Codex thread dir recorded for `project_path`."""
+    for entry in _thread_dirs_for(project_path):
+        shutil.rmtree(entry)
 
 
 def get_session_messages(

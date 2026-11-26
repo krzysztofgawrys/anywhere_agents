@@ -86,11 +86,27 @@ export type PromptImage = {
   data_b64: string;
 };
 
+/**
+ * Delivery state of a locally-composed user message.
+ *
+ * `undefined` means "the backend confirmed it" (or it came from history, so
+ * it is on disk). Anything else means the bubble on screen is not yet known
+ * to exist on the worker, and the outbox still owns a copy of the text.
+ */
+export type DeliveryState = "pending" | "queued";
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   blocks: ChatBlock[];
   finished?: boolean;
+  /** Set on prompts we sent ourselves; matches the outbox / prompt_ack id. */
+  clientMsgId?: string;
+  /** Undefined once acked. See DeliveryState. */
+  delivery?: DeliveryState;
+  // Wall-clock (ms) when this bubble was created client-side. Revealed on
+  // click in the chat UI; not sent to the backend.
+  timestamp?: number;
 };
 
 export type ClientMessage =
@@ -124,6 +140,8 @@ export type ClientMessage =
       type: "set_auto_approve";
       payload: { project_id: number; auto_approve: boolean };
     }
+  | { type: "delete_session"; payload: { project_id: number; session_id: string } }
+  | { type: "delete_project"; payload: { project_id: number } }
   | { type: "set_model"; payload: { model: string | null } }
   | { type: "set_effort"; payload: { effort: string | null } }
   | {
@@ -133,6 +151,12 @@ export type ClientMessage =
         auto_approve?: boolean;
         images?: PromptImage[];
         stream?: boolean;
+        /**
+         * Client-generated delivery id. The worker echoes it in `prompt_ack`
+         * and dedups retries by it, so the same prompt can be re-sent safely
+         * after a reconnect without the agent seeing it twice.
+         */
+        client_msg_id: string;
       };
     }
   | { type: "interrupt"; payload: Record<string, never> }
@@ -243,6 +267,8 @@ export type ServerMessage =
       type: "project_updated";
       payload: { project_id: number; auto_approve: boolean };
     }
+  | { type: "session_deleted"; payload: { project_id: number; session_id: string } }
+  | { type: "project_deleted"; payload: { project_id: number } }
   | { type: "text_delta"; payload: { session_id: string; text: string } }
   | { type: "thinking"; payload: { session_id: string; text: string } }
   | {
@@ -320,7 +346,25 @@ export type ServerMessage =
         size: number;
       };
     }
-  | { type: "error"; payload: { code: string; message: string } }
+  | {
+      // Delivery receipt for a `prompt`. "accepted" = handed to the agent,
+      // "queued" = agent is mid-turn and it will run next, "duplicate" = a
+      // retry of a prompt the worker already owns, so it was not re-run.
+      type: "prompt_ack";
+      payload: {
+        client_msg_id: string;
+        status: "accepted" | "queued" | "duplicate";
+      };
+    }
+  | {
+      type: "error";
+      payload: {
+        code: string;
+        message: string;
+        /** Present when the error killed a specific prompt we sent. */
+        client_msg_id?: string;
+      };
+    }
   | {
       // Bootstrap auth: worker tells the user it needs credentials.
       type: "auth_needed";

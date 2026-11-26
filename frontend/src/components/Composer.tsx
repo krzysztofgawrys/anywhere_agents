@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -40,6 +41,12 @@ type Props = {
     images: PromptImage[];
     stream: boolean;
   }) => void;
+  /**
+   * Text handed back after a prompt turned out to be undeliverable. Applied
+   * whenever `nonce` changes; merged with (never overwriting) whatever the
+   * user has already typed since.
+   */
+  draft?: { text: string; images: PromptImage[]; nonce: number } | null;
 };
 
 const STREAM_TOKENS_KEY = "claude-web:stream-tokens";
@@ -70,6 +77,7 @@ export function Composer({
   onCommand,
   onSubmit,
   onInterrupt,
+  draft,
 }: Props) {
   const [text, setText] = useState("");
   const [autoOnce, setAutoOnce] = useState(false);
@@ -95,6 +103,21 @@ export function Composer({
       navigator.maxTouchPoints > 0);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Re-seed the composer with a prompt that never made it to the agent. The
+  // user may have started typing something else in the meantime, so the
+  // recovered text is prepended rather than replacing their work.
+  const appliedDraftRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!draft || appliedDraftRef.current === draft.nonce) return;
+    appliedDraftRef.current = draft.nonce;
+    setText((cur) => (cur.trim() ? `${draft.text}\n\n${cur}` : draft.text));
+    if (draft.images.length > 0) {
+      setImages((cur) => [...draft.images, ...cur]);
+    }
+    textareaRef.current?.focus();
+  }, [draft]);
 
   const onSpeechFinal = useCallback((spoken: string) => {
     setText((cur) => (cur ? `${cur} ${spoken}` : spoken));
@@ -325,6 +348,7 @@ export function Composer({
             onChange={onFilesPicked}
           />
           <textarea
+            ref={textareaRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
