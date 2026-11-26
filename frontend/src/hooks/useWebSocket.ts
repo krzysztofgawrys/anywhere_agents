@@ -3,6 +3,20 @@ import type { ClientMessage, ServerMessage } from "../types";
 
 const HEARTBEAT_INTERVAL_MS = 20_000;
 const RECONNECT_DELAY_MS = 2_000;
+/**
+ * Kill the socket after this long with no inbound traffic at all.
+ *
+ * A WebSocket whose network died without a close handshake (WiFi sleep, WSL2
+ * blip, mobile radio switch) stays `readyState === OPEN` for minutes - the
+ * browser happily accepts `send()` calls into a buffer nobody will ever
+ * flush. That made `send()` return true for messages that were already lost,
+ * and left the composer enabled over a dead link. Two missed heartbeats is
+ * treated as proof the link is gone: close it so the reconnect path runs and
+ * `connected` flips false.
+ */
+const LIVENESS_TIMEOUT_MS = HEARTBEAT_INTERVAL_MS * 2 + 5_000;
+/** Grace period for the pong to a foreground wake-up probe. */
+const VISIBILITY_PROBE_MS = 5_000;
 /** After this many consecutive WS failures, probe HTTP to detect CF Access expiry. */
 const AUTH_CHECK_AFTER_FAILURES = 3;
 
@@ -44,6 +58,10 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
   const manuallyClosedRef = useRef(false);
   const everConnectedRef = useRef(false);
   const consecutiveFailuresRef = useRef(0);
+  /** Timestamp of the last frame received - drives the liveness check. */
+  const lastInboundRef = useRef(0);
+  /** Removes the per-socket visibilitychange probe listener. */
+  const visibilityCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     handlerRef.current = onMessage;
@@ -78,12 +96,43 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
       const isReconnect = everConnectedRef.current;
       everConnectedRef.current = true;
       setConnected(true);
-      // Start heartbeat
+      lastInboundRef.current = Date.now();
+      // Heartbeat + liveness check. The hub answers every ping with a pong,
+      // so silence past LIVENESS_TIMEOUT_MS means the link is dead even
+      // though the browser still reports it OPEN.
       pingTimerRef.current = window.setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "ping", payload: {} }));
+        if (ws.readyState !== WebSocket.OPEN) return;
+        // Only enforce liveness while visible: background tabs get their
+        // timers throttled to ~1/min, so the silence we'd measure would be
+        // our own missing pings, not a dead link. Pings keep going out
+        // regardless (the hub drops connections idle for 300s).
+        if (!document.hidden && Date.now() - lastInboundRef.current > LIVENESS_TIMEOUT_MS) {
+          console.warn("WS heartbeat lost - closing half-open socket");
+          // Fires onclose, which schedules the normal reconnect.
+          ws.close();
+          return;
         }
+        ws.send(JSON.stringify({ type: "ping", payload: {} }));
       }, HEARTBEAT_INTERVAL_MS);
+      // Coming back to the foreground is exactly when the user starts typing
+      // into a socket that died while they were away. Probe immediately
+      // instead of waiting for the next heartbeat tick, so `connected` (and
+      // with it the composer) reflects reality within a couple of seconds.
+      const onVisible = () => {
+        if (document.hidden || ws.readyState !== WebSocket.OPEN) return;
+        const probeSentAt = Date.now();
+        ws.send(JSON.stringify({ type: "ping", payload: {} }));
+        window.setTimeout(() => {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          if (lastInboundRef.current < probeSentAt) {
+            console.warn("WS probe unanswered on foreground - reconnecting");
+            ws.close();
+          }
+        }, VISIBILITY_PROBE_MS);
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      visibilityCleanupRef.current = () =>
+        document.removeEventListener("visibilitychange", onVisible);
       if (isReconnect) {
         // onReconnect fires after a prior disconnect (tab was open, WS dropped)
         reconnectHandlerRef.current?.();
@@ -94,6 +143,9 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
     };
 
     ws.onmessage = (event) => {
+      // Any inbound frame (pong, stream delta, anything) proves the link is
+      // alive - the liveness check only needs to catch total silence.
+      lastInboundRef.current = Date.now();
       try {
         const parsed = JSON.parse(event.data) as ServerMessage;
         handlerRef.current(parsed);
@@ -108,6 +160,8 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
         clearInterval(pingTimerRef.current);
         pingTimerRef.current = null;
       }
+      visibilityCleanupRef.current?.();
+      visibilityCleanupRef.current = null;
       if (manuallyClosedRef.current) return;
 
       // Hub sends 1008 (Policy Violation) when CF Access JWT is invalid.
@@ -144,6 +198,8 @@ export function useWebSocket({ url, onMessage, onReconnect, onConnect }: Options
 
   const disconnect = useCallback(() => {
     manuallyClosedRef.current = true;
+    visibilityCleanupRef.current?.();
+    visibilityCleanupRef.current = null;
     if (reconnectTimerRef.current !== null) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;

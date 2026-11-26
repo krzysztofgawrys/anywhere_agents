@@ -86,11 +86,24 @@ export type PromptImage = {
   data_b64: string;
 };
 
+/**
+ * Delivery state of a locally-composed user message.
+ *
+ * `undefined` means "the backend confirmed it" (or it came from history, so
+ * it is on disk). Anything else means the bubble on screen is not yet known
+ * to exist on the worker, and the outbox still owns a copy of the text.
+ */
+export type DeliveryState = "pending" | "queued";
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";
   blocks: ChatBlock[];
   finished?: boolean;
+  /** Set on prompts we sent ourselves; matches the outbox / prompt_ack id. */
+  clientMsgId?: string;
+  /** Undefined once acked. See DeliveryState. */
+  delivery?: DeliveryState;
 };
 
 export type ClientMessage =
@@ -133,6 +146,12 @@ export type ClientMessage =
         auto_approve?: boolean;
         images?: PromptImage[];
         stream?: boolean;
+        /**
+         * Client-generated delivery id. The worker echoes it in `prompt_ack`
+         * and dedups retries by it, so the same prompt can be re-sent safely
+         * after a reconnect without the agent seeing it twice.
+         */
+        client_msg_id: string;
       };
     }
   | { type: "interrupt"; payload: Record<string, never> }
@@ -320,7 +339,25 @@ export type ServerMessage =
         size: number;
       };
     }
-  | { type: "error"; payload: { code: string; message: string } }
+  | {
+      // Delivery receipt for a `prompt`. "accepted" = handed to the agent,
+      // "queued" = agent is mid-turn and it will run next, "duplicate" = a
+      // retry of a prompt the worker already owns, so it was not re-run.
+      type: "prompt_ack";
+      payload: {
+        client_msg_id: string;
+        status: "accepted" | "queued" | "duplicate";
+      };
+    }
+  | {
+      type: "error";
+      payload: {
+        code: string;
+        message: string;
+        /** Present when the error killed a specific prompt we sent. */
+        client_msg_id?: string;
+      };
+    }
   | {
       // Bootstrap auth: worker tells the user it needs credentials.
       type: "auth_needed";

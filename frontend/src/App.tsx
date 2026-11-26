@@ -12,6 +12,7 @@ import { Sidebar } from "./components/Sidebar";
 import { StreamingStatus } from "./components/StreamingStatus";
 import { TypingIndicator } from "./components/TypingIndicator";
 import { UploadOverlay } from "./components/UploadOverlay";
+import { useOutbox } from "./hooks/useOutbox";
 import { usePushNotifications } from "./hooks/usePushNotifications";
 import { useUploadPump } from "./hooks/useUploadPump";
 import { useVisibilityNotify } from "./hooks/useVisibilityNotify";
@@ -21,6 +22,7 @@ import { useAuthStore } from "./stores/auth";
 import { useChatStore } from "./stores/chat";
 import { useFilesStore } from "./stores/files";
 import { useProjectsStore } from "./stores/projects";
+import { newClientMsgId, useOutboxStore, type OutboxEntry } from "./stores/outbox";
 import type { ClientMessage, DirectoryEntry, Project, PromptImage, ServerMessage } from "./types";
 
 function App() {
@@ -110,20 +112,17 @@ function App() {
   // without adding resumeLastSession to its deps array (which would cause a
   // TDZ error - resumeLastSession is defined later in the component body).
   const resumeLastSessionRef = useRef<() => void>(() => {});
-  // Last `prompt` message the user submitted - retained so we can auto-resend
-  // when a worker restart drops its in-memory session and the next prompt
-  // bounces back with `no_session`. Cleared after a successful resend attempt
-  // so a second `no_session` doesn't loop.
-  const lastPromptRef = useRef<ClientMessage | null>(null);
-  // True when send() returned false for lastPromptRef (WS was down at the time
-  // the user submitted the prompt). Used on reconnect to re-deliver the dropped
-  // message without confusing it with an old prompt that the backend already
-  // processed (in which case send() had returned true and this flag is false).
-  const promptWasDropped = useRef(false);
+  // Undelivered prompts are tracked by the outbox (stores/outbox.ts +
+  // hooks/useOutbox.ts), which replaced the old single-slot lastPromptRef /
+  // promptWasDropped pair. That pair only held one prompt, trusted send()'s
+  // return value (meaningless on a half-open socket), and re-delivered only
+  // when the session came back idle - so a prompt sent while the agent was
+  // busy was cleared by the next `result` and silently lost.
   // Queued prompt to send after an interrupt completes. When the user clicks
   // Stop with text in the composer, we queue it here and send it once the
   // backend confirms the interrupted turn finished (via `result` message).
   const pendingPromptRef = useRef<{
+    clientMsgId: string;
     text: string;
     autoApprove: boolean;
     images: PromptImage[];
@@ -204,10 +203,92 @@ function App() {
   // onServerMessage and useWebSocket.
   const sendRef = useRef<((msg: ClientMessage) => boolean) | null>(null);
 
+  // Text handed back to the composer when a prompt turns out to be
+  // undeliverable. `nonce` makes repeated restores of the same text distinct.
+  const [draft, setDraft] = useState<{
+    text: string;
+    images: PromptImage[];
+    nonce: number;
+  } | null>(null);
+
+  /** Stable send wrapper for the outbox - `send` isn't declared yet here. */
+  const outboxSend = useCallback(
+    (msg: ClientMessage) => sendRef.current?.(msg) ?? false,
+    []
+  );
+
+  /** Last resort for a prompt nobody ever acked: give the text back.
+   *
+   * The bubble is removed rather than left marked as failed - the text
+   * reappears in the composer, so keeping a ghost copy on screen would just
+   * read as a duplicate. What must never happen is both disappearing.
+   */
+  const onPromptGiveUp = useCallback((entry: OutboxEntry) => {
+    useChatStore.setState((s) => ({
+      messages: s.messages.filter((m) => m.clientMsgId !== entry.id),
+      // Don't stomp on a live turn: another prompt may be streaming while an
+      // older one is being surrendered. The banner is enough in that case.
+      ...(s.status === "streaming"
+        ? {}
+        : { status: "error" as const, streamingActivity: null }),
+      lastError:
+        "Message could not be delivered - it's back in the composer. Check the connection and send again.",
+    }));
+    setDraft({ text: entry.text, images: entry.images, nonce: Date.now() });
+  }, []);
+
+  const outbox = useOutbox({ send: outboxSend, onGiveUp: onPromptGiveUp });
+
+  /** Build, register and send a prompt.
+   *
+   * Single funnel for every outbound prompt (fresh submit, post-interrupt
+   * flush, retry) so they all get an id, an outbox entry and therefore an
+   * ack to wait on. Anything that bypasses this can be lost silently.
+   */
+  const dispatchPrompt = useCallback(
+    (opts: {
+      clientMsgId: string;
+      /** Raw text as typed - what gets handed back if delivery fails. */
+      text: string;
+      autoApprove: boolean;
+      images: PromptImage[];
+      stream: boolean;
+    }) => {
+      // Slash commands are interpreted by the agent CLI, so they must reach
+      // it verbatim - the plan-mode preamble would turn them into prose.
+      const promptText =
+        useChatStore.getState().planMode && !opts.text.startsWith("/")
+          ? `[PLAN MODE - read-only, do NOT execute any changes]\n${opts.text}`
+          : opts.text;
+      const promptMsg: ClientMessage = {
+        type: "prompt",
+        payload: {
+          text: promptText,
+          auto_approve: opts.autoApprove,
+          stream: opts.stream,
+          client_msg_id: opts.clientMsgId,
+          ...(opts.images.length > 0 ? { images: opts.images } : {}),
+        },
+      };
+      outbox.trackAndSend({
+        id: opts.clientMsgId,
+        sessionId: useChatStore.getState().activeSessionId,
+        projectId: activeProjectIdRef.current,
+        msg: promptMsg,
+        text: opts.text,
+        images: opts.images,
+        attempts: 0,
+        createdAt: Date.now(),
+        optimisticallySent: false,
+      });
+    },
+    [outbox]
+  );
+
   /** Flush the queued post-interrupt prompt to the backend.
    *
    * Defined before onServerMessage so it can be called from the `result`
-   * handler. Uses sendRef (not `send`) because `send` is not yet declared.
+   * handler.
    */
   const sendPendingPrompt = useCallback(() => {
     const pending = pendingPromptRef.current;
@@ -223,39 +304,33 @@ function App() {
       status: "streaming" as const,
       streamingActivity: { kind: "waiting" as const },
     });
-    const pm = useChatStore.getState().planMode;
-    const promptText = pm
-      ? `[PLAN MODE - read-only, do NOT execute any changes]\n${pending.text}`
-      : pending.text;
-    const promptMsg: ClientMessage = {
-      type: "prompt",
-      payload: {
-        text: promptText,
-        auto_approve: pending.autoApprove,
-        stream: pending.stream,
-        ...(pending.images.length > 0 ? { images: pending.images } : {}),
-      },
-    };
-    lastPromptRef.current = promptMsg;
-    sendRef.current?.(promptMsg);
-  }, []);
+    dispatchPrompt({
+      clientMsgId: pending.clientMsgId,
+      text: pending.text,
+      autoApprove: pending.autoApprove,
+      images: pending.images,
+      stream: pending.stream,
+    });
+  }, [dispatchPrompt]);
 
   const onServerMessage = useCallback(
     (msg: ServerMessage) => {
+      if (msg.type === "prompt_ack") {
+        // Delivery confirmed end-to-end (browser -> hub -> worker -> agent).
+        // Only now is it safe to stop owning the message.
+        outbox.ack(msg.payload.client_msg_id);
+        // fall through so the chat store can clear the pending marker
+      }
       if (msg.type === "error" && msg.payload.code === "no_session") {
         // Worker lost its in-memory session (typically: worker container was
         // restarted, the parked-session registry was wiped). Our WS to the
         // hub is still healthy and the project routing is intact, so a simple
         // resume_session re-attaches via the SDK slow path (replay from
-        // JSONL on disk), then we re-send the user's prompt so they don't
-        // have to retype it.
+        // JSONL on disk). The prompt itself stays in the outbox and is
+        // re-delivered by the flush on `session_started`.
         const sessionId = useChatStore.getState().activeSessionId;
         const projectId = activeProjectIdRef.current;
-        const pending = lastPromptRef.current;
-        if (sessionId && projectId !== null && pending) {
-          // Drop the pending payload first so a second no_session bounce
-          // doesn't loop us.
-          lastPromptRef.current = null;
+        if (sessionId && projectId !== null) {
           sendRef.current?.({
             type: "resume_session",
             payload: {
@@ -268,18 +343,27 @@ function App() {
               model: useChatStore.getState().model,
             },
           });
-          sendRef.current?.(pending);
           // Swallow the error - the user shouldn't see a red banner for a
           // condition we recovered from automatically.
           return;
         }
       }
+      if (
+        msg.type === "error" &&
+        (msg.payload.code === "undelivered" || msg.payload.code === "queue_full")
+      ) {
+        // The backend explicitly refused (or couldn't route) this prompt.
+        // Retrying won't help, so surrender it now: the text goes back to the
+        // composer instead of the user discovering it vanished. Older workers
+        // don't echo the id, so fall back to the oldest unacked prompt.
+        const cmid = msg.payload.client_msg_id ?? useOutboxStore.getState().oldest()?.id;
+        if (cmid) {
+          outbox.giveUp(cmid);
+          // giveUp already set a banner that explains where the text went.
+          return;
+        }
+      }
       if (msg.type === "result") {
-        // A turn completed - clear the dropped-prompt tracker so a future
-        // reconnect doesn't mistake a stale lastPromptRef for a re-delivery
-        // candidate (the backend already processed this prompt).
-        lastPromptRef.current = null;
-        promptWasDropped.current = false;
         send({ type: "get_context_usage", payload: {} });
       }
       if (msg.type === "result" && pendingPromptRef.current) {
@@ -430,23 +514,20 @@ function App() {
         }
       } else {
         handleChatMsg(msg);
-        // If session_started confirmed the backend is idle while the local state
-        // was streaming, handleChatMsg above just cleared the streaming indicators.
-        // Check whether the prompt was actually dropped (WS was down when the user
-        // submitted it) and, if so, re-deliver it now that the session is ready.
-        if (msg.type === "session_started" && !msg.payload.is_busy
-            && promptWasDropped.current && lastPromptRef.current) {
-          const droppedPrompt = lastPromptRef.current;
-          lastPromptRef.current = null;
-          promptWasDropped.current = false;
-          // Restore streaming indicators - the user message is already in the UI
-          // (appendUserPrompt was called before the failed send), so we only need
-          // to re-enter the streaming state and re-deliver to the backend.
-          useChatStore.setState({
-            status: "streaming" as const,
-            streamingActivity: { kind: "waiting" as const },
-          });
-          sendRef.current?.(droppedPrompt);
+        // The session is attached and routable again (fresh start, resume, or
+        // post-reconnect reattach) - re-deliver anything the outbox still
+        // owns for it. Unlike the old single-slot retry this covers prompts
+        // the backend never saw AND prompts whose ack died with the socket
+        // (the worker dedups by client_msg_id), and it works while the agent
+        // is busy, since the worker queues instead of rejecting.
+        if (msg.type === "session_started") {
+          const redelivered = outbox.flush(msg.payload.session_id);
+          if (redelivered > 0) {
+            useChatStore.setState({
+              status: "streaming" as const,
+              streamingActivity: { kind: "waiting" as const },
+            });
+          }
         }
       }
     },
@@ -467,6 +548,7 @@ function App() {
       setActiveProject,
       killTerminal,
       sendPendingPrompt,
+      outbox,
     ]
   );
 
@@ -724,26 +806,19 @@ function App() {
       images: PromptImage[],
       streamTokens: boolean,
     ) => {
-      // In plan mode, prepend an instruction so Claude only plans.
-      const promptText = planMode
-        ? `[PLAN MODE - read-only, do NOT execute any changes]\n${text}`
-        : text;
-      appendUserPrompt(text, images);
-      const promptMsg: ClientMessage = {
-        type: "prompt",
-        payload: {
-          text: promptText,
-          auto_approve: autoApproveOnce,
-          stream: streamTokens,
-          ...(images.length > 0 ? { images } : {}),
-        },
-      };
-      lastPromptRef.current = promptMsg;
-      // Track whether the send was dropped (WS not open) so we can re-deliver
-      // on the next reconnect without resending a prompt the backend already got.
-      promptWasDropped.current = !send(promptMsg);
+      // The plan-mode prefix is applied inside dispatchPrompt so retries use
+      // the identical payload.
+      const clientMsgId = newClientMsgId();
+      appendUserPrompt(text, images, clientMsgId);
+      dispatchPrompt({
+        clientMsgId,
+        text,
+        autoApprove: autoApproveOnce,
+        images,
+        stream: streamTokens,
+      });
     },
-    [send, appendUserPrompt, planMode]
+    [appendUserPrompt, dispatchPrompt]
   );
 
   const onInterrupt = useCallback(
@@ -779,12 +854,16 @@ function App() {
 
       if (pendingPrompt) {
         // Show the user message optimistically and queue the actual prompt
-        // to be sent once the interrupted turn's `result` arrives.
+        // to be sent once the interrupted turn's `result` arrives. The id is
+        // minted here so the bubble, the outbox entry and the eventual ack
+        // all refer to the same message.
+        const clientMsgId = newClientMsgId();
         appendUserPrompt(
           pendingPrompt.text,
           pendingPrompt.images.length > 0 ? pendingPrompt.images : undefined,
+          clientMsgId,
         );
-        pendingPromptRef.current = pendingPrompt;
+        pendingPromptRef.current = { ...pendingPrompt, clientMsgId };
         // Safety fallback: if the backend never sends a `result` (e.g.
         // session died), send the prompt after 5 seconds anyway. By then
         // the backend should have cleared its busy state.
@@ -859,13 +938,21 @@ function App() {
         case "clear":
           resetChat();
           break;
-        case "compact":
-          appendUserPrompt("/compact");
-          send({
-            type: "prompt",
-            payload: { text: "/compact", stream: true },
+        case "compact": {
+          // Goes through the outbox like any other prompt - a /compact that
+          // silently fails to reach the worker is just as confusing as a lost
+          // message (and it's usually sent when context is already tight).
+          const compactId = newClientMsgId();
+          appendUserPrompt("/compact", undefined, compactId);
+          dispatchPrompt({
+            clientMsgId: compactId,
+            text: "/compact",
+            autoApprove: false,
+            images: [],
+            stream: true,
           });
           break;
+        }
         case "new":
           if (activeProjectId != null) {
             killTerminal();
@@ -1244,6 +1331,7 @@ function App() {
             onSubmit={onSubmit}
             onInterrupt={onInterrupt}
             extraCommands={extraCommands}
+            draft={draft}
           />
         </div>
       </div>

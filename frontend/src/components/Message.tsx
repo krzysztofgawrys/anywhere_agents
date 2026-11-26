@@ -160,6 +160,15 @@ export function Message({ message, searchQuery }: Props) {
           </span>
         )}
       </div>
+      {/* Delivery state of our own prompts. "sending" means the worker hasn't
+          confirmed it yet and the outbox is still retrying; "queued" means it
+          is confirmed and will run after the current turn. Absent once the
+          message is safely on the worker. */}
+      {isUser && message.delivery && (
+        <div className="mt-1 px-1 text-right text-xs text-blue-300/70">
+          {message.delivery === "queued" ? "queued - runs after this turn" : "sending…"}
+        </div>
+      )}
     </div>
   );
 }
