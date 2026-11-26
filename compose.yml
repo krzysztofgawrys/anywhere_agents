@@ -132,7 +132,12 @@ services:
     image: cloudflare/cloudflared:latest
     container_name: claude-web-tunnel
     restart: unless-stopped
-    command: tunnel run
+    # --protocol http2 instead of the default QUIC. QUIC rides UDP, and this
+    # host's path to the Cloudflare edge drops/blackholes UDP in bursts: the
+    # tunnel then dies with 'timeout: no recent network activity' every 15-60s
+    # and takes every in-flight WebSocket with it, so the browser sees the hub
+    # "disconnecting non stop". http2 uses TCP, which survives that path.
+    command: tunnel --protocol http2 run
     env_file:
       - path: .env
         required: false
