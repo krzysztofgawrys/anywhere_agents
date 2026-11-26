@@ -1,0 +1,122 @@
+# Optional "Local" worker: Claude Code driven by a local llama.cpp server.
+#
+#   cp compose.override.yml.example compose.override.yml   # gitignored
+#   docker compose up -d worker-claude-llama
+#
+# docker compose loads compose.override.yml automatically. The real file is
+# gitignored because it also carries machine-specific services (USB
+# passthrough, extra project roots); this example holds only the llama part.
+#
+# Also needed, outside this file:
+#   1. A hub entry in workers.json (then restart the hub):
+#        { "id": "llama", "type": "claude", "label": "Local",
+#          "url": "ws://worker-claude-llama:8002/ws", "secret": "<WORKER_SECRET>" }
+#   2. An isolated Claude home for this worker, seeded with the narrow
+#      settings it needs (see the comment on its volumes below):
+#        mkdir -p ~/.claude-llama
+#        cp workers/llama-claude-settings.json ~/.claude-llama/settings.json
+#   3. Optional .env overrides: LLAMA_BASE_URL, LLAMA_MODEL, LLAMA_AUTH_TOKEN
+#      (see .env.example).
+
+services:
+  # ── "Local" worker ───────────────────────────────────────────────────
+  # Same agent code as worker-claude, only the model endpoint differs:
+  # llama.cpp serves the Anthropic /v1/messages wire format, so this is just
+  # ANTHROPIC_BASE_URL pointed at the llama-shim sidecar (see that service,
+  # and docker/llama_shim.py, for why the shim exists).
+  #
+  # Reuses the primary worker IMAGE rather than building its own (nothing
+  # extra to install). It is therefore built by the `worker-claude` service;
+  # `docker compose up -d worker-claude-llama` alone will fail if that image
+  # was never built. Rebuild the base to pick up code changes.
+  worker-claude-llama:
+    image: claude_cloud-worker-claude:latest
+    container_name: claude-web-worker-claude-llama
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    environment:
+      - HOME=/home/app
+      - WORKER_SECRET=${WORKER_SECRET:-changeme}
+      - HUB_URL=${HUB_URL:-http://hub:8001}
+      - CLAUDE_WEB_DB_PATH=/home/app/.claude-web/db.sqlite
+      # ── llama.cpp backend (via the normalizing shim) ─────────────────
+      # Claude Code appends its MCP/skills instructions as a trailing
+      # role:"system" message inside `messages`, which Qwen's chat template
+      # rejects ("System message must be at the beginning") -> HTTP 500 on
+      # every turn. llama-shim hoists it into the top-level `system`.
+      # Point this straight at llama.cpp if the template ever gets fixed.
+      - ANTHROPIC_BASE_URL=http://llama-shim:8020
+      # llama.cpp ignores auth, but the CLI needs *some* credential or it
+      # drops into its Anthropic login flow instead of calling the endpoint.
+      - ANTHROPIC_AUTH_TOKEN=${LLAMA_AUTH_TOKEN:-llama-local}
+      # The worker's own bootstrap gate needs an API key OR
+      # ~/.claude/.credentials.json. This home is isolated and has no
+      # credentials file, so the dummy key keeps it out of the
+      # browser-login modal. llama.cpp ignores the value.
+      - ANTHROPIC_API_KEY=${LLAMA_AUTH_TOKEN:-llama-local}
+      # Whatever model llama.cpp has loaded. All aliases point at it so any
+      # /model choice in the UI still resolves to the single local model.
+      - ANTHROPIC_MODEL=${LLAMA_MODEL:-Qwen3.8-27B-UD-Q5_K_XL.gguf}
+      - ANTHROPIC_DEFAULT_OPUS_MODEL=${LLAMA_MODEL:-Qwen3.8-27B-UD-Q5_K_XL.gguf}
+      - ANTHROPIC_DEFAULT_SONNET_MODEL=${LLAMA_MODEL:-Qwen3.8-27B-UD-Q5_K_XL.gguf}
+      - ANTHROPIC_DEFAULT_HAIKU_MODEL=${LLAMA_MODEL:-Qwen3.8-27B-UD-Q5_K_XL.gguf}
+      - ANTHROPIC_SMALL_FAST_MODEL=${LLAMA_MODEL:-Qwen3.8-27B-UD-Q5_K_XL.gguf}
+      # No phone-home: every request must go to the local box only.
+      - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+      - DISABLE_TELEMETRY=1
+      - DISABLE_ERROR_REPORTING=1
+      - DISABLE_AUTOUPDATER=1
+    volumes:
+      # DELIBERATELY NOT the shared ~/.claude. A 27B local model has a 98k
+      # window, and the shared home dragged ~105KB (~26k tokens) of tool
+      # schemas, MCP instructions and global CLAUDE.md into every request
+      # before the user's prompt was even read. This worker gets its own
+      # home with a deliberately narrow settings.json instead.
+      # ~/.claude.json is NOT mounted either - the container makes a fresh
+      # one, which is what keeps MCP servers out of the context.
+      - ${HOME}/.claude-llama:/home/app/.claude
+      - claude-web-llama-state:/home/app/.claude-web
+      - ${HOME}/.ssh:/home/app/.ssh:ro
+      - ${HOME}/.gitconfig:/home/app/.gitconfig:ro
+      # Project root - mounted at the same absolute path as on the host so
+      # cwd in ~/.claude/projects/*.jsonl resolves inside the container.
+      - ${HOME}/local:${HOME}/local
+    depends_on:
+      - llama-shim
+
+  # ── Anthropic-wire-format shim in front of llama.cpp ─────────────────
+  # See docker/llama_shim.py for the why. Reuses the worker image purely for
+  # its Python env (fastapi + httpx + uvicorn); the source is mounted, so
+  # editing llama_shim.py only needs `docker compose restart llama-shim`,
+  # never a rebuild.
+  #
+  # The whole docker/ directory is mounted rather than the single file:
+  # Docker resolves a single-file bind to an inode at container start, and
+  # editors replace files atomically (new inode), which would silently keep
+  # serving the old content.
+  llama-shim:
+    image: claude_cloud-worker-claude:latest
+    container_name: claude-web-llama-shim
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /opt/shim
+    environment:
+      - HOME=/home/app
+      - LLAMA_UPSTREAM=${LLAMA_BASE_URL:-http://192.168.1.25:8080}
+    volumes:
+      - ./docker:/opt/shim:ro
+    command: ["uvicorn", "llama_shim:app", "--host", "0.0.0.0", "--port", "8020"]
+    expose:
+      - "8020"
+    # /healthz is answered by the shim itself and does not touch llama.cpp,
+    # so this reports on the shim only - a llama.cpp restart must not flap
+    # this container.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  claude-web-llama-state:
