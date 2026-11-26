@@ -4,8 +4,15 @@ Lets you reach any service listening on the host by URL path, e.g.
     https://hub.example.com/8005/     ->  http://172.23.60.65:8005/
     https://hub.example.com/8005/foo  ->  http://172.23.60.65:8005/foo
 
-Both plain HTTP and WebSocket (dev-server HMR, etc.) are proxied. Requests
-already pass Cloudflare Access at the edge, so no extra auth is added here.
+Both plain HTTP and WebSocket (dev-server HMR, etc.) are proxied.
+
+Auth: every request is checked against Cloudflare Access here too, not only
+at the edge, the same way the hub's other routes do it. The edge is the
+first gate, but this proxy reaches every HTTP port on the host, so it must
+not depend on the edge policy alone: a path exception added to the Access
+app later, or a caller reaching the hub without passing the edge, would
+otherwise get the whole host. Auth runs before the port check so an
+unauthenticated caller learns nothing about which ports are allowed.
 
 The routes MUST be registered before the catch-all static mount in main.py.
 The ``:int`` path converter means these only ever match a numeric first
@@ -14,6 +21,7 @@ segment, so /api/*, /ws and /assets/* are never shadowed.
 
 import asyncio
 import os
+from typing import Any
 
 import httpx
 import structlog
@@ -24,7 +32,23 @@ from websockets.asyncio.client import ClientConnection
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
+from src.auth.cf_access import verify_cf_access_token
+
 logger = structlog.get_logger()
+
+
+def _cf_token(headers: Any, cookies: Any) -> str | None:
+    """CF Access JWT, from the same places the hub's upload route reads it.
+
+    Cloudflare attaches the header to every request that passed Access; the
+    cookie is the browser's Access session.
+    """
+    return headers.get("cf-access-jwt-assertion") or cookies.get("CF_Authorization")
+
+
+async def _authorized(headers: Any, cookies: Any) -> bool:
+    """Fail-closed in prod, dev-bypass otherwise (inside verify_cf_access_token)."""
+    return await verify_cf_access_token(_cf_token(headers, cookies)) is not None
 
 # Host that actually runs the target services. Hardcoded to the WSL2 host by
 # default; override with PROXY_HOST if the deployment moves.
@@ -83,6 +107,9 @@ def _rewrite_location(loc: str, port: int) -> str:
 
 
 async def _proxy_http(port: int, path: str, request: Request) -> Response:
+    if not await _authorized(request.headers, request.cookies):
+        logger.warning("port_proxy_auth_rejected", port=port, client=request.client)
+        raise HTTPException(status_code=401, detail="unauthorized")
     if not _allowed(port):
         raise HTTPException(status_code=403, detail=f"port {port} is not proxyable")
 
@@ -163,6 +190,10 @@ async def _pump(client_ws: WebSocket, upstream: ClientConnection) -> None:
 
 
 async def _proxy_ws(port: int, path: str, ws: WebSocket) -> None:
+    if not await _authorized(ws.headers, ws.cookies):
+        logger.warning("port_proxy_ws_auth_rejected", port=port, client=ws.client)
+        await ws.close(code=1008)
+        return
     if not _allowed(port):
         await ws.close(code=1008)
         return
@@ -204,6 +235,8 @@ def register_port_proxy(app: FastAPI) -> None:
     async def _redirect_to_slash(port: int, request: Request) -> RedirectResponse:
         # A bare /{port} has no trailing slash, so the target app's relative
         # asset paths would resolve against '/' and 404. Redirect to /{port}/.
+        if not await _authorized(request.headers, request.cookies):
+            raise HTTPException(status_code=401, detail="unauthorized")
         if not _allowed(port):
             raise HTTPException(status_code=403, detail=f"port {port} is not proxyable")
         suffix = f"?{request.url.query}" if request.url.query else ""
