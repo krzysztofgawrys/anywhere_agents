@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 
 from src.auth.cf_access import verify_cf_access_token
+from src.proxy.port_proxy import register_port_proxy
 from src.push.manager import push_manager
 from src.workers.inbound import inbound_registry
 from src.workers.registry import WorkerInfo, load_workers
@@ -726,6 +727,11 @@ def _device_label_from_headers(websocket: WebSocket, claims: dict[str, Any]) -> 
     else:
         device = "Browser"
     return f"{email} @ {device}"
+
+
+# Path-based reverse proxy: /{port}/... -> host:{port}. Registered before the
+# static mount so a numeric first path segment routes here, not to the SPA.
+register_port_proxy(app)
 
 
 # Serve static files (frontend build) - must be last.
