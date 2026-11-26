@@ -13,6 +13,8 @@ and the aggregated `projects` payload is pushed to the frontend.
 
 import asyncio
 import json
+import time
+from datetime import datetime
 from typing import Any
 
 import structlog
@@ -58,6 +60,22 @@ _SESSION_BOUND = frozenset({
     "set_effort", "user_input_response", "terminal_input", "terminal_resize",
     "terminal_close",
 })
+
+# Minimum idle gap before a prompt gets a time-context prefix injected.
+_TIME_CONTEXT_GAP_SECONDS = 300  # 5 minutes
+
+
+def _humanize_gap(seconds: float) -> str:
+    """Human-readable elapsed time, e.g. '7 minutes', '2 hours', '3 days'."""
+    mins = int(round(seconds / 60))
+    if mins < 60:
+        return f"{mins} minute" + ("" if mins == 1 else "s")
+    hours = int(round(seconds / 3600))
+    if hours < 48:
+        return f"{hours} hour" + ("" if hours == 1 else "s")
+    days = int(round(seconds / 86400))
+    return f"{days} day" + ("" if days == 1 else "s")
+
 
 # Response types from worker that carry project_id - need remapping back
 _RESPONSE_WITH_PROJECT_ID = frozenset({
@@ -419,6 +437,11 @@ async def handle_websocket(
     # Set active to first connected worker by default
     active_worker_id = next(iter(worker_conns))
 
+    # Wall-clock of the last prompt this connection forwarded. Used to inject a
+    # time-context prefix when the user returns after a long idle gap, so the
+    # agent knows the current time and how long it has been.
+    last_prompt_ts: float | None = None
+
     # Pre-populate project index so project IDs resolve immediately
     # (frontend may send new_session with a cached project_id before list_projects).
     # Snapshot to list because on_disconnect callbacks (fired on await
@@ -566,6 +589,40 @@ async def handle_websocket(
                     active_worker_id = worker_id
                 await worker_conns[worker_id].send(message)
                 continue
+
+            # ── Prompt: inject a time-context prefix ─────────────────
+            # The hub forwards the user's message to the worker verbatim; the
+            # agent otherwise only knows the calendar date, not the clock time
+            # or how much time passed between messages. Prepend a compact
+            # context line to the copy sent to the worker. The browser renders
+            # the user's bubble from its own local state, so this stays
+            # invisible in the chat UI - only the agent sees it.
+            #
+            # Injected in two cases:
+            #  - long idle gap (>= threshold): stamp + humanized elapsed time.
+            #  - first prompt of a connection: stamp only. last_prompt_ts is
+            #    per-connection, so a reconnect (laptop slept, hub restarted,
+            #    network blip) leaves the gap UNKNOWN - and that is exactly the
+            #    "user came back hours later" case this feature exists for.
+            #    Skipping it there would miss the most valuable moment.
+            if msg_type == "prompt":
+                now = time.time()
+                gap = None if last_prompt_ts is None else now - last_prompt_ts
+                if gap is None or gap >= _TIME_CONTEXT_GAP_SECONDS:
+                    text = payload.get("text")
+                    if isinstance(text, str) and text:
+                        stamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z").strip()
+                        elapsed = (
+                            "" if gap is None
+                            else f" {_humanize_gap(gap)} elapsed since the previous message."
+                        )
+                        payload["text"] = (
+                            f"<context>Current time: {stamp}.{elapsed}</context>\n\n" + text
+                        )
+                        message["payload"] = payload
+                        logger.info("time_context_injected", stamp=stamp, gap=gap)
+                last_prompt_ts = now
+                # fall through to the session-bound routing below
 
             # ── Session-bound: route to active worker ────────────────
             if msg_type in _SESSION_BOUND:
