@@ -21,6 +21,7 @@ import { useWebSocket } from "./hooks/useWebSocket";
 import { useAuthStore } from "./stores/auth";
 import { useChatStore } from "./stores/chat";
 import { useFilesStore } from "./stores/files";
+import { WorkerFileContext, type WorkerFileCtx } from "./components/workerFileLink";
 import { useProjectsStore } from "./stores/projects";
 import { newClientMsgId, useOutboxStore, type OutboxEntry } from "./stores/outbox";
 import type { ClientMessage, DirectoryEntry, Project, PromptImage, ServerMessage } from "./types";
@@ -918,6 +919,16 @@ function App() {
     }));
   }, [activeProjectId, projects, workersList]);
 
+  // Context for turning worker file paths in chat into download links. Needs
+  // both the project root (to resolve absolute paths) and the worker id (for
+  // the /api/download route); null until a project with a worker is active.
+  const workerFileCtx = useMemo<WorkerFileCtx | null>(() => {
+    if (activeProjectId == null) return null;
+    const project = projects.find((p) => p.id === activeProjectId);
+    if (!project || !project.worker_id) return null;
+    return { projectPath: project.path, workerId: project.worker_id };
+  }, [activeProjectId, projects]);
+
   // Dynamic /effort autocomplete - sourced from the active worker's model
   // effort levels. Each model can expose different levels (Claude: low/medium/
   // high/max, Copilot: depends on model + subscription).
@@ -1301,9 +1312,11 @@ function App() {
             {!activeSessionId && messages.length === 0 && (
               <EmptyState onOpenSidebar={() => setSidebarOpen(true)} />
             )}
-            {messages.map((m) => (
-              <Message key={m.id} message={m} searchQuery={searchQuery} />
-            ))}
+            <WorkerFileContext.Provider value={workerFileCtx}>
+              {messages.map((m) => (
+                <Message key={m.id} message={m} searchQuery={searchQuery} />
+              ))}
+            </WorkerFileContext.Provider>
             {status === "streaming" && !currentAssistantId && <TypingIndicator />}
             {lastError && (
               <div className="text-xs text-red-400 mt-2 px-3 py-2 rounded bg-red-950/40 border border-red-800">

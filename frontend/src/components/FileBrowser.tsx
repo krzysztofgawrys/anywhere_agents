@@ -183,6 +183,9 @@ export function FileBrowser({ send }: Props) {
 
   const canEdit = file && file.encoding === "utf-8" && !file.tooLarge && file.content !== null;
   const isMarkdownFile = !!canEdit && !!file && /\.(md|markdown)$/i.test(file.path);
+  const isHtmlFile = !!canEdit && !!file && /\.html?$/i.test(file.path);
+  // Both md and html have a rendered/raw toggle, driven by the same flag.
+  const hasPreviewToggle = isMarkdownFile || isHtmlFile;
 
   const navigateTo = (path: string) => {
     if (!project) return;
@@ -286,12 +289,12 @@ export function FileBrowser({ send }: Props) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {isMarkdownFile && !editing && (
+          {hasPreviewToggle && !editing && (
             <button
               type="button"
               onClick={() => setMdPreview((p) => !p)}
               className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded border border-gray-700 hover:border-gray-500"
-              title={mdPreview ? "Show raw markdown source" : "Show rendered markdown"}
+              title={mdPreview ? "Show raw source" : "Show rendered preview"}
             >
               {mdPreview ? "Raw" : "Preview"}
             </button>
@@ -393,6 +396,7 @@ export function FileBrowser({ send }: Props) {
             onSave={saveFile}
             saving={saving}
             renderMarkdown={isMarkdownFile && mdPreview}
+            renderHtml={isHtmlFile && mdPreview}
           />
         )}
 
@@ -754,9 +758,11 @@ type FileViewerProps = {
   saving: boolean;
   /** Render UTF-8 content as markdown (rendered .md preview) instead of <pre>. */
   renderMarkdown: boolean;
+  /** Render UTF-8 content as live HTML in a sandboxed iframe instead of <pre>. */
+  renderHtml: boolean;
 };
 
-function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, renderMarkdown }: FileViewerProps) {
+function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, renderMarkdown, renderHtml }: FileViewerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Focus textarea when entering edit mode.
@@ -788,6 +794,20 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
   }, [pdfUrl]);
+
+  // For HTML files in preview mode, serve the source as a Blob URL so the
+  // iframe gets an opaque origin and the sandbox (no allow-same-origin) keeps
+  // the page from reaching the parent app while still letting its scripts run.
+  const htmlUrl = useMemo(() => {
+    if (!renderHtml || file.encoding !== "utf-8" || file.content == null) return null;
+    return URL.createObjectURL(new Blob([file.content], { type: "text/html" }));
+  }, [renderHtml, file.encoding, file.content]);
+
+  useEffect(() => {
+    return () => {
+      if (htmlUrl) URL.revokeObjectURL(htmlUrl);
+    };
+  }, [htmlUrl]);
 
   if (file.loading && file.content === null) {
     return <div className="text-sm text-gray-500 p-4">Loading…</div>;
@@ -870,6 +890,19 @@ function FileViewer({ file, editing, editContent, onEditChange, onSave, saving, 
           className="flex-1 w-full bg-gray-950 text-gray-100 text-xs md:text-sm font-mono p-3 md:p-4 resize-none outline-none leading-relaxed"
           spellCheck={false}
           disabled={saving}
+        />
+      </div>
+    );
+  }
+
+  if (renderHtml && htmlUrl) {
+    return (
+      <div className="flex flex-col h-full">
+        <iframe
+          src={htmlUrl}
+          title={file.path}
+          sandbox="allow-scripts allow-popups allow-forms"
+          className="flex-1 w-full bg-white"
         />
       </div>
     );
