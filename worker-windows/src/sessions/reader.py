@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,21 @@ def _clean_user_text(text: str) -> str:
     return cleaned.strip()
 
 logger = structlog.get_logger()
+
+
+def _entry_timestamp_ms(entry: dict[str, Any]) -> int | None:
+    """Epoch ms from a JSONL entry's ISO8601 `timestamp` (e.g. "2026-07-12T21:05:00.492Z").
+
+    The CLI writes one per entry; the frontend reveals it on bubble click.
+    Returns None if absent or unparseable - the UI just shows nothing then.
+    """
+    raw = entry.get("timestamp")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
 
 
 def _safe_read_lines(path: Path) -> list[dict[str, Any]]:
@@ -314,6 +330,7 @@ def get_session_messages(
                     "role": "assistant",
                     "blocks": pending_task_blocks,
                     "finished": True,
+                    "timestamp": _entry_timestamp_ms(entry),
                 })
 
         if not blocks:
@@ -379,6 +396,7 @@ def get_session_messages(
             "role": etype,
             "blocks": blocks,
             "finished": True,
+            "timestamp": _entry_timestamp_ms(entry),
         })
 
     # Filter by before_uuid: only keep messages *before* that uuid

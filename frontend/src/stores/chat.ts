@@ -246,6 +246,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       role: "user",
       blocks,
       finished: true,
+      timestamp: Date.now(),
       ...(clientMsgId ? { clientMsgId, delivery: "pending" as const } : {}),
     };
     set((s) => ({
@@ -550,7 +551,7 @@ function ensureAssistantMessage(
   const current = get().currentAssistantId;
   if (current) return current;
   const id = newId();
-  const msg: ChatMessage = { id, role: "assistant", blocks: [], finished: false };
+  const msg: ChatMessage = { id, role: "assistant", blocks: [], finished: false, timestamp: Date.now() };
   set((s) => ({ messages: [...s.messages, msg], currentAssistantId: id }));
   return id;
 }

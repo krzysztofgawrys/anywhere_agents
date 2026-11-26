@@ -18,6 +18,15 @@ function highlightText(text: string, query: string): React.ReactNode {
 export function Message({ message, searchQuery }: Props) {
   const isUser = message.role === "user";
   const sq = searchQuery ?? "";
+  const [showTime, setShowTime] = React.useState(false);
+
+  // Toggle the timestamp on a plain click, but not when the user is selecting
+  // text or clicking a link/button inside the bubble.
+  const toggleTime = (e: React.MouseEvent) => {
+    if (window.getSelection()?.toString()) return;
+    if ((e.target as HTMLElement).closest("a,button,input,textarea")) return;
+    setShowTime((v) => !v);
+  };
 
   // System info banners - thin amber line, no bubble
   if (message.role === "system") {
@@ -37,7 +46,8 @@ export function Message({ message, searchQuery }: Props) {
   return (
     <div className="mb-3">
       <div
-        className={`w-full min-w-0 overflow-hidden rounded-2xl px-4 py-3 ${
+        onClick={toggleTime}
+        className={`w-full min-w-0 cursor-pointer overflow-hidden rounded-2xl px-4 py-3 ${
           isUser ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-100"
         }`}
       >
@@ -167,6 +177,13 @@ export function Message({ message, searchQuery }: Props) {
       {isUser && message.delivery && (
         <div className="mt-1 px-1 text-right text-xs text-blue-300/70">
           {message.delivery === "queued" ? "queued - runs after this turn" : "sending…"}
+        </div>
+      )}
+      {showTime && message.timestamp && (
+        <div
+          className={`mt-1 px-1 text-xs text-gray-500 ${isUser ? "text-right" : "text-left"}`}
+        >
+          {new Date(message.timestamp).toLocaleString()}
         </div>
       )}
     </div>

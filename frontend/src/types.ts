@@ -104,6 +104,9 @@ export type ChatMessage = {
   clientMsgId?: string;
   /** Undefined once acked. See DeliveryState. */
   delivery?: DeliveryState;
+  // Wall-clock (ms) when this bubble was created client-side. Revealed on
+  // click in the chat UI; not sent to the backend.
+  timestamp?: number;
 };
 
 export type ClientMessage =

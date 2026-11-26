@@ -76,6 +76,16 @@ def _iso_to_epoch(iso: str) -> float | None:
         return None
 
 
+def _entry_timestamp_ms(entry: dict[str, Any]) -> int | None:
+    """Epoch ms from an event's ISO8601 `timestamp` (e.g. "2026-06-19T09:49:15.271Z").
+
+    Copilot writes one per event in events.jsonl; the frontend reveals it on
+    bubble click. Returns None if absent or unparseable - the UI shows nothing.
+    """
+    epoch = _iso_to_epoch(entry.get("timestamp") or "")
+    return None if epoch is None else int(epoch * 1000)
+
+
 def _safe_read_lines(path: Path) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     try:
@@ -244,11 +254,21 @@ def get_session_messages(
     # onto the matching tool block in a prior assistant message.
     open_tools: dict[str, dict[str, Any]] = {}
 
-    def _ensure_assistant_carrier(event_id: str) -> dict[str, Any]:
-        """Get the trailing assistant message or create a fresh one."""
+    def _ensure_assistant_carrier(event_id: str, ts: int | None = None) -> dict[str, Any]:
+        """Get the trailing assistant message or create a fresh one.
+
+        `ts` stamps only a NEWLY created carrier, so a bubble keeps the time of
+        the event that started the turn rather than the last one appended to it.
+        """
         if messages and messages[-1]["role"] == "assistant":
             return messages[-1]
-        msg = {"id": event_id, "role": "assistant", "blocks": [], "finished": True}
+        msg = {
+            "id": event_id,
+            "role": "assistant",
+            "blocks": [],
+            "finished": True,
+            "timestamp": ts,
+        }
         messages.append(msg)
         return msg
 
@@ -256,6 +276,7 @@ def get_session_messages(
         etype = entry.get("type")
         eid = entry.get("id") or ""
         data = entry.get("data", {})
+        ets = _entry_timestamp_ms(entry)
 
         if etype == "user.message":
             blocks = _convert_user_message(entry)
@@ -266,20 +287,21 @@ def get_session_messages(
                 "role": "user",
                 "blocks": blocks,
                 "finished": True,
+                "timestamp": ets,
             })
             continue
 
         if etype == "assistant.message":
             content = data.get("content")
             if isinstance(content, str) and content.strip():
-                carrier = _ensure_assistant_carrier(eid)
+                carrier = _ensure_assistant_carrier(eid, ets)
                 carrier["blocks"].append({"kind": "text", "text": content.strip()})
             continue
 
         if etype == "assistant.reasoning":
             content = data.get("content")
             if isinstance(content, str) and content.strip():
-                carrier = _ensure_assistant_carrier(eid)
+                carrier = _ensure_assistant_carrier(eid, ets)
                 carrier["blocks"].append({"kind": "thinking", "text": content.strip()})
             continue
 
@@ -292,7 +314,7 @@ def get_session_messages(
                 "input": data.get("arguments") or {},
             }
             open_tools[tool_use_id] = block
-            carrier = _ensure_assistant_carrier(eid)
+            carrier = _ensure_assistant_carrier(eid, ets)
             carrier["blocks"].append(block)
             continue
 
