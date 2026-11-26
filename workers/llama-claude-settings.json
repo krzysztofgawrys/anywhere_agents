@@ -1,0 +1,42 @@
+{
+  "$comment": [
+    "Seed settings for the 'Local' (llama.cpp) worker's isolated home,",
+    "deployed to ~/.claude-llama/settings.json on the host.",
+    "A 27B model with a 98k window cannot afford the full harness: the",
+    "36 default tool schemas measured 83.7KB, of which Workflow alone was",
+    "21KB. Everything below is denied to keep the per-request overhead",
+    "small and to leave the model a tool set it can actually aim at.",
+    "Denied here rather than in permissions.ask so the schemas never reach",
+    "the request in the first place."
+  ],
+  "permissions": {
+    "deny": [
+      "Workflow",
+      "Agent",
+      "Task",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskGet",
+      "TaskList",
+      "TaskStop",
+      "TaskOutput",
+      "CronCreate",
+      "CronDelete",
+      "CronList",
+      "ScheduleWakeup",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "EnterWorktree",
+      "ExitWorktree",
+      "AskUserQuestion",
+      "NotebookEdit",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool",
+      "WebSearch",
+      "WebFetch",
+      "Skill"
+    ]
+  },
+  "enableAllProjectMcpServers": false,
+  "includeCoAuthoredBy": false
+}
