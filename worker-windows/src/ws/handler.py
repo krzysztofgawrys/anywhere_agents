@@ -341,6 +341,23 @@ async def _route(
         )
         return terminal
 
+    if msg_type == "delete_session":
+        await apply_delete_session(
+            payload, sessions, send,
+            database=db,
+            delete_session_files=delete_session_files,
+        )
+        return terminal
+
+    if msg_type == "delete_project":
+        await apply_delete_project(
+            payload, sessions, send,
+            database=db,
+            list_sessions=list_sessions,
+            delete_project_files=delete_project_files,
+        )
+        return terminal
+
     if msg_type == "set_auto_approve":
         project_id = payload.get("project_id")
         value = bool(payload.get("auto_approve"))

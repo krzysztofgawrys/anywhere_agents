@@ -489,13 +489,29 @@ async def _route(
                 data = it.get("data_b64")
                 if isinstance(mt, str) and isinstance(data, str):
                     images.append({"media_type": mt, "data_b64": data})
+        # Browser-generated id, used to ack delivery and to dedup retries.
+        # Older frontend builds omit it; then no ack is sent (nothing to
+        # retire on the client side) and the prompt is never deduped.
+        raw_cmid = payload.get("client_msg_id")
+        client_msg_id = raw_cmid if isinstance(raw_cmid, str) and raw_cmid else None
         if not text and not images:
-            await _send_error(send, "empty_prompt", "Prompt text or images required")
+            await send({
+                "type": "error",
+                "payload": {
+                    "code": "empty_prompt",
+                    "message": "Prompt text or images required",
+                    **({"client_msg_id": client_msg_id} if client_msg_id else {}),
+                },
+            })
             return terminal
         auto_once = bool(payload.get("auto_approve"))
         stream = bool(payload.get("stream"))
         await sessions.send_prompt(
-            text, auto_approve_once=auto_once, images=images, stream=stream
+            text,
+            auto_approve_once=auto_once,
+            images=images,
+            stream=stream,
+            client_msg_id=client_msg_id,
         )
         return terminal
 

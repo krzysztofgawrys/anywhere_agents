@@ -568,12 +568,36 @@ async def handle_websocket(
 
             # ── Session-bound: route to active worker ────────────────
             if msg_type in _SESSION_BOUND:
+                # For prompts, echo the client's id back on any failure so the
+                # browser can retire that outbox entry and hand the text back
+                # to the user. A prompt the hub couldn't route used to vanish
+                # here with nothing but a log line.
+                cmid = payload.get("client_msg_id") if msg_type == "prompt" else None
+                id_field = {"client_msg_id": cmid} if isinstance(cmid, str) and cmid else {}
                 if active_worker_id and active_worker_id in worker_conns:
-                    await worker_conns[active_worker_id].send(message)
+                    delivered = await worker_conns[active_worker_id].send(message)
+                    if not delivered:
+                        logger.warning(
+                            "session_bound_send_failed",
+                            type=msg_type,
+                            worker=active_worker_id,
+                        )
+                        await websocket.send_json({
+                            "type": "error",
+                            "payload": {
+                                "code": "undelivered",
+                                "message": "Worker connection dropped - message not delivered",
+                                **id_field,
+                            },
+                        })
                 else:
                     await websocket.send_json({
                         "type": "error",
-                        "payload": {"code": "no_active_worker", "message": "No active worker session"},
+                        "payload": {
+                            "code": "no_active_worker",
+                            "message": "No active worker session",
+                            **id_field,
+                        },
                     })
                 continue
 
